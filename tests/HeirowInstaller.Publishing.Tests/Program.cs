@@ -101,6 +101,8 @@ try
     try { await client.PublishAsync(package); throw new Exception("Version collision was accepted."); }
     catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Conflict, "Immutable version conflicts reach the caller"); }
     await collisionServer;
+
+    await BrowserSignInChecksAsync(listener, origin, Check);
     listener.Stop();
     Console.WriteLine($"Passed {passed} publishing checks.");
     return 0;
@@ -111,6 +113,72 @@ finally
     var absolute = Path.GetFullPath(root);
     if (!Path.GetFileName(absolute).StartsWith("heirowinstaller-publishing-tests-", StringComparison.Ordinal)) throw new InvalidOperationException("Unsafe test cleanup path.");
     Directory.Delete(absolute, true);
+}
+
+static async Task BrowserSignInChecksAsync(TcpListener listener, Uri origin, Action<bool, string> check)
+{
+    try { using var ignored = await PublisherSignInClient.BeginAsync(new Uri("http://publisher.example")); throw new Exception("Insecure sign-in accepted."); }
+    catch (ArgumentException) { check(true, "Browser sign-in requires HTTPS for public origins"); }
+    try { using var ignored = await PublisherSignInClient.BeginAsync(new Uri("https://user:private@publisher.example")); throw new Exception("Credential URL accepted."); }
+    catch (ArgumentException) { check(true, "Browser sign-in refuses credentials embedded in URLs"); }
+
+    string redirect = "", state = "", challenge = "";
+    var approvalId = Guid.NewGuid().ToString("N");
+    var requestServer = ServeOnceAsync(listener, request =>
+    {
+        check(request.RequestLine == "POST /api/app-signin/requests HTTP/1.1" && request.Headers.ContainsKey("Content-Length"), "Approval uses the real bounded POST protocol with explicit content length");
+        using var document = JsonDocument.Parse(request.Body);
+        var metadata = document.RootElement;
+        check(metadata.GetProperty("application").GetString() == "heirowinstaller" && !metadata.TryGetProperty("verifier", out _), "Dedicated installer application sends its PKCE challenge without the verifier");
+        redirect = metadata.GetProperty("redirectUri").GetString()!;
+        state = metadata.GetProperty("state").GetString()!;
+        challenge = metadata.GetProperty("challenge").GetString()!;
+        var callback = new Uri(redirect);
+        check(callback.Host == "127.0.0.1" && callback.Port >= 1024 && callback.AbsolutePath.StartsWith("/socketjack-signin/", StringComparison.Ordinal) && state.Length == 43 && challenge.Length == 43,
+            "Approval binds random state and a secret path to an unprivileged loopback listener");
+        return (200, JsonSerializer.Serialize(new { requestId = approvalId, url = new Uri(origin, "app-signin/?request=" + approvalId).AbsoluteUri, expiresIn = 300 }), null);
+    });
+    using var operation = await PublisherSignInClient.BeginAsync(origin, allowLoopback: true);
+    await requestServer;
+    check(operation.BrowserUrl.AbsoluteUri.StartsWith(origin.AbsoluteUri, StringComparison.Ordinal), "Browser approval stays on the selected publisher origin");
+    using var callbackClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+    var complete = operation.CompleteAsync();
+    using (var rejected = await callbackClient.GetAsync(redirect + "?code=" + new string('a', 43) + "&state=" + new string('b', 43)))
+        check(rejected.StatusCode == HttpStatusCode.BadRequest && !complete.IsCompleted, "A forged callback is rejected without cancelling the legitimate approval");
+    var grantCode = new string('g', 43);
+    var redemptionServer = ServeOnceAsync(listener, request =>
+    {
+        check(request.RequestLine == "POST /api/app-signin/redeem HTTP/1.1" && !request.Headers.ContainsKey("Cookie") && !request.Headers.ContainsKey("Authorization"),
+            "Redemption uses the approval grant without reading or forwarding browser cookies");
+        using var document = JsonDocument.Parse(request.Body);
+        var body = document.RootElement;
+        var verifier = body.GetProperty("verifier").GetString()!;
+        var actualChallenge = Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(verifier))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        check(actualChallenge == challenge && body.GetProperty("requestId").GetString() == approvalId && body.GetProperty("redirectUri").GetString() == redirect &&
+            body.GetProperty("application").GetString() == "heirowinstaller" && body.GetProperty("code").GetString() == grantCode,
+            "Redemption binds request, application, callback, one-use code and PKCE verifier");
+        return (200, JsonSerializer.Serialize(new { authenticated = true, username = "fixture-publisher", accessToken = "test-disposable-credential", isAdministrator = true, expiresUtc = DateTimeOffset.UtcNow.AddMinutes(10) }), null);
+    });
+    using (var accepted = await callbackClient.GetAsync(redirect + "?code=" + grantCode + "&state=" + state))
+        check(accepted.StatusCode == HttpStatusCode.OK && accepted.Headers.CacheControl?.NoStore == true, "Accepted loopback responses prohibit caching and disclose no account credential");
+    using var session = await complete;
+    await redemptionServer;
+    check(session.AccessToken == "test-disposable-credential" && session.IsAdministrator && !JsonSerializer.Serialize(session).Contains("test-disposable-credential", StringComparison.Ordinal) &&
+        !session.ToString().Contains("fixture-publisher", StringComparison.Ordinal), "Publisher credential stays in memory and is excluded from JSON and diagnostic text");
+    try { using var duplicate = await operation.CompleteAsync(); throw new Exception("Approval reused."); }
+    catch (InvalidOperationException) { check(true, "A completed browser approval cannot be redeemed again"); }
+    session.Dispose();
+    check(session.AccessToken.Length == 0, "Signing out clears the usable in-memory publisher credential");
+
+    var wrongOriginServer = ServeOnceAsync(listener, _ => (200, JsonSerializer.Serialize(new { requestId = "fixture", url = "https://different.example/app-signin/", expiresIn = 300 }), null));
+    try { using var ignored = await PublisherSignInClient.BeginAsync(origin, allowLoopback: true); throw new Exception("Unrelated approval origin accepted."); }
+    catch (InvalidDataException) { check(true, "A publisher cannot redirect browser approval to another origin"); }
+    await wrongOriginServer;
+
+    var deniedServer = ServeOnceAsync(listener, _ => (401, "private-response-that-must-not-be-printed", null));
+    try { using var ignored = await PublisherSignInClient.BeginAsync(origin, allowLoopback: true); throw new Exception("Denied sign-in accepted."); }
+    catch (HttpRequestException error) { check(error.StatusCode == HttpStatusCode.Unauthorized && !error.Message.Contains("private-response", StringComparison.Ordinal), "Sign-in errors preserve status and redact response bodies"); }
+    await deniedServer;
 }
 
 static async Task ServeOnceAsync(TcpListener listener, Func<HttpRequest, (int Code, string Body, string? Location)> responder)
