@@ -1,0 +1,18 @@
+{
+  "formatVersion": 1,
+  "id": "heirowinstaller.hello",
+  "name": "heirowInstaller Hello",
+  "version": "1.0.0",
+  "publisher": "Example publisher",
+  "description": "A small native package for testing installation, repair, upgrade, and removal.",
+  "scope": "user",
+  "installDirectory": "{LocalAppData}/Programs/heirowInstaller/Hello",
+  "features": [
+    { "id": "core", "name": "Core files", "description": "The example readme.", "required": true },
+    { "id": "notes", "name": "Extra notes", "description": "An optional component.", "default": true }
+  ],
+  "payload": [
+    { "source": "hello.txt", "path": "hello.txt", "feature": "core" },
+    { "source": "notes.txt", "path": "docs/notes.txt", "feature": "notes" }
+  ]
+}

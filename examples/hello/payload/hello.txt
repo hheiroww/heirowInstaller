@@ -1,0 +1,3 @@
+Hello from heirowInstaller.
+
+This file is installed from a hash-verified native package.

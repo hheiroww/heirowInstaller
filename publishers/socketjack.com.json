@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "socketjack.com",
+  "name": "SocketJack",
+  "website": "https://socketjack.com",
+  "catalogUrl": "https://socketjack.com/api/installer/catalog",
+  "publishUrl": "https://socketjack.com/api/installer/publisher/releases",
+  "publicKeyFile": "socketjack.com.public.pem",
+  "publicKeySha256": "eab5ba01a94557088fd7b23d9569b2f289368964e9d4922a79970ecb13409e22",
+  "signatureAlgorithm": "RSA-PSS-SHA256"
+}

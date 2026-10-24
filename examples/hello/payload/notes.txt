@@ -1,0 +1,2 @@
+This optional feature demonstrates selectable package components.
+Repair restores package-owned files. Uninstall preserves unrelated files.

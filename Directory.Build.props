@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <Version>2026.10.24.1</Version>
+    <Authors>heirow</Authors>
+    <Company>SocketJack</Company>
+    <Product>heirowInstaller</Product>
+    <Copyright>Copyright (c) 2026 heirow</Copyright>
+    <RepositoryUrl>https://github.com/hheiroww/heirowInstaller</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+  </PropertyGroup>
+</Project>
