@@ -497,7 +497,14 @@ internal sealed class AcceptanceSuite
         {
             var restore = new DirectorySecurity(); restore.SetSecurityDescriptorBinaryForm(originalBytes, AccessControlSections.Access); fixture.SetAccessControl(restore);
         }
-        Equal(before, fixture.GetAccessControl(sections).GetSecurityDescriptorSddlForm(sections));
+        string NormalizeRestoredAcl(string sddl)
+        {
+            var descriptor = new RawSecurityDescriptor(sddl);
+            // Windows may set this bookkeeping flag when restoring an inherited DACL.
+            descriptor.SetFlags(descriptor.ControlFlags & ~ControlFlags.DiscretionaryAclAutoInherited);
+            return descriptor.GetSddlForm(sections);
+        }
+        Equal(NormalizeRestoredAcl(before), NormalizeRestoredAcl(fixture.GetAccessControl(sections).GetSecurityDescriptorSddlForm(sections)));
         var exclusivePath = Path.Combine(area, "exclusive-state.lock");
         using (var exclusive = new FileStream(exclusivePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose))
             True(!MachineStateSecurity.IsStateObjectProtected(exclusivePath));
