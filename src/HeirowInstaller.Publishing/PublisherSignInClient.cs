@@ -12,13 +12,15 @@ namespace HeirowInstaller.Publishing;
 public static class PublisherSignInClient
 {
     public static async Task<PublisherSignInOperation> BeginAsync(Uri publisher,
-        CancellationToken cancellationToken = default, bool allowLoopback = false)
+        CancellationToken cancellationToken = default, bool allowLoopback = false, string applicationId = "heirowinstaller")
     {
         if (!publisher.IsAbsoluteUri || publisher.UserInfo.Length != 0 ||
             (publisher.Scheme != Uri.UriSchemeHttps && !(allowLoopback && publisher.IsLoopback && publisher.Scheme == Uri.UriSchemeHttp)))
             throw new ArgumentException("Publisher sign-in requires HTTPS without credentials in the URL.", nameof(publisher));
+        if (string.IsNullOrEmpty(applicationId) || applicationId.Length > 64 || applicationId.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+            throw new ArgumentException("A valid registered application ID is required.", nameof(applicationId));
         var origin = new Uri(publisher.GetLeftPart(UriPartial.Authority) + "/");
-        var operation = new PublisherSignInOperation(origin, allowLoopback);
+        var operation = new PublisherSignInOperation(origin, allowLoopback, applicationId);
         try { await operation.BeginAsync(cancellationToken); return operation; }
         catch { operation.Dispose(); throw; }
     }
@@ -27,7 +29,7 @@ public static class PublisherSignInClient
 /// <summary>A single PKCE-bound approval, held in memory for at most five minutes.</summary>
 public sealed class PublisherSignInOperation : IDisposable
 {
-    private const string Application = "heirowinstaller";
+    private readonly string application;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly Uri origin;
     private readonly bool allowLoopback;
@@ -42,7 +44,7 @@ public sealed class PublisherSignInOperation : IDisposable
     private int completed;
     private int disposed;
 
-    internal PublisherSignInOperation(Uri origin, bool allowLoopback) { this.origin = origin; this.allowLoopback = allowLoopback; }
+    internal PublisherSignInOperation(Uri origin, bool allowLoopback, string application) { this.origin = origin; this.allowLoopback = allowLoopback; this.application = application; }
     public Uri BrowserUrl { get; private set; } = null!;
 
     internal async Task BeginAsync(CancellationToken cancellationToken)
@@ -54,7 +56,7 @@ public sealed class PublisherSignInOperation : IDisposable
         var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         using var response = await PostAsync("api/app-signin/requests",
-            new { application = Application, redirectUri = redirect.AbsoluteUri, state, challenge }, linked.Token);
+            new { application, redirectUri = redirect.AbsoluteUri, state, challenge }, linked.Token);
         var result = await ReadResponseAsync<Approval>(response, linked.Token);
         if (string.IsNullOrWhiteSpace(result.RequestId) || result.RequestId.Length > 128 || result.ExpiresIn is <= 0 or > 300 ||
             !Uri.TryCreate(result.Url, UriKind.Absolute, out var browser) || browser.UserInfo.Length != 0 ||
@@ -74,7 +76,7 @@ public sealed class PublisherSignInOperation : IDisposable
         {
             var code = await ReceiveCodeAsync(linked.Token);
             using var response = await PostAsync("api/app-signin/redeem",
-                new { requestId, application = Application, redirectUri = redirect.AbsoluteUri, code, verifier }, linked.Token);
+                new { requestId, application, redirectUri = redirect.AbsoluteUri, code, verifier }, linked.Token);
             var redeemed = await ReadResponseAsync<Redemption>(response, linked.Token);
             if (!redeemed.Authenticated || string.IsNullOrWhiteSpace(redeemed.AccessToken) || redeemed.AccessToken.Length > 8192 ||
                 redeemed.AccessToken.Any(character => character < 33 || character > 126) || redeemed.ExpiresUtc <= DateTimeOffset.UtcNow ||

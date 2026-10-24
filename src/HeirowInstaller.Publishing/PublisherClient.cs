@@ -43,8 +43,9 @@ public sealed class PublisherClient : IDisposable
         string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
     {
         var path = Path.GetFullPath(packagePath);
-        if (!string.Equals(Path.GetExtension(path), ".hinst", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Publish a verified .hinst package.", nameof(packagePath));
+        if (!string.Equals(Path.GetExtension(path), ".hinst", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Publish a signed .hinst package or standalone Setup.exe.", nameof(packagePath));
         // Hash and upload the same open file, denying writers while it is read.
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (file.Length == 0) throw new InvalidDataException("Package is empty.");

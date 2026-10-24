@@ -92,6 +92,18 @@ try
     }
     await deniedServer;
 
+    var standalone = Path.Combine(root, "application-Setup.exe");
+    File.Copy(package, standalone);
+    var standaloneServer = ServeOnceAsync(listener, request =>
+    {
+        using var metadata = JsonDocument.Parse(request.Body);
+        Check(metadata.RootElement.GetProperty("filename").GetString() == "application-Setup.exe", "Standalone setup executables use the same verified publisher upload protocol");
+        return (403, "", null);
+    });
+    try { await client.PublishAsync(standalone); throw new Exception("Denied standalone upload accepted."); }
+    catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden, "Standalone publication still requires real publisher authorization"); }
+    await standaloneServer;
+
     var redirectServer = ServeOnceAsync(listener, _ => (302, "", "https://other.example/collect"));
     try { await client.PublishAsync(package); throw new Exception("Publisher redirect was followed."); }
     catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Found, "Publisher redirects are refused"); }
@@ -174,6 +186,15 @@ static async Task BrowserSignInChecksAsync(TcpListener listener, Uri origin, Act
     try { using var ignored = await PublisherSignInClient.BeginAsync(origin, allowLoopback: true); throw new Exception("Unrelated approval origin accepted."); }
     catch (InvalidDataException) { check(true, "A publisher cannot redirect browser approval to another origin"); }
     await wrongOriginServer;
+
+    var applicationServer = ServeOnceAsync(listener, request =>
+    {
+        using var metadata = JsonDocument.Parse(request.Body);
+        check(metadata.RootElement.GetProperty("application").GetString() == "snap", "Application companions request their own registered identity for protected updates");
+        return (200, JsonSerializer.Serialize(new { requestId = "application-fixture", url = new Uri(origin, "app-signin/").AbsoluteUri, expiresIn = 300 }), null);
+    });
+    using (var applicationApproval = await PublisherSignInClient.BeginAsync(origin, allowLoopback: true, applicationId: "snap")) { }
+    await applicationServer;
 
     var deniedServer = ServeOnceAsync(listener, _ => (401, "private-response-that-must-not-be-printed", null));
     try { using var ignored = await PublisherSignInClient.BeginAsync(origin, allowLoopback: true); throw new Exception("Denied sign-in accepted."); }
