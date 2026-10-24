@@ -41,6 +41,7 @@ internal sealed class AcceptanceSuite
             ,("legacy executable defaults and explicit silent, target, and log overrides reach the actual child process", LegacyArguments)
             ,("machine state rejects writable or user-owned ACLs without changing them and preserves explicit isolation", MachineStateAcls)
             ,("user scope rejects selected machine integrations and spoofed machine receipt snapshots", IntegrationScope)
+            ,("updater host discovery prefers the installed process over single-file extraction directories", UpdaterHosts)
         };
         try
         {
@@ -439,8 +440,11 @@ internal sealed class AcceptanceSuite
         var feed = new UpdateFeed { ProductId = "test.trusted-handoff", Version = "2", PackageType = "hinst" };
         await using var server = new LoopbackServer(path => path == "/setup.hinst" ? installer : JsonSerializer.SerializeToUtf8Bytes(feed, InstallerJson.Options));
         var source = Path.Combine(area, "source"); Directory.CreateDirectory(source);
-        foreach (var file in Directory.EnumerateFiles(Path.GetDirectoryName(FindUpdaterCli())!, "*", SearchOption.TopDirectoryOnly))
-            if (Path.GetExtension(file).ToLowerInvariant() is ".exe" or ".dll" or ".json") File.Copy(file, Path.Combine(source, Path.GetFileName(file)));
+        if (System.Environment.GetEnvironmentVariable("HEIROWUPDATER_TEST_EXECUTABLE") is { Length: > 0 } publishedUpdater)
+            File.Copy(Path.GetFullPath(publishedUpdater), Path.Combine(source, "heirowUpdater.exe"));
+        else
+            foreach (var file in Directory.EnumerateFiles(Path.GetDirectoryName(FindUpdaterCli())!, "*", SearchOption.TopDirectoryOnly))
+                if (Path.GetExtension(file).ToLowerInvariant() is ".exe" or ".dll" or ".json") File.Copy(file, Path.Combine(source, Path.GetFileName(file)));
         File.WriteAllText(Path.Combine(source, "version-marker.txt"), "version one");
         var manifest = Manifest(feed.ProductId, "1"); manifest.UpdateUrl = server.Origin + "feed.json";
         var manifestPath = Path.Combine(area, "manifest.json"); File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
@@ -636,6 +640,28 @@ internal sealed class AcceptanceSuite
         }
         File.WriteAllText(originalProduct.ReceiptPath, originalReceipt);
         await engine.UninstallAsync(originalProduct.Id, installedOptions);
+    }
+
+    private Task UpdaterHosts()
+    {
+        var area = Area("updater-hosts");
+        var installed = Path.Combine(area, "installed"); var extracted = Path.Combine(area, "extracted");
+        var dotnet = Path.Combine(area, "dotnet"); var missing = Path.Combine(area, "missing");
+        foreach (var directory in new[] { installed, extracted, dotnet, missing }) Directory.CreateDirectory(directory);
+        string Fixture(string directory, string name) { var path = Path.Combine(directory, name); File.WriteAllText(path, "host discovery fixture"); return path; }
+        var updater = Fixture(installed, "heirowUpdater.exe");
+        var application = Fixture(installed, "CustomApplication.exe");
+        var fallback = Fixture(extracted, "heirowUpdater.exe");
+        var sharedHost = Fixture(dotnet, "dotnet.exe"); Fixture(dotnet, "heirowUpdater.exe");
+        Equal(updater, UpdaterHostResolver.FindExecutable(updater, extracted));
+        Equal(updater, UpdaterHostResolver.FindExecutable(application, extracted));
+        Equal(fallback, UpdaterHostResolver.FindExecutable(sharedHost, extracted));
+        Equal(fallback, UpdaterHostResolver.FindExecutable(null, extracted));
+        True(UpdaterHostResolver.FindExecutable(sharedHost, missing) is null);
+        True(UpdaterHostResolver.IsProcessInsideDirectory(installed, updater));
+        True(!UpdaterHostResolver.IsProcessInsideDirectory(installed, Path.Combine(area, "installed-other", "heirowUpdater.exe")));
+        True(!UpdaterHostResolver.IsProcessInsideDirectory(installed, sharedHost));
+        return Task.CompletedTask;
     }
 
     private string Area(string name) { var path = Path.Combine(root, name); Directory.CreateDirectory(path); return path; }

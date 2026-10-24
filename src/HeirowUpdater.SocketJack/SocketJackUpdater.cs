@@ -118,17 +118,17 @@ public sealed class SocketJackUpdater : IDisposable
             if (!package.Manifest.Id.Equals(target.ProductId, StringComparison.OrdinalIgnoreCase) || package.Manifest.Version != update.Feed.Version)
                 throw new InvalidDataException("Handoff package identity does not match the update feed.");
         }
-        var host = Path.Combine(AppContext.BaseDirectory, "heirowUpdater.exe");
-        if (!File.Exists(host)) throw new FileNotFoundException("The currently trusted heirowUpdater apphost is missing.");
+        var host = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The currently trusted heirowUpdater apphost is missing.");
+        var hostDirectory = Path.GetDirectoryName(host)!;
         var stage = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "staging", Guid.NewGuid().ToString("N"));
         if (policy.Isolated) stage = Path.Combine(policy.DownloadDirectory ?? Path.GetDirectoryName(download)!, "trusted-helper-" + Guid.NewGuid().ToString("N"));
         PackageSafety.EnsureNoReparsePoints(stage); Directory.CreateDirectory(stage);
         var names = new[] { "heirowUpdater.exe", "heirowUpdater.deps.json", "heirowUpdater.runtimeconfig.json", "heirowInstaller.Cli.exe", "heirowInstaller.Cli.deps.json", "heirowInstaller.Cli.runtimeconfig.json" }
-            .Concat(Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll", SearchOption.TopDirectoryOnly).Select(Path.GetFileName).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase);
+            .Concat(Directory.EnumerateFiles(hostDirectory, "*.dll", SearchOption.TopDirectoryOnly).Select(Path.GetFileName).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase);
         foreach (var name in names)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var source = Path.Combine(AppContext.BaseDirectory, name);
+            var source = Path.Combine(hostDirectory, name);
             PackageSafety.EnsureNoReparsePoints(source);
             if (File.Exists(source)) File.Copy(source, PackageSafety.UnderRoot(stage, name));
         }
@@ -149,10 +149,14 @@ public sealed class SocketJackUpdater : IDisposable
     }
     private static string? FindInstaller()
     {
-        var cli = Path.Combine(AppContext.BaseDirectory, "heirowInstaller.Cli.exe");
-        if (File.Exists(cli)) return cli;
-        var app = Path.Combine(AppContext.BaseDirectory, "heirowInstaller.exe");
-        return File.Exists(app) ? app : null;
+        foreach (var directory in UpdaterHostResolver.HostDirectories())
+        {
+            var cli = Path.Combine(directory, "heirowInstaller.Cli.exe");
+            if (File.Exists(cli)) return cli;
+            var app = Path.Combine(directory, "heirowInstaller.exe");
+            if (File.Exists(app)) return app;
+        }
+        return null;
     }
     public void Dispose() => client.Dispose();
 }

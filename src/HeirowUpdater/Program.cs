@@ -184,9 +184,8 @@ Credentials remain in environment variables and are sent only to their exact con
     private static async Task<int> ElevateAsync(string[] arguments, CancellationToken token)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Administrator handoff requires Windows.");
-        var executable = Path.Combine(AppContext.BaseDirectory, "heirowUpdater.exe");
-        if (!File.Exists(executable)) throw new FileNotFoundException("The updater apphost is missing; run the published heirowUpdater executable.");
-        var start = new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas", WorkingDirectory = AppContext.BaseDirectory };
+        var executable = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The updater apphost is missing; run the published heirowUpdater executable.");
+        var start = new ProcessStartInfo(executable) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(executable)! };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         start.ArgumentList.Add("--scope"); start.ArgumentList.Add("machine");
         start.ArgumentList.Add("--elevated-child");
@@ -197,9 +196,7 @@ Credentials remain in environment variables and are sent only to their exact con
     private static bool IsCurrentApplication(UpdaterTarget target)
     {
         if (target.InstallDirectory is null) return false;
-        var root = Path.GetFullPath(target.InstallDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var host = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "heirowUpdater.exe"));
-        return host.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        return UpdaterHostResolver.IsProcessInsideDirectory(target.InstallDirectory);
     }
     private static async Task<int> ApplyBundleAsync(Arguments args, CancellationToken token)
     {

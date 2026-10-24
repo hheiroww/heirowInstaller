@@ -64,6 +64,8 @@ heirowUpdater disable
 
 The desktop Updates page exposes these same companion operations. Account-protected publishers can supply credential environment-variable names; values stay outside manifests and source control and are sent only to the configured HTTPS origin.
 
+The companion's published single-file host discovery is fixed in 2026.10.24.3. To upgrade heirowInstaller itself from .1 or .2, use **Installed apps → Update** in the desktop app or download the latest Setup once.
+
 ## Publish
 
 The SocketJack.com publisher accepts immutable `.hinst` versions through bounded, hash-verified chunks. Sign in with an authorized publisher account in the browser, or use the CLI with a credential environment variable:
