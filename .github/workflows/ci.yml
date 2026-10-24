@@ -20,3 +20,45 @@ jobs:
         run: dotnet build src/HeirowInstaller.App/HeirowInstaller.App.csproj -c Release --nologo
       - name: CLI
         run: dotnet build src/HeirowInstaller.Cli/HeirowInstaller.Cli.csproj -c Release --nologo
+
+  wix-authoring:
+    name: WiX authoring and machine maintenance
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Install the explicit official WiX compatibility backend
+        run: dotnet tool install wix --version 5.0.2 --tool-path artifacts/tools/wix5
+      - name: Publish standalone maintenance executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $common = @('-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:IncludeAllContentForSelfExtract=true', '-m:1', '-nr:false', '-p:UseSharedCompilation=false', '--nologo')
+          dotnet publish src/HeirowInstaller.Cli/HeirowInstaller.Cli.csproj @common -o artifacts/ci/wix/cli
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone CLI publication failed.' }
+          dotnet publish src/HeirowUpdater/HeirowUpdater.csproj @common -o artifacts/ci/wix/updater
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone updater publication failed.' }
+      - name: Compile and exercise real MSI, MSM, MSP, and machine maintenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Test-WixAuthoring.ps1 -Cli artifacts/ci/wix/cli/heirowInstaller.Cli.exe -Wix artifacts/tools/wix5/wix.exe -Companion artifacts/ci/wix/updater/heirowUpdater.exe -CompanionScope machine -OutputDirectory artifacts/wix-authoring/ci
+          $receipt = Get-Content -LiteralPath artifacts/wix-authoring/ci/receipt.json -Raw | ConvertFrom-Json
+          if ($receipt.passed -lt 45) { throw 'The complete WiX and companion maintenance acceptance suite did not pass.' }
+          foreach ($required in @(
+            'The real MSI installs into the exact directory containing spaces through the adapter',
+            'The real MSI accepts a spaced log filename and preserves literal property quotes'
+          )) {
+            if ($required -notin $receipt.checks) { throw ('Missing actual Windows Installer regression: ' + $required) }
+          }
+      - name: Retain only the non-secret acceptance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wix-authoring-receipt
+          path: artifacts/wix-authoring/ci/receipt.json
+          if-no-files-found: warn
+          retention-days: 14
