@@ -33,7 +33,7 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
         try
         {
             using var client = new global::SocketJack.Net.HttpClient { Timeout = TimeSpan.FromSeconds(30), MaxRedirects = 0 };
-            client.DefaultHeaders["User-Agent"] = "heirowUpdater/2026.10.24.1 SocketJack/2026.10.24";
+            client.DefaultHeaders["User-Agent"] = $"heirowUpdater/{typeof(SocketJackUpdateTransport).Assembly.GetName().Version} SocketJack/2026.10.24";
             client.DefaultHeaders["Accept-Encoding"] = "identity";
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (credentialOrigin is not null && SameOrigin(uri, credentialOrigin))

@@ -84,6 +84,9 @@ public sealed class InstallerEngine
         foreach (var feature in manifest.Features.Where(x => x.Required)) selected.Add(feature.Id);
         if (selected.Any(x => !manifest.Features.Any(f => f.Id.Equals(x, StringComparison.OrdinalIgnoreCase))))
             throw new InvalidDataException("An unknown feature was selected.");
+        if (scope == "user" && (manifest.Services.Any(x => IsSelected(x.Feature, selected)) ||
+            manifest.Registry.Any(x => x.Hive == "machine" && IsSelected(x.Feature, selected))))
+            throw new InvalidDataException("Machine registry values and Windows services require machine installation scope. Select --scope machine.");
         var files = manifest.Payload.Where(x => x.Feature is null || selected.Contains(x.Feature)).ToList();
         if (manifest.LegacyMsi is { } msi && !files.Any(x => x.Path.Equals(msi.PayloadPath, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("The MSI payload cannot be excluded by feature selection.");
@@ -343,6 +346,7 @@ public sealed class InstallerEngine
 
     private async Task RestoreModulesAsync(InstalledProduct product, InstallTransaction transaction, InstallOptions options, CancellationToken token)
     {
+        ValidateReceiptIntegrationScope(product);
         var plan = new InstallPlan { InstallDirectory = product.InstallDirectory, Scope = product.Scope, Features = product.Features };
         foreach (var snapshot in product.Modules.Where(x => x.Kind.StartsWith("extension:", StringComparison.Ordinal)).Reverse())
         {
@@ -418,6 +422,7 @@ public sealed class InstallerEngine
         if (!string.Equals(Path.GetFileName(Path.GetDirectoryName(receipt)), product.Id, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Receipt product ID does not match its cache directory.");
         if (product.Scope is not ("user" or "machine")) throw new InvalidDataException("Invalid receipt scope.");
         if (expectedScope is not null && product.Scope != expectedScope) return null;
+        ValidateReceiptIntegrationScope(product);
         // A custom-root listing initially reads only metadata. Re-open a non-isolated machine receipt under its validated namespace before returning trusted maintenance state.
         if (OperatingSystem.IsWindows() && expectedScope is null && product.Scope == "machine" && !product.Isolated && !isolated)
             return ReadReceipt(receipt, "machine");
@@ -434,6 +439,16 @@ public sealed class InstallerEngine
             if (file.OriginalBackup is { } backup) _ = PackageSafety.UnderRoot(cache, backup);
         }
         return product;
+    }
+
+    private static void ValidateReceiptIntegrationScope(InstalledProduct product)
+    {
+        if (product.Scope != "user") return;
+        foreach (var snapshot in product.Modules)
+            if (snapshot.Kind == "service" ||
+                snapshot.Kind == "registry" && snapshot.Values.TryGetValue("hive", out var hive) && hive == "machine" ||
+                snapshot.Kind == "environment" && snapshot.Values.TryGetValue("scope", out var scope) && scope == "machine")
+                throw new InvalidDataException("User-scoped installation receipts cannot contain machine integration snapshots.");
     }
 
     internal static string Expand(string value, string installDirectory) => System.Environment.ExpandEnvironmentVariables(value

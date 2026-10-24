@@ -11,6 +11,9 @@ public static class PackageBuilder
     {
         sourceDirectory = Path.GetFullPath(sourceDirectory);
         outputPath = Path.GetFullPath(outputPath);
+        var signingKeyPath = options?.SigningKeyPath is { } keyPath ? Path.GetFullPath(keyPath) : null;
+        if (outputPath.Equals(signingKeyPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Output cannot overwrite the signing key.");
         PackageSafety.EnsureNoReparsePoints(sourceDirectory);
         var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath), InstallerJson.Options)
                        ?? throw new InvalidDataException("Manifest is empty.");
@@ -29,6 +32,8 @@ public static class PackageBuilder
             if (file.Path.Length == 0) file.Path = file.Source;
             if (file.Source.Length == 0) file.Source = file.Path;
             var input = PackageSafety.UnderRoot(sourceDirectory, file.Source);
+            if (input.Equals(signingKeyPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The signing key cannot be included as a payload source.");
             if (!File.Exists(input)) throw new FileNotFoundException($"Payload source does not exist: {file.Source}");
             if (input.Equals(outputPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Output cannot be a payload source.");
             file.Size = new FileInfo(input).Length;
@@ -53,10 +58,10 @@ public static class PackageBuilder
                     using var output = entry.Open();
                     input.CopyTo(output);
                 }
-                if (options?.SigningKeyPath is { } keyPath)
+                if (signingKeyPath is not null)
                 {
                     using var rsa = RSA.Create();
-                    rsa.ImportFromPem(File.ReadAllText(keyPath));
+                    rsa.ImportFromPem(File.ReadAllText(signingKeyPath));
                     if (rsa.KeySize < 2048) throw new InvalidDataException("RSA signing keys must be at least 2048 bits.");
                     var signature = new PackageSignature
                     {

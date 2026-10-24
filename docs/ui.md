@@ -21,10 +21,22 @@ and 16× anisotropic filtering, with pixel-aligned vector text.
   and uninstall. Uninstall requires a native confirmation. External EXE packages
   expose only maintenance operations that their publisher authored; Windows
   Installed apps is available when no external uninstall command was supplied.
+  Updating a selected machine product requests Windows UAC through the current
+  trusted installer host and waits for completion. It preserves installed
+  features, scope, registration and the original adapter destination. The child
+  requires an existing publisher-key pin and checks the signed package, product,
+  version and download digest before planning or installing it. Machine
+  self-updates use the same pin requirement and release binding.
 - **Build & publish** builds a verified `.hinst` from a manifest and application
   files and publishes through the shared SocketJack publisher client. Publisher
   credentials come from `SOCKETJACK_PUBLISHER_TOKEN` or `SOCKETJACK_PUBLISHER_COOKIE`; they are not saved in the
   settings or manifests. The publisher client owns upload limits and transport.
+  To sign a native Build operation, set `HEIROWINSTALLER_SIGNING_KEY_PATH` to your
+  RSA private-key PEM path before launching the desktop app. The environment
+  variable is optional; the app has no default signing key and does not save
+  the key or its path in desktop settings. Keep signing keys outside payload
+  source folders. The package builder rejects including the active signing key
+  in a package payload.
 - **Updates** runs the separate `heirowUpdater.exe` companion and displays its
   actual results. The complete release places that companion beside the desktop
   executable. Its native controls check or update all products, enable or disable
@@ -53,6 +65,10 @@ arguments are supported by compatible adapter packages. Self-updates copy the
 currently installed trusted helper outside the application's folder, verify the
 downloaded package and publisher key, install its signed payload as data, and
 relaunch the updated entry point. The downloaded EXE prefix never runs.
+Internal update handoffs use `--expected-product-id`, `--expected-version` and
+`--expected-sha256` to bind the child to the checked release. Product and version
+must be supplied together. `--no-register` preserves a product that was installed
+without a separate heirowInstaller Windows registration.
 
 For framework development only, pass `-p:UseLocalProjectZ=true` and, if needed,
 `-p:ProjectZRoot=...`. Release builds use the pinned public package.

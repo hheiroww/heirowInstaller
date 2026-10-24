@@ -86,6 +86,7 @@ internal sealed class AppController
             var loaded = await Task.Run(async () =>
             {
                 using var package = PackageReader.Open(path);
+                arguments.ValidatePackageIdentity(package);
                 await package.VerifyAsync(cancellationToken: Cancellation!.Token);
                 string? license = null;
                 if (!string.IsNullOrWhiteSpace(package.Manifest.LicenseFile))
@@ -131,6 +132,7 @@ internal sealed class AppController
     {
         if (Manifest is null) return;
         using var reader = PackageReader.Open(PackagePath);
+        arguments.ValidatePackageIdentity(reader);
         Plan = engine.Plan(reader, Options());
         if (string.IsNullOrWhiteSpace(TargetDirectory) && !OriginalInstallerDestination) TargetDirectory = Plan.InstallDirectory;
     }
@@ -157,7 +159,7 @@ internal sealed class AppController
         StateRoot = arguments.StateRoot,
         Scope = Scope,
         Features = Features.ToList(),
-        RegisterProduct = !arguments.Isolated && Settings.RegisterProducts,
+        RegisterProduct = !arguments.Isolated && !arguments.NoRegister && Settings.RegisterProducts,
         Isolated = arguments.Isolated,
         Silent = arguments.Silent,
         Launch = arguments.SmokeDirectory is null && Settings.LaunchAfterInstall,
@@ -203,6 +205,7 @@ internal sealed class AppController
             var result = await Task.Run(async () =>
             {
                 using var reader = PackageReader.Open(packagePath);
+                arguments.ValidatePackageIdentity(reader);
                 return await engine.InstallAsync(reader, options, Reporter(), Cancellation!.Token);
             });
             await game.OnUiAsync(() =>
@@ -256,12 +259,14 @@ internal sealed class AppController
         StateRoot = arguments.StateRoot,
         TargetDirectory = product.UseOriginalInstallDirectory ? null : product.InstallDirectory,
         Scope = product.Scope,
+        Features = product.Features.ToList(),
         RegisterProduct = product.RegisteredProduct,
         Isolated = product.Isolated,
         InstallerPath = Environment.ProcessPath,
         Silent = arguments.Silent,
         TrustedPublisherKeySha256 = product.PublisherKeySha256,
-        RequireSignature = product.PublisherKeySha256 is not null
+        RequireSignature = product.PublisherKeySha256 is not null,
+        LogPath = arguments.LogPath
     };
 
     internal static bool NeedsMaintenanceElevation(InstalledProduct product) => !product.Isolated && !InstallerEngine.IsElevated &&
@@ -315,8 +320,14 @@ internal sealed class AppController
                 await game.OnUiAsync(game.Exit);
                 return;
             }
-            await client.ApplyAsync(download, update.Feed, OptionsFor(product), Reporter(), Cancellation.Token);
-            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End("Update installed", $"{product.Name} {update.Feed.Version} is ready."); });
+            InstallResult result;
+            if (NeedsMaintenanceElevation(product))
+            {
+                await game.OnUiAsync(() => { Status = "Installing update"; StatusDetail = "Windows will request administrator access."; Notify(); });
+                result = await DesktopElevatedUpdate.InstallAsync(download, update.Feed, product, OptionsFor(product), Reporter(), Cancellation.Token);
+            }
+            else result = await client.ApplyAsync(download, update.Feed, OptionsFor(product), Reporter(), Cancellation.Token);
+            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End(result.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); });
         }
         catch (Exception error) { await ErrorAsync("Update stopped", error); }
     }
@@ -328,8 +339,10 @@ internal sealed class AppController
         var manifest = ManifestPath; var source = SourceDirectory; var output = OutputPath;
         try
         {
-            var result = await Task.Run(() => PackageBuilder.Build(manifest, source, output));
-            await game.OnUiAsync(() => { BuiltPackagePath = Path.GetFullPath(output); End("Package built and verified", $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes"); });
+            var signingKey = Environment.GetEnvironmentVariable("HEIROWINSTALLER_SIGNING_KEY_PATH");
+            var options = new PackageBuildOptions { SigningKeyPath = string.IsNullOrWhiteSpace(signingKey) ? null : signingKey };
+            var result = await Task.Run(() => PackageBuilder.Build(manifest, source, output, options));
+            await game.OnUiAsync(() => { BuiltPackagePath = Path.GetFullPath(output); End(options.SigningKeyPath is null ? "Package built and verified" : "Signed package built and verified", $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes"); });
         }
         catch (Exception error) { await ErrorAsync("Build failed", error); }
     }

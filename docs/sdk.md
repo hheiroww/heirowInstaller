@@ -20,6 +20,8 @@ await engine.InstallAsync(package, new InstallOptions
 
 Manifests support files, selectable features, registry entries, shortcuts, environment values, services, prerequisites, and existing MSI/EXE backends. Payload paths are relative, case-insensitive Windows destinations. The builder records each payload's SHA-256 and length. Installations retain receipts and their repair source. Imported backends preserve their authored installation rules; native operations use the transaction and rollback engine.
 
+Selected Windows services and machine registry entries require machine installation scope, which keeps their maintenance state under protected administrator-owned storage. Excluded optional machine features do not require that scope. User receipts cannot restore machine integration snapshots.
+
 Implement `IInstallerModule` for additional installation behavior and register instances explicitly with `new InstallerEngine(modules)`. A module supplies a plan, installation, and removal routine. Enlist rollback before each mutation and return a durable `ModuleSnapshot` containing the original state. Native helpers in `InstallerModuleContext` resolve paths under the target and participate in the active transaction. Modules are trusted application code; packages do not auto-load arbitrary extension DLLs.
 
 For application updates, reference `HeirowUpdater.SocketJack`:

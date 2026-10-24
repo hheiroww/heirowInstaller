@@ -15,11 +15,15 @@ internal static class DesktopUpdateHandoff
 
     internal static void Start(string download, UpdateFeed feed, InstalledProduct product, InstallOptions options)
     {
+        if (product.Scope == "machine" && string.IsNullOrWhiteSpace(product.PublisherKeySha256))
+            throw new System.Security.Cryptography.CryptographicException("Administrator self-updates require the installed product's pinned publisher key. Reinstall from the publisher's signed installer before updating it.");
         if (!feed.PackageType.Equals("hinst", StringComparison.OrdinalIgnoreCase) &&
             !(feed.PackageType.Equals("exe", StringComparison.OrdinalIgnoreCase) && PackageReader.HasEmbeddedPackage(download)))
             throw new InvalidOperationException("Updating heirowInstaller itself requires a .hinst package or a bundled heirowInstaller executable.");
         using (var package = PackageReader.Open(download))
         {
+            if (!PackageSafety.HashEquals(PackageSafety.HashFile(download), feed.Sha256))
+                throw new System.Security.Cryptography.CryptographicException("The downloaded self-update changed before handoff.");
             package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
             if (!package.Manifest.Id.Equals(product.Id, StringComparison.OrdinalIgnoreCase) || package.Manifest.Version != feed.Version)
                 throw new InvalidDataException("The update package does not match the selected product and release.");
@@ -32,13 +36,19 @@ internal static class DesktopUpdateHandoff
         if (product.Scope == "machine" && !InstallerEngine.IsElevated) start.Verb = "runas";
         start.ArgumentList.Add("--silent");
         start.ArgumentList.Add("--install"); start.ArgumentList.Add(download);
+        start.ArgumentList.Add("--expected-product-id"); start.ArgumentList.Add(product.Id);
+        start.ArgumentList.Add("--expected-version"); start.ArgumentList.Add(feed.Version);
+        start.ArgumentList.Add("--expected-sha256"); start.ArgumentList.Add(feed.Sha256);
         start.ArgumentList.Add("--wait-pid"); start.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         start.ArgumentList.Add("--wait-start"); start.ArgumentList.Add(Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        start.ArgumentList.Add("--target"); start.ArgumentList.Add(product.InstallDirectory);
+        if (!product.UseOriginalInstallDirectory) { start.ArgumentList.Add("--target"); start.ArgumentList.Add(product.InstallDirectory); }
         start.ArgumentList.Add("--scope"); start.ArgumentList.Add(product.Scope);
+        start.ArgumentList.Add("--features"); start.ArgumentList.Add(string.Join(',', product.Features));
         if (options.StateRoot is not null) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(options.StateRoot); }
         if (options.Isolated) start.ArgumentList.Add("--isolated");
         if (product.PublisherKeySha256 is { } trustedKey) { start.ArgumentList.Add("--trust-key"); start.ArgumentList.Add(trustedKey); start.ArgumentList.Add("--require-signature"); }
+        if (!options.RegisterProduct) start.ArgumentList.Add("--no-register");
+        if (options.LogPath is not null) { start.ArgumentList.Add("--log"); start.ArgumentList.Add(options.LogPath); }
         start.ArgumentList.Add("--launch");
         _ = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the update installer.");
     }

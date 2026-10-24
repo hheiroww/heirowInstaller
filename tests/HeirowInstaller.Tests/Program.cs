@@ -27,6 +27,7 @@ internal sealed class AcceptanceSuite
             ("cancellation rolls back partially installed files", Cancellation),
             ("payload tampering, duplicate archive entries, traversal and invalid module paths are rejected", InvalidPackages),
             ("RSA package signatures require the configured trusted publisher key", Signatures),
+            ("package creation rejects its known signing key as payload and preserves existing files", SigningKeyPrivacy),
             ("single executable bundle verifies its bounded package and detects overlay tampering", Bundles),
             ("HTTP loopback full-download update verifies SHA256 and installs the new version", Updates),
             ("explicit installer modules participate in planning, rollback, and uninstall", Modules),
@@ -39,6 +40,7 @@ internal sealed class AcceptanceSuite
             ,("the updater exits and a copied trusted helper replaces its own application safely", TrustedSelfHandoff)
             ,("legacy executable defaults and explicit silent, target, and log overrides reach the actual child process", LegacyArguments)
             ,("machine state rejects writable or user-owned ACLs without changing them and preserves explicit isolation", MachineStateAcls)
+            ,("user scope rejects selected machine integrations and spoofed machine receipt snapshots", IntegrationScope)
         };
         try
         {
@@ -186,6 +188,45 @@ internal sealed class AcceptanceSuite
             using var writer = new StreamWriter(zip.CreateEntry("manifest.json").Open()); writer.Write(json.Replace("test.signature", "test.attacker", StringComparison.Ordinal));
         }
         await Throws<CryptographicException>(() => { using var ignored = PackageReader.Open(packagePath); return Task.CompletedTask; });
+    }
+
+    private async Task SigningKeyPrivacy()
+    {
+        var area = Area("signing-key-privacy"); using var rsa = RSA.Create(2048);
+        var source = Path.Combine(area, "source"); Directory.CreateDirectory(Path.Combine(source, "config"));
+        var key = Path.Combine(source, "config", "publisher.bin");
+        var keyBytes = Encoding.UTF8.GetBytes(rsa.ExportPkcs8PrivateKeyPem()); File.WriteAllBytes(key, keyBytes);
+        File.WriteAllText(Path.Combine(source, "app.txt"), "application payload");
+        var keyAlias = Path.Combine(source, "config", ".", "publisher.bin");
+        if (OperatingSystem.IsWindows()) keyAlias = keyAlias.ToUpperInvariant();
+        var options = new PackageBuildOptions { SigningKeyPath = keyAlias };
+        var manifestPath = Path.Combine(area, "manifest.json");
+        foreach (var explicitPayload in new[] { false, true })
+        foreach (var existingOutput in new[] { false, true })
+        {
+            var manifest = Manifest("test.signing-key-privacy", "1");
+            if (explicitPayload) manifest.Payload = [new() { Source = "config/publisher.bin", Path = "renamed-material.bin" }];
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
+            var output = Path.Combine(area, $"rejected-{explicitPayload}-{existingOutput}.hinst");
+            var sentinel = Encoding.UTF8.GetBytes("preserve the previous output");
+            if (existingOutput) File.WriteAllBytes(output, sentinel);
+            await Throws<InvalidDataException>(() => { PackageBuilder.Build(manifestPath, source, output, options); return Task.CompletedTask; });
+            True(File.ReadAllBytes(key).SequenceEqual(keyBytes));
+            if (existingOutput) True(File.ReadAllBytes(output).SequenceEqual(sentinel));
+            else True(!File.Exists(output));
+            True(!Directory.EnumerateFiles(area, Path.GetFileName(output) + ".*.tmp").Any());
+        }
+        // Unrelated application data remains valid, even when its filename matches the signing key.
+        Directory.CreateDirectory(Path.Combine(source, "data")); File.WriteAllText(Path.Combine(source, "data", "publisher.bin"), "legitimate application data");
+        var allowed = Manifest("test.signing-key-privacy", "1");
+        allowed.Payload = [new() { Source = "app.txt", Path = "app.txt" }, new() { Source = "data/publisher.bin", Path = "data/publisher.bin" }];
+        File.WriteAllText(manifestPath, JsonSerializer.Serialize(allowed, InstallerJson.Options));
+        await Throws<InvalidDataException>(() => { PackageBuilder.Build(manifestPath, source, key, options); return Task.CompletedTask; });
+        True(File.ReadAllBytes(key).SequenceEqual(keyBytes));
+        var valid = Path.Combine(area, "allowed.hinst"); PackageBuilder.Build(manifestPath, source, valid, options);
+        using var package = PackageReader.Open(valid); await package.VerifyAsync();
+        Equal(2, package.Manifest.Payload.Count);
+        True(File.ReadAllBytes(key).SequenceEqual(keyBytes));
     }
 
     private async Task Bundles()
@@ -536,6 +577,65 @@ internal sealed class AcceptanceSuite
         await Throws<UnauthorizedAccessException>(() => engine.RepairAsync(manifest.Id, new() { StateRoot = isolated.StateRoot, Scope = "machine" }));
         await engine.RepairAsync(manifest.Id, isolated);
         await engine.UninstallAsync(manifest.Id, isolated);
+    }
+
+    private async Task IntegrationScope()
+    {
+        var area = Area("integration-scope"); var engine = new InstallerEngine();
+        foreach (var kind in new[] { "registry", "service" })
+        {
+            var manifest = Manifest("test.scope-" + kind, "1");
+            manifest.Features = [new() { Id = "system", Default = false }];
+            if (kind == "registry") manifest.Registry = [new() { Hive = "machine", Key = "Software\\SocketJack\\heirowInstaller\\Tests", Name = "fixture", Value = "never written", Feature = "system" }];
+            else manifest.Services = [new() { Name = "heirowInstallerScopeFixture", Executable = "app.txt", Feature = "system" }];
+            var path = Build(area, kind, manifest, new() { ["app.txt"] = "plan only" });
+            using var package = PackageReader.Open(path);
+            var options = Options(area, Path.Combine(area, kind + "-target"));
+            var excluded = engine.Plan(package, options);
+            Equal("user", excluded.Scope); True(!excluded.RequiresElevation);
+            options.Features = ["system"];
+            await Throws<InvalidDataException>(() => { engine.Plan(package, options); return Task.CompletedTask; });
+            await Throws<InvalidDataException>(() => engine.InstallAsync(package, options));
+            True(!Directory.Exists(options.StateRoot) && !Directory.Exists(options.TargetDirectory));
+            options.Scope = "machine";
+            var machine = engine.Plan(package, options); Equal("machine", machine.Scope); True(machine.RequiresElevation);
+            package.Manifest.Scope = "machine"; options.Scope = "user";
+            await Throws<InvalidDataException>(() => { engine.Plan(package, options); return Task.CompletedTask; });
+        }
+
+        var safeManifest = Manifest("test.scope-receipt", "1");
+        var safePath = Build(area, "safe", safeManifest, new() { ["app.txt"] = "unchanged installed payload" });
+        using var safePackage = PackageReader.Open(safePath);
+        var installedOptions = Options(area, Path.Combine(area, "installed"));
+        await engine.InstallAsync(safePackage, installedOptions);
+        var originalProduct = InstallerEngine.ListInstalled(installedOptions.StateRoot).Single();
+        var originalReceipt = File.ReadAllText(originalProduct.ReceiptPath);
+        foreach (var snapshot in new ModuleSnapshot[]
+        {
+            new() { Kind = "service", Key = "never touched" },
+            new() { Kind = "registry", Values = new() { ["hive"] = "machine" } },
+            new() { Kind = "environment", Values = new() { ["scope"] = "machine" } }
+        })
+        {
+            var spoofed = JsonSerializer.Deserialize<InstalledProduct>(originalReceipt, InstallerJson.Options)!;
+            spoofed.Modules = [snapshot];
+            // Maintenance remains isolated even if this test runs against a regression.
+            File.WriteAllText(originalProduct.ReceiptPath, JsonSerializer.Serialize(spoofed, InstallerJson.Options));
+            var rejectedReceipt = File.ReadAllText(originalProduct.ReceiptPath);
+            Equal(0, InstallerEngine.ListInstalled(installedOptions.StateRoot).Count);
+            await Throws<InvalidDataException>(() => engine.RepairAsync(spoofed.Id, Options(area, originalProduct.InstallDirectory)));
+            await Throws<InvalidDataException>(() => engine.UninstallAsync(spoofed.Id, Options(area, originalProduct.InstallDirectory)));
+            await Throws<InvalidDataException>(() => engine.InstallAsync(safePackage, installedOptions));
+            Equal(rejectedReceipt, File.ReadAllText(originalProduct.ReceiptPath));
+            Equal("unchanged installed payload", File.ReadAllText(Path.Combine(originalProduct.InstallDirectory, "app.txt")));
+            // Non-isolated receipt metadata is rejected by planning without invoking OS integrations.
+            spoofed.Isolated = false;
+            File.WriteAllText(originalProduct.ReceiptPath, JsonSerializer.Serialize(spoofed, InstallerJson.Options));
+            await Throws<InvalidDataException>(() => { engine.Plan(safePackage, installedOptions); return Task.CompletedTask; });
+            Equal(0, InstallerEngine.ListInstalled(installedOptions.StateRoot).Count);
+        }
+        File.WriteAllText(originalProduct.ReceiptPath, originalReceipt);
+        await engine.UninstallAsync(originalProduct.Id, installedOptions);
     }
 
     private string Area(string name) { var path = Path.Combine(root, name); Directory.CreateDirectory(path); return path; }

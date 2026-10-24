@@ -45,6 +45,8 @@ heirowInstaller.Cli uninstall heirowinstaller.hello
 
 `bundle` combines a package with the published Project-Z launcher to produce one setup EXE. `import-msi` and `import-exe` preserve an existing installer's backend. See [compatibility](docs/compatibility.md), [desktop UI](docs/ui.md), and each executable's `--help` for the complete command contract.
 
+For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. Keep the private key outside the payload directory. The desktop builder also accepts its path through `HEIROWINSTALLER_SIGNING_KEY_PATH`; the path is never saved in project or desktop settings. SocketJack.com publication requires an approved publisher signature and an authorized account.
+
 ## Application updates
 
 heirowUpdater uses **SocketJack.Net.HttpClient** from the published `SocketJack` 2026.10.24 package for release checks and downloads. It validates every redirect, verifies the downloaded SHA-256, and pins the package publisher key recorded at installation. Signed embedded packages are installed as data by the current trusted engine; a package signature does not authenticate an arbitrary EXE prefix.
