@@ -12,7 +12,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
-$sourceCommit = (& git -C $projectRoot rev-parse --verify HEAD 2>$null | Select-Object -First 1)
+$sourceCommit = (& git -C $projectRoot rev-parse --verify HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'Build from the committed heirowInstaller repository so release provenance can be recorded.' }
 if (-not $Version) { $Version = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot "artifacts/release/$Version" }
