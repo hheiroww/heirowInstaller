@@ -65,10 +65,20 @@ internal static class WindowsIntegration
             if (!shortcuts.Add(path)) throw new InvalidDataException("Duplicate shortcut destination.");
             var target = PackageSafety.UnderRoot(plan.InstallDirectory, definition.Target);
             if (!File.Exists(target)) throw new FileNotFoundException("Shortcut target is not installed: " + definition.Target);
+            var arguments = definition.Arguments;
+            var applicationTarget = target;
+            if (plan.UpdateCompanionEnabled && definition.Target.Equals(manifest.EntryPoint, StringComparison.OrdinalIgnoreCase))
+            {
+                var companion = manifest.UpdateCompanion!;
+                target = PackageSafety.UnderRoot(plan.InstallDirectory, companion.ExecutablePath);
+                var configuration = PackageSafety.UnderRoot(plan.InstallDirectory, companion.ConfigurationPath);
+                if (!File.Exists(target) || !File.Exists(configuration)) throw new FileNotFoundException("The selected app-local updater is not installed.");
+                arguments = "launch --config " + Quote(configuration) + " --" + (arguments.Length > 0 ? " " + arguments : "");
+            }
             var snapshot = new ModuleSnapshot { Kind = "shortcut", Key = path, Values = new() { ["data"] = File.Exists(path) ? Convert.ToBase64String(File.ReadAllBytes(path)) : null } };
             var temporary = Path.Combine(transaction.Root, Guid.NewGuid().ToString("N") + ".lnk");
-            CreateShortcut(temporary, target, definition.Arguments, plan.InstallDirectory,
-                definition.Icon is { Length: > 0 } ? PackageSafety.UnderRoot(plan.InstallDirectory, definition.Icon) : target);
+            CreateShortcut(temporary, target, arguments, plan.InstallDirectory,
+                definition.Icon is { Length: > 0 } ? PackageSafety.UnderRoot(plan.InstallDirectory, definition.Icon) : applicationTarget);
             transaction.ReplaceFile(path, temporary);
             snapshots.Add(snapshot);
         }
@@ -101,7 +111,7 @@ internal static class WindowsIntegration
             switch (snapshot.Kind)
             {
                 case "registry":
-                    var current = CaptureRegistry(snapshot.Values["hive"]!, snapshot.Values["path"]!, snapshot.Key);
+                    var current = CaptureRegistry(snapshot.Values["hive"]!, snapshot.Values["path"]!, snapshot.Key, snapshot.Values.GetValueOrDefault("view"));
                     transaction.AddRollback(() => { if (OperatingSystem.IsWindows()) RestoreRegistry(current); });
                     RestoreRegistry(snapshot);
                     break;
@@ -193,6 +203,23 @@ internal static class WindowsIntegration
         finally { if (record != 0) MsiCloseHandle(record); if (view != 0) MsiCloseHandle(view); if (database != 0) MsiCloseHandle(database); }
     }
 
+    public static string? GetMsiInstallLocation(string? productCode)
+    {
+        if (!OperatingSystem.IsWindows() || !Guid.TryParse(productCode, out _)) return null;
+        uint size = 0; var error = MsiGetProductInfo(productCode!, "InstallLocation", null, ref size);
+        if (error is not (0 or 234) || size == 0 || size > 32768) return null;
+        var value = new System.Text.StringBuilder((int)size + 1); size++;
+        if (MsiGetProductInfo(productCode!, "InstallLocation", value, ref size) != 0) return null;
+        var path = value.ToString();
+        if (!Path.IsPathFullyQualified(path)) return null;
+        path = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (Path.GetDirectoryName(path) is null) return null;
+        PackageSafety.EnsureNoReparsePoints(path);
+        return path;
+    }
+
+    public static bool IsMsiInstalled(string? productCode) => OperatingSystem.IsWindows() && Guid.TryParse(productCode, out _) && MsiQueryProductState(productCode!) == 5;
+
     public static async Task<int> RunExecutableAsync(string operation, LegacyExecutableDefinition definition, string extracted,
         string target, InstallOptions options, CancellationToken token)
     {
@@ -254,27 +281,27 @@ internal static class WindowsIntegration
     }
 
     [SupportedOSPlatform("windows")]
-    private static ModuleSnapshot CaptureRegistry(string hiveName, string path, string name)
+    internal static ModuleSnapshot CaptureRegistry(string hiveName, string path, string name, string? view = null)
     {
         ValidateRegistry(hiveName, path);
-        using var hive = Hive(hiveName);
+        using var hive = Hive(hiveName, view);
         using var key = hive.OpenSubKey(path);
         var exists = key?.GetValueNames().Contains(name, StringComparer.OrdinalIgnoreCase) == true;
         var kind = exists ? key!.GetValueKind(name) : RegistryValueKind.String;
         return new()
         {
             Kind = "registry", Key = name,
-            Values = new() { ["hive"] = hiveName, ["path"] = path, ["keyExisted"] = (key is not null).ToString(), ["exists"] = exists.ToString(),
+            Values = new() { ["hive"] = hiveName, ["view"] = view, ["path"] = path, ["keyExisted"] = (key is not null).ToString(), ["exists"] = exists.ToString(),
                 ["type"] = kind.ToString(), ["data"] = exists ? JsonSerializer.Serialize(key!.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames)) : null }
         };
     }
 
     [SupportedOSPlatform("windows")]
-    private static void RestoreRegistry(ModuleSnapshot snapshot)
+    internal static void RestoreRegistry(ModuleSnapshot snapshot)
     {
         var path = snapshot.Values["path"]!;
         ValidateRegistry(snapshot.Values["hive"]!, path);
-        using var hive = Hive(snapshot.Values["hive"]!);
+        using var hive = Hive(snapshot.Values["hive"]!, snapshot.Values.GetValueOrDefault("view"));
         if (snapshot.Values["exists"] == bool.TrueString)
         {
             using var key = hive.CreateSubKey(path);
@@ -310,11 +337,11 @@ internal static class WindowsIntegration
         _ => throw new InvalidDataException("Unsupported registry value type: " + value)
     };
     [SupportedOSPlatform("windows")]
-    private static RegistryKey Hive(string value) => RegistryKey.OpenBaseKey(value switch
+    internal static RegistryKey Hive(string value, string? view = null) => RegistryKey.OpenBaseKey(value switch
     {
         "user" => RegistryHive.CurrentUser, "machine" => RegistryHive.LocalMachine,
         _ => throw new InvalidDataException("Registry hive must be user or machine.")
-    }, System.Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32);
+    }, view switch { "registry64" => RegistryView.Registry64, "registry32" => RegistryView.Registry32, null => System.Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32, _ => throw new InvalidDataException("Invalid registry view.") });
     private static void ValidateRegistry(string hive, string path)
     {
         if (hive is not ("user" or "machine") || string.IsNullOrWhiteSpace(path) || path.StartsWith('\\') || path.Contains("..", StringComparison.Ordinal) || path.Contains('/'))
@@ -405,5 +432,7 @@ internal static class WindowsIntegration
     [DllImport("msi.dll")] private static extern uint MsiViewExecute(uint view, uint record);
     [DllImport("msi.dll")] private static extern uint MsiViewFetch(uint view, out uint record);
     [DllImport("msi.dll", EntryPoint = "MsiRecordGetStringW", CharSet = CharSet.Unicode)] private static extern uint MsiRecordGetString(uint record, uint field, System.Text.StringBuilder? value, ref uint length);
+    [DllImport("msi.dll", EntryPoint = "MsiGetProductInfoW", CharSet = CharSet.Unicode)] private static extern uint MsiGetProductInfo(string productCode, string property, System.Text.StringBuilder? value, ref uint length);
+    [DllImport("msi.dll", EntryPoint = "MsiQueryProductStateW", CharSet = CharSet.Unicode)] private static extern int MsiQueryProductState(string productCode);
     [DllImport("msi.dll")] private static extern uint MsiCloseHandle(uint handle);
 }

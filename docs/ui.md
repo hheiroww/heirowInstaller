@@ -37,11 +37,20 @@ and 16× anisotropic filtering, with pixel-aligned vector text.
   the key or its path in desktop settings. Keep signing keys outside payload
   source folders. The package builder rejects including the active signing key
   in a package payload.
+  The default output is a standalone `Setup.exe`, built from the running
+  self-contained launcher and complete application files. An application project
+  path can be entered instead of a folder to publish its runtime before packing.
+  `.hinst` output remains available. Browser Sign in and Sign out use an
+  in-memory SocketJack session; approval happens in the user's browser and no
+  account credential is written to desktop preferences.
 - **Updates** runs the separate `heirowUpdater.exe` companion and displays its
   actual results. The complete release places that companion beside the desktop
   executable. Its native controls check or update all products, enable or disable
   real per-user hourly Windows Task Scheduler checks, inspect schedule status,
   and opt into automatic updates that satisfy the updater's signature policy.
+  Each app can also select its own optional root companion. Its normal lifecycle
+  waits for the app to exit and offers native Update now or Postpone; see
+  [optional application updates](app-updates.md).
 - **Activity** shows current-session operations and errors. **Settings** saves
   output-folder, launch-after-install and Windows registration preferences under
   the user's local application data directory.

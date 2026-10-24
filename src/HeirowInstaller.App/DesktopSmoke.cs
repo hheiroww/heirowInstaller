@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HeirowInstaller.Core;
 using ProjectZ.Shared.Drawing.UI.Input;
+using Button = ProjectZ.Shared.Drawing.UI.Input.Button;
 
 namespace HeirowInstaller.App;
 
@@ -99,6 +100,21 @@ internal static class DesktopSmoke
                 Require(await Ui(() => game.MainScene.Controller.UpdaterOutput.Contains("enabled", StringComparison.OrdinalIgnoreCase)), "Native Schedule status button queried the real updater without changing scheduling");
                 await game.CaptureAsync(Path.Combine(directory, "14-updater-result.png"));
             }
+            await Click("nav.workspace");
+            Require(await Ui(() => ((Button)game.MainScene.Control("workspace.publisher")).Text.Contains("Sign in to SocketJack")), "The native workspace exposes the in-memory publisher sign-in action");
+            var standalone = Path.Combine(directory, "native-Setup.exe");
+            await game.OnUiAsync(() => ((Textbox)game.MainScene.Control("workspace.output")).Text = standalone);
+            await Click("workspace.build");
+            await Wait(() => !game.MainScene.Controller.Busy && game.MainScene.Controller.BuiltPackagePath == standalone);
+            Require(File.Exists(standalone) && PackageReader.HasEmbeddedPackage(standalone), "The native Build button created a standalone setup executable");
+            using (var setup = PackageReader.Open(standalone))
+            {
+                await setup.VerifyAsync();
+                Require(setup.Manifest.Id == manifest.Id && setup.Manifest.Version == manifest.Version, "The native standalone setup contains the verified application payload");
+                if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HEIROWINSTALLER_SIGNING_KEY_PATH")))
+                    Require(setup.PublisherKeySha256 is { Length: 64 }, "The native standalone Build action uses the ephemeral signing-key environment setting");
+            }
+            await game.CaptureAsync(Path.Combine(directory, "15-standalone-workspace.png"));
             Require(await Ui(() => game.MainScene.Quality.AntiAliasingSamples == 16 && game.MainScene.Quality.Filtering == ProjectZ.Shared.Drawing.TextureFiltering.Anisotropic16x), "Runtime used 16x anti-aliasing and anisotropic filtering");
             await File.WriteAllTextAsync(Path.Combine(directory, "ui-smoke.json"), JsonSerializer.Serialize(new { success = true, framework = "Project-Z", checks, isolated = true, notes = "Real native pointer/control events. Isolated state and filesystem only; no registry, shortcuts, services, publisher authentication or public update deployment." }, new JsonSerializerOptions { WriteIndented = true }));
         }

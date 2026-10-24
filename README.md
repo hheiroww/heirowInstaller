@@ -18,14 +18,14 @@ heirowInstaller combines a Project-Z desktop setup experience with a reusable .N
 | `HeirowInstaller.Core` | Package format, verification, installation, receipts, repair, removal, and updates |
 | `HeirowInstaller.Cli` | Automation and unattended installation |
 | `HeirowInstaller.Publishing` | HTTPS publisher client with credentials supplied at runtime |
-| `heirowUpdater` | Scheduled checks, full-package updates, and a command-line companion |
+| `heirowUpdater` | Optional app-local updates with native Update now and Postpone prompts |
 | `HeirowUpdater.SocketJack` | Reusable updater SDK using the public SocketJack networking library |
 
 The public repository contains the installer tooling and public publisher identity. The SocketJack.com hosting application is maintained separately in its private repository.
 
 ## Build and package
 
-Windows x64 and the .NET 10 SDK are required to build. Released setup executables are self-contained.
+Windows x64 and the .NET 10 SDK are required to build the tooling. Each released application setup is a self-contained executable; its recipient does not need heirowInstaller, the SDK, or a WiX compiler installed.
 
 ```powershell
 dotnet build heirowInstaller.sln -c Release
@@ -33,7 +33,15 @@ pwsh -File scripts/Test.ps1
 pwsh -File scripts/Build.ps1
 ```
 
-Create a native package from the included feature-selection example:
+Build one distributable setup from published application files:
+
+```powershell
+heirowInstaller.Cli build installer.json --source .\publish --output .\dist\MyApp-Setup.exe
+```
+
+Use `--project .\MyApp\MyApp.csproj` instead of `--source` to publish a .NET application's self-contained runtime before packaging. Add `--launcher` when the published launcher is outside the builder's directory. See [application authoring](docs/authoring.md) for optional updates, compiler options, and prerequisites.
+
+The included feature-selection example also supports separate package operations:
 
 ```powershell
 heirowInstaller.Cli pack examples/hello/installer.json --source examples/hello/payload --output hello.hinst
@@ -43,13 +51,24 @@ heirowInstaller.Cli repair heirowinstaller.hello
 heirowInstaller.Cli uninstall heirowinstaller.hello
 ```
 
-`bundle` combines a package with the published Project-Z launcher to produce one setup EXE. `import-msi` and `import-exe` preserve an existing installer's backend. See [compatibility](docs/compatibility.md), [desktop UI](docs/ui.md), and each executable's `--help` for the complete command contract.
+`bundle` combines a package with the published Project-Z launcher to produce one setup EXE. `import-msi` and `import-exe` preserve an existing installer's backend. `compile` builds existing `.wxs` and `.wixproj` sources through an explicitly selected official WiX compiler or SDK, including extensions, custom actions, merge modules, patches, and Burn chains. WiX is an optional build-time dependency; its selected version retains its own license and acceptance requirements. See [compatibility](docs/compatibility.md), [desktop UI](docs/ui.md), and each executable's `--help` for the complete command contract.
 
 For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. Keep the private key outside the payload directory. The desktop builder also accepts its path through `HEIROWINSTALLER_SIGNING_KEY_PATH`; the path is never saved in project or desktop settings. SocketJack.com publication requires an approved publisher signature and an authorized account.
 
 ## Application updates
 
-heirowUpdater uses **SocketJack.Net.HttpClient** from the published `SocketJack` 2026.10.24 package for release checks and downloads. It validates every redirect, verifies the downloaded SHA-256, and pins the package publisher key recorded at installation. Signed embedded packages are installed as data by the current trusted engine; a package signature does not authenticate an arbitrary EXE prefix.
+Selecting an application's optional updates feature places `heirowUpdater.exe` and `heirowUpdater.json` in that application's root directory. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. A manual `CheckForUpdates()` call uses the same prompt and waits for the app or plugin host to close before replacing files. Leaving the feature off installs neither companion file.
+
+```csharp
+SocketJack.HeirowUpdaterBootstrap.StartAfterExit();
+SocketJack.HeirowUpdaterBootstrap.CheckForUpdates();
+```
+
+Dependency-free C# and VB bootstraps are included in `templates/bootstrap`. The reusable SDK exposes `ApplicationUpdater`; see [application integration](docs/app-updates.md) for plugin hosts, protected feeds, child-process credentials, and status queries.
+
+heirowUpdater uses **SocketJack.Net.HttpClient** from the published `SocketJack` 2026.10.24 package for release checks and downloads. It validates redirects, verifies the downloaded SHA-256, and pins the package publisher key recorded at installation. The currently trusted engine installs signed embedded packages as data. The app-local companion includes its own engine and does not require a global heirowInstaller installation.
+
+Advanced command-line and explicitly scheduled checks remain available:
 
 ```powershell
 heirowUpdater check --all
@@ -62,16 +81,16 @@ heirowUpdater disable
 
 `enable` schedules per-user checks at sign-in and periodically. `--apply` opts into installation of updates with a pinned publisher key. Machine-wide updates can require an administrator handoff; background checks report that required action. Applications can also supply a feed/profile directly without an installation receipt.
 
-The desktop Updates page exposes these same companion operations. Account-protected publishers can supply credential environment-variable names; values stay outside manifests and source control and are sent only to the configured HTTPS origin.
+The desktop Updates page exposes these companion operations. Account-protected publishers can supply credential environment-variable names; values stay outside manifests and source control and are sent only to the configured HTTPS origin. Registered SocketJack applications can request fresh browser approval when a session expires.
 
 The companion's published single-file host discovery is fixed in 2026.10.24.3. To upgrade heirowInstaller itself from .1 or .2, use **Installed apps → Update** in the desktop app or download the latest Setup once.
 
 ## Publish
 
-The SocketJack.com publisher accepts immutable `.hinst` versions through bounded, hash-verified chunks. Sign in with an authorized publisher account in the browser, or use the CLI with a credential environment variable:
+The SocketJack.com publisher accepts immutable standalone `.exe` installers and `.hinst` packages through bounded, hash-verified chunks. Standalone publication verifies the approved launcher and signed embedded payload. Sign in from the desktop publisher with an authorized account using browser approval, or use the CLI with a credential environment variable:
 
 ```powershell
-heirowInstaller.Cli publish hello.hinst --publisher https://socketjack.com --cookie-env SOCKETJACK_PUBLISH_COOKIE
+heirowInstaller.Cli publish MyApp-Setup.exe --publisher https://socketjack.com --cookie-env SOCKETJACK_PUBLISH_COOKIE
 ```
 
 Supply the Cookie header through that environment variable; never put its value in a command, manifest, or repository. New publisher releases produce an update feed and a download receipt.

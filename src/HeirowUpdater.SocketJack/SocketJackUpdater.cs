@@ -32,6 +32,8 @@ public sealed class UpdaterPolicy
     public string? DownloadDirectory { get; set; }
     public bool Isolated { get; set; }
     public string? LogPath { get; set; }
+    /// <summary>Allows a verified helper to request UAC after the user explicitly chooses to update.</summary>
+    public bool StageForElevation { get; set; }
 }
 
 public sealed class UpdaterCheck
@@ -107,7 +109,7 @@ public sealed class SocketJackUpdater : IDisposable
         policy ??= new();
         if (waitForProcessId <= 0 || waitForStartTicks <= 0) throw new ArgumentException("A process ID and exact start time are required for update handoff.");
         if (!update.Available || !update.Feed.ProductId.Equals(target.ProductId, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Invalid handoff update identity.");
-        if (target.Scope == "machine" && !InstallerEngine.IsElevated && !policy.Isolated) throw new UpdateRequiresElevationException(target.ProductId);
+        if (target.Scope == "machine" && !InstallerEngine.IsElevated && !policy.Isolated && !policy.StageForElevation) throw new UpdateRequiresElevationException(target.ProductId);
         var key = policy.TrustedPublisherKeySha256 ?? target.PublisherKeySha256;
         if (key is null && !policy.AllowUnsigned) throw new InvalidOperationException("Update handoff requires a trusted publisher key.");
         var download = await client.DownloadAsync(update.Feed, policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads"), progress, cancellationToken);
@@ -139,12 +141,17 @@ public sealed class SocketJackUpdater : IDisposable
         Argument("--sha256", update.Feed.Sha256); Argument("--product-id", target.ProductId); Argument("--expected-version", update.Feed.Version);
         Argument("--wait-pid", waitForProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)); Argument("--wait-start", waitForStartTicks.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Argument("--trust-key", key); Argument("--target", target.InstallDirectory); Argument("--state-root", target.StateRoot); Argument("--scope", target.Scope);
-        Argument("--maintenance-host", File.Exists(Path.Combine(stage, "heirowInstaller.Cli.exe")) ? Path.Combine(stage, "heirowInstaller.Cli.exe") : null);
+        Argument("--maintenance-host", File.Exists(Path.Combine(stage, "heirowInstaller.Cli.exe")) ? Path.Combine(stage, "heirowInstaller.Cli.exe") : Path.Combine(stage, "heirowUpdater.exe"));
         Argument("--log", policy.LogPath);
         Argument("--status-file", Path.Combine(stage, "helper-status.json"));
         start.ArgumentList.Add("--background");
         if (policy.Isolated) start.ArgumentList.Add("--isolated");
         if (policy.AllowUnsigned) start.ArgumentList.Add("--allow-unsigned");
+        if (target.Scope == "machine" && !InstallerEngine.IsElevated && !policy.Isolated && policy.StageForElevation)
+        {
+            start.UseShellExecute = true; start.Verb = "runas";
+            start.RedirectStandardOutput = false; start.RedirectStandardError = false;
+        }
         return start;
     }
     private static string? FindInstaller()
@@ -156,7 +163,7 @@ public sealed class SocketJackUpdater : IDisposable
             var app = Path.Combine(directory, "heirowInstaller.exe");
             if (File.Exists(app)) return app;
         }
-        return null;
+        return UpdaterHostResolver.FindExecutable();
     }
     public void Dispose() => client.Dispose();
 }

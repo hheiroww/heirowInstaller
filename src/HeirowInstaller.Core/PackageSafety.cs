@@ -84,8 +84,37 @@ public static partial class PackageSafety
                 if (paths.Contains(ancestor)) throw new InvalidDataException("A payload destination cannot also be another file's parent.");
             }
         }
-        if (manifest.EntryPoint.Length > 0 && !paths.Contains(NormalizeRelativePath(manifest.EntryPoint)))
+        if (manifest.EntryPoint.Length > 0 && !paths.Contains(NormalizeRelativePath(manifest.EntryPoint)) && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             throw new InvalidDataException("Entry point must be included in the payload.");
+        if (manifest.UpdateCompanion is { } companion)
+        {
+            if (manifest.EntryPoint.Length == 0 || string.IsNullOrWhiteSpace(manifest.UpdateUrl))
+                throw new InvalidDataException("The update companion requires an application entry point and update feed.");
+            var feature = manifest.Features.SingleOrDefault(x => x.Id.Equals(companion.Feature, StringComparison.OrdinalIgnoreCase));
+            if (feature is null || feature.Required) throw new InvalidDataException("The update companion must belong to a declared optional feature.");
+            companion.ExecutablePath = NormalizeRelativePath(companion.ExecutablePath);
+            companion.ConfigurationPath = NormalizeRelativePath(companion.ConfigurationPath);
+            var companionPayload = manifest.Payload.SingleOrDefault(x => x.Path.Equals(companion.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+            if (companionPayload is null || !string.Equals(companionPayload.Feature, companion.Feature, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The update companion executable must be a payload in its optional feature.");
+            if (manifest.EntryPoint.Equals(companion.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The application entry point and update companion must differ.");
+            if (paths.Any(x => x.Equals(companion.ConfigurationPath, StringComparison.OrdinalIgnoreCase) ||
+                x.StartsWith(companion.ConfigurationPath + "/", StringComparison.OrdinalIgnoreCase) || companion.ConfigurationPath.StartsWith(x + "/", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException("The generated updater configuration must not overlap a payload file.");
+            if (companion.Mode != "after-exit") throw new InvalidDataException("The supported app-local updater mode is after-exit.");
+            if (companion.AuthApplication is not null) ValidateId(companion.AuthApplication);
+            if (!Uri.TryCreate(manifest.UpdateUrl, UriKind.Absolute, out var feed) || feed.UserInfo.Length > 0 ||
+                (feed.Scheme != "https" && !(feed.Scheme == "http" && feed.IsLoopback)))
+                throw new InvalidDataException("The app updater feed must use HTTPS; HTTP is allowed only for isolated loopback acceptance.");
+            if (!Uri.TryCreate(companion.CredentialOrigin, UriKind.Absolute, out var origin) || origin.UserInfo.Length > 0 ||
+                origin.AbsolutePath != "/" || origin.Query.Length > 0 || origin.Fragment.Length > 0 ||
+                (origin.Scheme != "https" && !(origin.Scheme == "http" && origin.IsLoopback)))
+                throw new InvalidDataException("The updater credential origin must be an HTTPS origin without credentials, a path, or query.");
+            foreach (var variable in new[] { companion.CookieEnvironmentVariable, companion.TokenEnvironmentVariable })
+                if (variable is not null && !Regex.IsMatch(variable, "^[A-Za-z_][A-Za-z0-9_]*$"))
+                    throw new InvalidDataException("Updater credential environment variable names must be plain identifiers, never credential values.");
+        }
         if (manifest.LegacyMsi is { } msi)
         {
             if (!paths.Contains(NormalizeRelativePath(msi.PayloadPath)) || !msi.PayloadPath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase))
@@ -104,6 +133,7 @@ public static partial class PackageSafety
                 throw new InvalidDataException("Legacy executable must refer to a packaged .exe file.");
             if (manifest.Registry.Count + manifest.Environment.Count + manifest.Services.Count + manifest.Shortcuts.Count + manifest.Modules.Count > 0)
                 throw new InvalidDataException("Legacy executable packages delegate OS integration to their original installer.");
+            if (executable.MaintenanceRegistration is { } registration) BackendMaintenance.ValidateDefinition(registration);
         }
         foreach (var feature in manifest.Registry.Select(x => x.Feature).Concat(manifest.Shortcuts.Select(x => x.Feature))
                      .Concat(manifest.Environment.Select(x => x.Feature)).Concat(manifest.Services.Select(x => x.Feature))

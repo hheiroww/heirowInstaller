@@ -10,6 +10,15 @@ using System.Text.Json;
 using HeirowInstaller.Core;
 using HeirowUpdater.SocketJack;
 
+if (args.FirstOrDefault() == "uninstall")
+{
+    var stateIndex = Array.IndexOf(args, "--state-root");
+    if (args.Length < 4 || stateIndex < 2 || stateIndex + 1 >= args.Length ||
+        !Path.GetFullPath(args[stateIndex + 1]).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) ||
+        !args[stateIndex + 1].Contains("heirowInstaller-tests-", StringComparison.Ordinal)) return 2;
+    Console.WriteLine(JsonSerializer.Serialize(await new InstallerEngine().UninstallAsync(args[1], new() { StateRoot = args[stateIndex + 1], Scope = "user", Silent = true }), InstallerJson.Options));
+    return 0;
+}
 var suite = new AcceptanceSuite();
 return await suite.RunAsync();
 
@@ -42,6 +51,9 @@ internal sealed class AcceptanceSuite
             ,("machine state rejects writable or user-owned ACLs without changing them and preserves explicit isolation", MachineStateAcls)
             ,("user scope rejects selected machine integrations and spoofed machine receipt snapshots", IntegrationScope)
             ,("updater host discovery prefers the installed process over single-file extraction directories", UpdaterHosts)
+            ,("optional app-local updater profiles pin verified identity and participate in repair and uninstall", AppUpdateCompanion)
+            ,("maintenance politely stops only the app-local updater before replacing or removing its files", CompanionMaintenance)
+            ,("exact backend registrations route Windows Settings maintenance and reject stale staged updates", BackendRegistrations)
         };
         try
         {
@@ -347,6 +359,12 @@ internal sealed class AcceptanceSuite
         True(!args.Contains("/qn") && !args.Contains("/passive"));
         args = MsiAdapter.BuildArguments("repair", @"C:\Durable\Original.msi", "{11111111-1111-1111-1111-111111111111}", new(), plan, new());
         True(args.Contains(@"C:\Durable\Original.msi"));
+        plan.Manifest.UpdateCompanion = new(); plan.Features = ["updates"];
+        args = MsiAdapter.BuildArguments("install", @"C:\Original.msi", null, new(), plan, new());
+        True(!args.Any(x => x.StartsWith("ADDLOCAL=", StringComparison.Ordinal)));
+        plan.Features = ["Core", "updates"];
+        args = MsiAdapter.BuildArguments("install", @"C:\Original.msi", null, new(), plan, new());
+        True(args.Contains("ADDLOCAL=Core"));
         return Task.CompletedTask;
     }
 
@@ -642,6 +660,227 @@ internal sealed class AcceptanceSuite
         await engine.UninstallAsync(originalProduct.Id, installedOptions);
     }
 
+    private async Task AppUpdateCompanion()
+    {
+        var area = Area("app-companion"); using var rsa = RSA.Create(2048);
+        var key = Path.Combine(area, "publisher.pem"); File.WriteAllText(key, rsa.ExportPkcs8PrivateKeyPem());
+        var pin = Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
+        var manifest = Manifest("test.app-companion", "1"); manifest.EntryPoint = "application.exe";
+        manifest.UpdateUrl = "https://updates.example.invalid/application.json";
+        manifest.Features = [new() { Id = "updates", Default = false }];
+        manifest.UpdateCompanion = new() { TokenEnvironmentVariable = "FIXTURE_UPDATE_TOKEN", AuthApplication = "example" };
+        manifest.Payload = [new() { Path = "application.exe" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
+        var files = new Dictionary<string, string> { ["application.exe"] = "non-executed application fixture", ["heirowUpdater.exe"] = "non-executed updater fixture" };
+        var path = Build(area, "v1", manifest, files, key);
+        var target = Path.Combine(area, "installed"); Directory.CreateDirectory(target);
+        var configurationPath = Path.Combine(target, "heirowUpdater.json"); File.WriteAllText(configurationPath, "original application data");
+        var engine = new InstallerEngine(); var options = Options(area, target);
+        using var package = PackageReader.Open(path);
+        await engine.InstallAsync(package, options);
+        True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
+        Equal("original application data", File.ReadAllText(configurationPath));
+        options.Features = ["updates"];
+        True(engine.Plan(package, options).UpdateCompanionEnabled);
+        await engine.InstallAsync(package, options);
+        var config = JsonSerializer.Deserialize<UpdateCompanionConfiguration>(File.ReadAllText(configurationPath), InstallerJson.Options)!;
+        Equal(manifest.Id, config.ProductId); Equal("1", config.CurrentVersion); Equal(pin, config.PublisherKeySha256);
+        Equal(manifest.UpdateUrl, config.FeedUrl); Equal(target, config.InstallDirectory); Equal(options.StateRoot, config.StateRoot);
+        Equal("application.exe", config.EntryPoint); Equal("after-exit", config.Mode); True(config.Isolated);
+        Equal("FIXTURE_UPDATE_TOKEN", config.TokenEnvironmentVariable); True(config.Features.Contains("updates"));
+        Equal("example", config.AuthApplication);
+        True(InstallerEngine.ListInstalled(options.StateRoot).Single().Files.Any(x => x.Path == "heirowUpdater.json"));
+        File.WriteAllText(configurationPath, "corrupted");
+        await engine.RepairAsync(manifest.Id, Options(area, target));
+        config = JsonSerializer.Deserialize<UpdateCompanionConfiguration>(File.ReadAllText(configurationPath), InstallerJson.Options)!;
+        Equal(pin, config.PublisherKeySha256);
+        options.Features = [];
+        await engine.InstallAsync(package, options);
+        True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
+        Equal("original application data", File.ReadAllText(configurationPath));
+        manifest.Version = "2";
+        var upgraded = Build(area, "v2", manifest, files, key); options.Features = ["updates"];
+        using (var second = PackageReader.Open(upgraded)) await engine.InstallAsync(second, options);
+        config = JsonSerializer.Deserialize<UpdateCompanionConfiguration>(File.ReadAllText(configurationPath), InstallerJson.Options)!;
+        Equal("2", config.CurrentVersion);
+        await engine.UninstallAsync(manifest.Id, Options(area, target));
+        Equal("original application data", File.ReadAllText(configurationPath)); True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
+        var unsigned = Build(area, "unsigned", manifest, files);
+        using (var unsignedPackage = PackageReader.Open(unsigned))
+        {
+            await Throws<CryptographicException>(() => { engine.Plan(unsignedPackage, options); return Task.CompletedTask; });
+            options.Features = []; True(!engine.Plan(unsignedPackage, options).UpdateCompanionEnabled);
+        }
+        var invalidConfiguration = JsonSerializer.Deserialize<PackageManifest>(JsonSerializer.Serialize(package.Manifest, InstallerJson.Options), InstallerJson.Options)!;
+        invalidConfiguration.UpdateCompanion!.ConfigurationPath = "application.exe";
+        await Throws<InvalidDataException>(() => { PackageSafety.ValidateManifest(invalidConfiguration, true); return Task.CompletedTask; });
+        await Throws<InvalidDataException>(() => { StandaloneRuntimeInspector.RequireEmbeddedRuntime(FindUpdaterCli()); return Task.CompletedTask; });
+        var legacy = Manifest("test.legacy-companion", "1"); legacy.EntryPoint = "App/application.exe";
+        legacy.Features = [new() { Id = "updates", Default = false }]; legacy.UpdateCompanion = new(); legacy.UpdateUrl = manifest.UpdateUrl;
+        legacy.LegacyMsi = new() { PayloadPath = "fixture.msi", ProductCode = "{8F2FE249-C8CC-405B-A10B-FA9B789D334B}" };
+        legacy.Payload = [new() { Path = "fixture.msi" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
+        var legacyPath = Build(area, "legacy", legacy, new() { ["fixture.msi"] = "non-executed MSI fixture", ["heirowUpdater.exe"] = "non-executed updater" }, key);
+        using var legacyPackage = PackageReader.Open(legacyPath);
+        var legacyOptions = new InstallOptions { StateRoot = Path.Combine(area, "legacy-state"), Features = ["updates"], RegisterProduct = true };
+        await Throws<InvalidDataException>(() => { engine.Plan(legacyPackage, legacyOptions); return Task.CompletedTask; });
+        True(!Directory.Exists(legacyOptions.StateRoot));
+        legacyOptions.TargetDirectory = Path.Combine(area, "authored-legacy-root");
+        True(engine.Plan(legacyPackage, legacyOptions).UpdateCompanionEnabled);
+    }
+
+    private async Task CompanionMaintenance()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var area = Area("companion-maintenance"); var target = Path.Combine(area, "installed");
+        using var rsa = RSA.Create(2048); var key = Path.Combine(area, "publisher.pem"); File.WriteAllText(key, rsa.ExportPkcs8PrivateKeyPem());
+        var manifest = Manifest("test.companion-maintenance", "1"); manifest.EntryPoint = "application.exe";
+        manifest.UpdateUrl = "https://updates.example.invalid/feed.json"; manifest.Features = [new() { Id = "updates", Default = false }];
+        manifest.UpdateCompanion = new(); manifest.Payload = [new() { Path = "application.exe" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
+        var path = Build(area, "fixture", manifest, new() { ["application.exe"] = "non-executed app", ["heirowUpdater.exe"] = "non-executed updater" }, key);
+        using var package = PackageReader.Open(path); var options = Options(area, target); options.Features = ["updates"];
+        var engine = new InstallerEngine(); await engine.InstallAsync(package, options);
+        True(!await UpdateCompanionControl.StopAsync(target));
+        using (var helperObserver = new EventWaitHandle(false, EventResetMode.ManualReset, UpdateCompanionControl.GetStopEventName(target)))
+        {
+            options.CompanionStopAlreadyHandled = true;
+            await engine.InstallAsync(package, options);
+            True(!helperObserver.WaitOne(0));
+            File.Delete(Path.Combine(target, "application.exe"));
+            await Throws<InvalidOperationException>(() => engine.InstallAsync(package, options));
+            True(!File.Exists(Path.Combine(target, "application.exe")));
+            File.WriteAllText(Path.Combine(target, "application.exe"), "non-executed app");
+            using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+            await Throws<OperationCanceledException>(() => engine.InstallAsync(package, options, null, cancelled.Token));
+            True(!helperObserver.WaitOne(0));
+            options.CompanionStopAlreadyHandled = false;
+        }
+        Equal(UpdateCompanionControl.GetStopEventName(target), UpdateCompanionControl.GetStopEventName(target.ToUpperInvariant() + Path.DirectorySeparatorChar));
+        await Throws<InvalidDataException>(() => UpdateCompanionControl.StopAsync(target, "../unrelated.exe"));
+        var unrelated = Path.Combine(area, "unrelated-application.exe"); File.WriteAllText(unrelated, "application continues running");
+        using (var applicationLock = new FileStream(unrelated, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            async Task Watcher(Func<Task> maintenance)
+            {
+                using var signal = new EventWaitHandle(false, EventResetMode.ManualReset, UpdateCompanionControl.GetStopEventName(target));
+                using var imageLock = new FileStream(Path.Combine(target, "heirowUpdater.exe"), FileMode.Open, FileAccess.Read, FileShare.Read);
+                var stopped = Task.Run(async () =>
+                {
+                    True(signal.WaitOne(TimeSpan.FromSeconds(10)));
+                    await Task.Delay(150); imageLock.Dispose();
+                });
+                await maintenance(); await stopped;
+                True(signal.WaitOne(0));
+                Equal(0L, applicationLock.Position);
+            }
+            await Watcher(async () => { await engine.RepairAsync(manifest.Id, Options(area, target)); });
+            options.Features = [];
+            await Watcher(async () => { await engine.InstallAsync(package, options); });
+            True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
+            options.Features = ["updates"]; await engine.InstallAsync(package, options);
+            await Watcher(async () => { await engine.UninstallAsync(manifest.Id, Options(area, target)); });
+        }
+        Equal("application continues running", File.ReadAllText(unrelated));
+        True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
+        Equal(0, InstallerEngine.ListInstalled(options.StateRoot).Count);
+        options.CompanionStopAlreadyHandled = true;
+        await Throws<InvalidOperationException>(() => engine.InstallAsync(package, options));
+        True(!File.Exists(Path.Combine(target, "application.exe")));
+    }
+
+    private async Task BackendRegistrations()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var area = Area("backend-registration"); using var rsa = RSA.Create(2048);
+        var key = Path.Combine(area, "publisher.pem"); File.WriteAllText(key, rsa.ExportPkcs8PrivateKeyPem());
+#if DEBUG
+        const string configuration = "Debug";
+#else
+        const string configuration = "Release";
+#endif
+        var probe = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Fixtures", "LegacyArgumentProbe", "bin", configuration, "net10.0"));
+        var source = Path.Combine(area, "source"); Directory.CreateDirectory(source);
+        foreach (var file in Directory.EnumerateFiles(probe)) if (Path.GetExtension(file) is ".exe" or ".dll" or ".json") File.Copy(file, Path.Combine(source, Path.GetFileName(file)));
+        File.WriteAllText(Path.Combine(source, "heirowUpdater.exe"), "non-executed updater fixture");
+        var engine = new InstallerEngine();
+        foreach (var burn in new[] { false, true })
+        {
+            var identity = Guid.NewGuid().ToString(); var registration = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\heirowInstaller.Tests." + identity;
+            using var hive = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Registry64);
+            True(hive.OpenSubKey(registration) is null);
+            var productId = "test.backend." + identity; var target = Path.Combine(area, identity); var report = Path.Combine(area, identity + ".report.json");
+            var definition = new BackendRegistrationDefinition { Hive = "user", View = "registry64", UninstallKey = registration };
+            var upgrade = Guid.NewGuid().ToString("B"); if (burn) { definition.UninstallKey = null; definition.BundleUpgradeCode = upgrade; }
+            var backendArguments = new List<string> { "--report=" + report, "--fixture-arp-key=" + registration, "--fixture-target={InstallDir}" };
+            if (burn) backendArguments.Add("--fixture-burn-upgrade=" + upgrade);
+            var manifest = Manifest(productId, "1"); manifest.EntryPoint = "application.exe"; manifest.UpdateUrl = "https://updates.example.invalid/feed.json";
+            manifest.Features = [new() { Id = "updates", Default = false }]; manifest.UpdateCompanion = new();
+            manifest.Payload = Directory.EnumerateFiles(source).Select(file => new PayloadFile { Source = Path.GetFileName(file), Path = Path.GetFileName(file), Feature = Path.GetFileName(file) == "heirowUpdater.exe" ? "updates" : null }).ToList();
+            manifest.LegacyExecutable = new() { PayloadPath = "LegacyArgumentProbe.exe", InstallArguments = backendArguments, RepairArguments = backendArguments,
+                UninstallArguments = [.. backendArguments, "--fixture-uninstall"], InstallDirectoryArgument = "--fixture-override={InstallDir}" };
+            var manifestPath = Path.Combine(area, identity + ".json"); var packagePath = Path.Combine(area, identity + ".hinst");
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
+            PackageBuilder.Build(manifestPath, source, packagePath, new() { SigningKeyPath = key });
+            var options = new InstallOptions { TargetDirectory = target, StateRoot = Path.Combine(area, "state"), Features = ["updates"], Scope = "user", Silent = true,
+                InstallerPath = Path.Combine(AppContext.BaseDirectory, "HeirowInstaller.Tests.exe") };
+            using (var unknown = PackageReader.Open(packagePath)) await Throws<InvalidDataException>(() => { engine.Plan(unknown, options); return Task.CompletedTask; });
+            manifest.LegacyExecutable.MaintenanceRegistration = definition;
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options)); PackageBuilder.Build(manifestPath, source, packagePath, new() { SigningKeyPath = key });
+            using var package = PackageReader.Open(packagePath);
+            var unsupportedDirectory = manifest.LegacyExecutable.InstallDirectoryArgument;
+            manifest.LegacyExecutable.InstallDirectoryArgument = null;
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
+            var fixedPackage = Path.Combine(area, identity + ".fixed.hinst"); PackageBuilder.Build(manifestPath, source, fixedPackage, new() { SigningKeyPath = key });
+            using (var fixedBackend = PackageReader.Open(fixedPackage)) await Throws<InvalidDataException>(() => { engine.Plan(fixedBackend, options); return Task.CompletedTask; });
+            manifest.LegacyExecutable.InstallDirectoryArgument = unsupportedDirectory;
+            var ownArp = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\heirowInstaller." + productId;
+            try
+            {
+                await engine.InstallAsync(package, options);
+                using (var original = hive.OpenSubKey(registration)) Equal(1, original!.GetValue("SystemComponent"));
+                var installed = InstallerEngine.ListInstalled(options.StateRoot).Single(); True(installed.RegisteredProduct); Equal(1, installed.BackendRegistrations.Count);
+                Equal(registration, installed.BackendRegistrations[0].Values["path"]);
+                using (var original = hive.OpenSubKey(registration, true)) original!.SetValue("SystemComponent", 0, Microsoft.Win32.RegistryValueKind.DWord);
+                await engine.RepairAsync(productId, options);
+                using (var original = hive.OpenSubKey(registration)) Equal(1, original!.GetValue("SystemComponent"));
+                if (!burn)
+                {
+                    options.Features = []; await engine.InstallAsync(package, options);
+                    using (var original = hive.OpenSubKey(registration)) Equal(0, original!.GetValue("SystemComponent"));
+                    using (var own = hive.OpenSubKey(ownArp)) True(own is null);
+                    True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
+                    options.Features = ["updates"]; await engine.InstallAsync(package, options);
+                    installed = InstallerEngine.ListInstalled(options.StateRoot).Single();
+                    using (var own = hive.OpenSubKey(ownArp))
+                    {
+                        True(own is not null);
+                        Equal('"' + installed.UninstallerPath + "\" uninstall \"" + productId + "\" --state-root \"" + options.StateRoot + "\" --scope user --silent", own!.GetValue("QuietUninstallString"));
+                    }
+                    await RunCli(installed.UninstallerPath!, ["uninstall", productId, "--state-root", options.StateRoot!, "--scope", "user", "--silent"]);
+                }
+                else
+                {
+                    // Simulate an explicit external backend removal after the signed helper was staged.
+                    hive.DeleteSubKeyTree(registration, false); File.Delete(Path.Combine(target, "application.exe"));
+                    var before = File.ReadAllText(report); options.CompanionStopAlreadyHandled = true;
+                    await Throws<InvalidOperationException>(() => engine.InstallAsync(package, options));
+                    Equal(before, File.ReadAllText(report)); True(!File.Exists(Path.Combine(target, "application.exe")));
+                    options.CompanionStopAlreadyHandled = false; await engine.UninstallAsync(productId, options);
+                    Equal(before, File.ReadAllText(report));
+                }
+                using (var original = hive.OpenSubKey(registration)) True(original is null);
+                using (var own = hive.OpenSubKey(ownArp)) True(own is null);
+                True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")) && !File.Exists(Path.Combine(target, "heirowUpdater.json")));
+                Equal(0, InstallerEngine.ListInstalled(options.StateRoot).Count);
+            }
+            finally
+            {
+                options.CompanionStopAlreadyHandled = false;
+                if (InstallerEngine.ListInstalled(options.StateRoot).Any(x => x.Id == productId)) try { await engine.UninstallAsync(productId, options); } catch { }
+                using var leftover = hive.OpenSubKey(registration);
+                if (leftover?.GetValue("HeirowInstallerAcceptanceFixture") as string == identity) hive.DeleteSubKeyTree(registration, false);
+            }
+        }
+    }
+
     private Task UpdaterHosts()
     {
         var area = Area("updater-hosts");
@@ -690,7 +929,7 @@ internal sealed class AcceptanceSuite
 #else
         const string configuration = "Release";
 #endif
-        return Path.Combine(directory, "src", "HeirowUpdater", "bin", configuration, "net10.0", OperatingSystem.IsWindows() ? "heirowUpdater.exe" : "heirowUpdater");
+        return Path.Combine(directory, "src", "HeirowUpdater", "bin", configuration, "net10.0-windows7.0", OperatingSystem.IsWindows() ? "heirowUpdater.exe" : "heirowUpdater");
     }
     private static async Task<string> RunCli(string executable, IEnumerable<string> arguments)
     {

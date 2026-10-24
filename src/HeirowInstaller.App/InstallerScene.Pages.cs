@@ -90,36 +90,41 @@ internal sealed partial class InstallerScene
     {
         Box(Left, 146, BodyWidth, 63, Theme.Surface, 10);
         Text("YOUR RELEASE WORKSPACE", Left + 20, 158, BodyWidth - 245, 24, 9, Theme.Lime, true);
-        Text("Manifest → verified package → published update", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
-        Action("workspace.publisher", "SocketJack publisher  ↗", Width - 252, 157, 199, () => Process.Start(new ProcessStartInfo("https://socketjack.com/heirowInstaller/") { UseShellExecute = true }), accent: Theme.Orange);
+        Text("Application → standalone setup → published update", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
+        Action("workspace.publisher", Controller.SigningIn ? "Cancel sign-in" : Controller.PublisherSignedIn ? "Sign out" : "Sign in to SocketJack  ↗", Width - 252, 157, 199, () => _ = Controller.SignInPublisherAsync(), enabled: !Controller.Busy || Controller.SigningIn, accent: Theme.Orange);
         PathField("workspace.manifest", "PACKAGE MANIFEST", Controller.ManifestPath, 232, value => Controller.ManifestPath = value, () =>
         {
             using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Choose package manifest", Filter = "Package manifest|*.json|All files|*.*", CheckFileExists = true };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.ManifestPath = picker.FileName; if (string.IsNullOrWhiteSpace(Controller.SourceDirectory)) Controller.SourceDirectory = Path.GetDirectoryName(picker.FileName)!; Controller.Notify(); }
         });
-        PathField("workspace.source", "APPLICATION FILES", Controller.SourceDirectory, 318, value => Controller.SourceDirectory = value, () =>
+        PathField("workspace.source", "APPLICATION FILES OR .NET PROJECT", Controller.SourceDirectory, 318, value => Controller.SourceDirectory = value, () =>
         {
-            using var picker = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose application source directory", UseDescriptionForTitle = true, InitialDirectory = Controller.SourceDirectory };
+            using var picker = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose published application files", UseDescriptionForTitle = true, InitialDirectory = File.Exists(Controller.SourceDirectory) ? Path.GetDirectoryName(Controller.SourceDirectory) ?? "" : Controller.SourceDirectory };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.SourceDirectory = picker.SelectedPath; Controller.Notify(); }
-        });
-        PathField("workspace.output", "OUTPUT PACKAGE", Controller.OutputPath, 404, value => Controller.OutputPath = value, () =>
+        }, () =>
         {
-            using var picker = new System.Windows.Forms.SaveFileDialog { Title = "Choose output package", Filter = "heirowInstaller package|*.hinst", FileName = Path.GetFileName(Controller.OutputPath), DefaultExt = "hinst", AddExtension = true };
+            using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Choose an application project to publish", Filter = ".NET application project|*.csproj;*.vbproj;*.fsproj", CheckFileExists = true };
+            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.SourceDirectory = picker.FileName; Controller.Notify(); }
+        });
+        PathField("workspace.output", "OUTPUT INSTALLER", Controller.OutputPath, 404, value => Controller.OutputPath = value, () =>
+        {
+            using var picker = new System.Windows.Forms.SaveFileDialog { Title = "Choose output installer", Filter = "Standalone Windows setup|*.exe|heirowInstaller package|*.hinst", FileName = Path.GetFileName(Controller.OutputPath), DefaultExt = "exe", AddExtension = true };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.OutputPath = picker.FileName; Controller.Notify(); }
         });
         Text("RELEASE NOTES", Left, 490, BodyWidth, 22, 8.5f, Theme.Muted, true);
-        Field("workspace.notes", Controller.ReleaseNotes, Left, 520, BodyWidth, value => Controller.ReleaseNotes = value, true, 68);
-        Text("Publisher access uses SOCKETJACK_PUBLISHER_TOKEN or SOCKETJACK_PUBLISHER_COOKIE.", Left, 600, BodyWidth, 25, 9, Theme.Muted);
-        Action("workspace.build", "Build package  →", Left, BodyBottom - 48, 192, () => _ = Controller.BuildAsync(), true, !Controller.Busy);
+        Field("workspace.notes", Controller.ReleaseNotes, Left, 520, BodyWidth, value => Controller.ReleaseNotes = value, true, 52);
+        Text(Controller.PublisherAccount, Left, 581, BodyWidth, 20, 9, Theme.Muted);
+        Action("workspace.build", Controller.OutputPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? "Build setup  →" : "Build package  →", Left, BodyBottom - 48, 192, () => _ = Controller.BuildAsync(), true, !Controller.Busy);
         Action("workspace.publish", "Publish release", Left + 206, BodyBottom - 48, 170, () => _ = Controller.PublishAsync(), enabled: !Controller.Busy, accent: Theme.Orange);
-        Action("workspace.test", "Open built package", Width - 220, BodyBottom - 48, 186, () => _ = Controller.OpenPackageAsync(Controller.BuiltPackagePath ?? Controller.OutputPath), enabled: !Controller.Busy && File.Exists(Controller.BuiltPackagePath ?? Controller.OutputPath));
+        Action("workspace.test", "Open built installer", Width - 220, BodyBottom - 48, 186, () => _ = Controller.OpenPackageAsync(Controller.BuiltPackagePath ?? Controller.OutputPath), enabled: !Controller.Busy && File.Exists(Controller.BuiltPackagePath ?? Controller.OutputPath));
     }
 
-    private void PathField(string id, string label, string value, float y, Action<string> changed, Action browse)
+    private void PathField(string id, string label, string value, float y, Action<string> changed, Action browse, Action? project = null)
     {
         Text(label, Left, y, BodyWidth, 22, 8.5f, Theme.Muted, true);
-        Field(id, value, Left, y + 30, BodyWidth - 121, changed);
-        Action(id + ".browse", "Browse", Width - 142, y + 30, 108, browse, enabled: !Controller.Busy);
+        Field(id, value, Left, y + 30, BodyWidth - (project is null ? 121 : 242), changed);
+        Action(id + ".browse", project is null ? "Browse" : "Folder", Width - (project is null ? 142 : 263), y + 30, 108, browse, enabled: !Controller.Busy);
+        if (project is not null) Action(id + ".project", "Project", Width - 142, y + 30, 108, project, enabled: !Controller.Busy);
     }
 
     private void BuildActivity()

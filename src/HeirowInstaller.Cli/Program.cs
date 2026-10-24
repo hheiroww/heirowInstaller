@@ -13,6 +13,10 @@ heirowInstaller — modular Windows installation and publishing
 
   pack <manifest.json> --source <directory> --output <package.hinst> [--sign-key <private.pem>]
   bundle <package.hinst> --launcher <single-file.exe> --output <setup.exe>
+  build <manifest.json> --source <directory>|--project <application.csproj> --output <setup.exe>
+    [--launcher <published-heirowInstaller.exe>] [--updater <published-heirowUpdater.exe>] [--sign-key <pem>]
+  compile <source.wxs|project.wixproj> --output <package.msi|module.msm|patch.msp|bundle.exe>
+    [--wix <wix.exe>] [--msbuild <MSBuild.exe>] [--extension <id-or-dll>] [--compiler-arg <argument>]
   inspect <package.hinst|setup.exe>
   verify <package> [--trust-key <public-key-sha256>] [--require-signature]
   extract <package> --output <directory>
@@ -67,6 +71,28 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                 case "bundle":
                     BundleBuilder.Build(parsed.Require("launcher"), Subject(), parsed.Require("output"));
                     Print(new { output = Path.GetFullPath(parsed.Require("output")), sha256 = PackageSafety.HashFile(parsed.Require("output")) }); break;
+                case "build":
+                    Print(await StandaloneInstallerBuilder.BuildAsync(Subject(), parsed.Require("output"), new()
+                    {
+                        SourceDirectory = parsed.Get("source"), ApplicationProjectPath = parsed.Get("project"), LauncherPath = parsed.Get("launcher"),
+                        SigningKeyPath = parsed.Get("sign-key"), UpdateCompanionExecutablePath = parsed.Get("updater"),
+                        UpdaterDefaultSelected = parsed.Has("updater-default") ? true : null,
+                        Configuration = parsed.Get("configuration") ?? "Release", Runtime = parsed.Get("runtime") ?? "win-x64", Framework = parsed.Get("framework")
+                    }, progress, cancellation.Token)); break;
+                case "compile":
+                {
+                    var build = new WixBuildOptions { WixExecutable = parsed.Get("wix") ?? "wix", MsBuildExecutable = parsed.Get("msbuild"),
+                        Configuration = parsed.Get("configuration") ?? "Release", Architecture = parsed.Get("arch") ?? "x64", Restore = !parsed.Has("skip-restore"),
+                        AdditionalArguments = parsed.CompilerArguments, Extensions = parsed.Extensions, Sources = parsed.SourceFiles,
+                        BindPaths = parsed.BindPaths, IncludeDirectories = parsed.IncludeDirectories, LocalizationFiles = parsed.LocalizationFiles };
+                    foreach (var define in parsed.Defines)
+                    {
+                        var separator = define.IndexOf('=');
+                        if (separator <= 0) throw new ArgumentException("--define requires Name=Value.");
+                        build.Defines.Add(define[..separator], define[(separator + 1)..]);
+                    }
+                    Print(await WixCompiler.BuildAsync(Subject(), parsed.Require("output"), build, progress, cancellation.Token)); break;
+                }
                 case "inspect":
                     using (var package = PackageReader.Open(Subject())) Print(new { manifest = package.Manifest, signed = package.Signature is not null, publisherKeySha256 = package.PublisherKeySha256 }); break;
                 case "verify":
@@ -210,16 +236,26 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         private readonly Dictionary<string, string?> options = new(StringComparer.OrdinalIgnoreCase);
         public List<string> Positionals { get; } = [];
         public List<string> BackendArguments { get; } = [];
+        public List<string> CompilerArguments { get; } = [];
+        public List<string> Extensions { get; } = [];
+        public List<string> Defines { get; } = [];
+        public List<string> SourceFiles { get; } = [];
+        public List<string> BindPaths { get; } = [];
+        public List<string> IncludeDirectories { get; } = [];
+        public List<string> LocalizationFiles { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch"], StringComparer.OrdinalIgnoreCase);
+            var repeated = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) { ["compiler-arg"] = CompilerArguments, ["extension"] = Extensions,
+                ["define"] = Defines, ["source-file"] = SourceFiles, ["bind-path"] = BindPaths, ["include"] = IncludeDirectories, ["localization"] = LocalizationFiles };
             for (var i = 0; i < args.Length; i++)
             {
                 if (args[i] is "-h" or "/?") { options["help"] = null; continue; }
                 if (!args[i].StartsWith("--", StringComparison.Ordinal)) { Positionals.Add(args[i]); continue; }
                 var key = args[i][2..];
                 if (key.Equals("backend-arg", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) { BackendArguments.Add(args[++i]); continue; }
+                if (repeated.TryGetValue(key, out var collection) && i + 1 < args.Length) { collection.Add(args[++i]); continue; }
                 if (flags.Contains(key)) options[key] = null;
                 else if (values.Contains(key) && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal)) options[key] = args[++i];
                 else throw new ArgumentException("Unknown option or missing value: --" + key);

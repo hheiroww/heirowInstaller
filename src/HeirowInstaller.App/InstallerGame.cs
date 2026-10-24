@@ -82,6 +82,7 @@ internal sealed class InstallerGame : Game
     protected override void Update(GameTime gameTime)
     {
         while (actions.TryDequeue(out var action)) action();
+        MainScene.Controller.ExpirePublisherSession();
         manager.Tick(gameTime);
         MainScene.RefreshLayoutIfNeeded();
         base.Update(gameTime);
@@ -137,6 +138,7 @@ internal sealed class InstallerGame : Game
 
     protected override void UnloadContent()
     {
+        MainScene?.Controller.Dispose();
         MainScene?.Dispose();
         spriteBatch?.Dispose();
         base.UnloadContent();

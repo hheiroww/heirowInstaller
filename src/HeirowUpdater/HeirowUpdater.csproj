@@ -1,7 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><AssemblyName>heirowUpdater</AssemblyName>
+    <TargetFramework>net10.0-windows7.0</TargetFramework><OutputType>WinExe</OutputType><AssemblyName>heirowUpdater</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF><PlatformTarget>x64</PlatformTarget>
+    <ApplicationIcon>../../assets/heirowInstaller.ico</ApplicationIcon>
     <Description>SocketJack-powered application update companion for heirowInstaller.</Description>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" /></ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ProjectZ" Version="[2026.10.23.2]" />
+    <Content Include="../../assets/heirowInstaller.png" Link="Assets/heirowInstaller.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../assets/heirowInstaller.ico" Link="Assets/heirowInstaller.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

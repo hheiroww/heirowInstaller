@@ -39,7 +39,42 @@ public sealed class PackageManifest
     public List<PrerequisiteDefinition> Prerequisites { get; set; } = [];
     public LegacyMsiDefinition? LegacyMsi { get; set; }
     public LegacyExecutableDefinition? LegacyExecutable { get; set; }
+    public UpdateCompanionDefinition? UpdateCompanion { get; set; }
     public Dictionary<string, JsonElement> Modules { get; set; } = [];
+}
+
+public sealed class UpdateCompanionDefinition
+{
+    public string Feature { get; set; } = "updates";
+    public string ExecutablePath { get; set; } = "heirowUpdater.exe";
+    public string ConfigurationPath { get; set; } = "heirowUpdater.json";
+    public string Mode { get; set; } = "after-exit";
+    public string CredentialOrigin { get; set; } = "https://socketjack.com";
+    public string? AuthApplication { get; set; }
+    public string? CookieEnvironmentVariable { get; set; }
+    public string? TokenEnvironmentVariable { get; set; }
+}
+
+/// <summary>Generated app-local updater configuration. Credential values are never stored here.</summary>
+public sealed class UpdateCompanionConfiguration
+{
+    public int FormatVersion { get; set; } = 1;
+    public string ProductId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string CurrentVersion { get; set; } = "";
+    public string FeedUrl { get; set; } = "";
+    public string InstallDirectory { get; set; } = "";
+    public string StateRoot { get; set; } = "";
+    public string Scope { get; set; } = "user";
+    public string PublisherKeySha256 { get; set; } = "";
+    public List<string> Features { get; set; } = [];
+    public string EntryPoint { get; set; } = "";
+    public string Mode { get; set; } = "after-exit";
+    public bool Isolated { get; set; }
+    public string CredentialOrigin { get; set; } = "https://socketjack.com";
+    public string? AuthApplication { get; set; }
+    public string? CookieEnvironmentVariable { get; set; }
+    public string? TokenEnvironmentVariable { get; set; }
 }
 
 public sealed class PackageFeature
@@ -130,6 +165,15 @@ public sealed class LegacyExecutableDefinition
     public string? UninstallExecutable { get; set; }
     public List<string> UninstallArguments { get; set; } = [];
     public List<int> SuccessExitCodes { get; set; } = [0, 3010, 1641];
+    public BackendRegistrationDefinition? MaintenanceRegistration { get; set; }
+}
+
+public sealed class BackendRegistrationDefinition
+{
+    public string Hive { get; set; } = "user";
+    public string View { get; set; } = "registry64";
+    public string? UninstallKey { get; set; }
+    public string? BundleUpgradeCode { get; set; }
 }
 
 public sealed class PackageBuildOptions
@@ -152,6 +196,8 @@ public sealed class InstallOptions
     public List<string> LegacyArguments { get; set; } = [];
     public bool RequireSignature { get; set; }
     public string? TrustedPublisherKeySha256 { get; set; }
+    /// <summary>A verified staged helper already stopped its owning watcher and still observes its cancellation event.</summary>
+    public bool CompanionStopAlreadyHandled { get; set; }
     /// <summary>Disables OS-wide integrations for isolated package validation. Never use for production installation.</summary>
     public bool Isolated { get; set; }
 }
@@ -168,6 +214,7 @@ public sealed class InstallPlan
     public string? PreviousVersion { get; set; }
     public bool RequiresElevation { get; set; }
     public bool UseOriginalInstallDirectory { get; set; }
+    public bool UpdateCompanionEnabled { get; set; }
     public List<string> Operations { get; set; } = [];
 }
 
@@ -211,6 +258,7 @@ public sealed class InstalledProduct
     public List<string> Features { get; set; } = [];
     public List<InstalledFile> Files { get; set; } = [];
     public List<ModuleSnapshot> Modules { get; set; } = [];
+    public List<ModuleSnapshot> BackendRegistrations { get; set; } = [];
 }
 
 public sealed class InstalledFile

@@ -14,6 +14,7 @@
     <ProjectZRoot Condition="'$(UseLocalProjectZ)' == 'true' and '$(ProjectZRoot)' == ''">$(USERPROFILE)\Documents\GitHub\Project-Z</ProjectZRoot>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../templates/bootstrap/HeirowUpdaterBootstrap.cs" Link="Bootstrap/HeirowUpdaterBootstrap.cs" />
     <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
     <ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" />
     <ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" />

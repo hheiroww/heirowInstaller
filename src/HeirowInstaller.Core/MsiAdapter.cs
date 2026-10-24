@@ -11,7 +11,8 @@ public static class MsiAdapter
         {
             arguments.AddRange(["/i", packagePath]);
             if (!plan.UseOriginalInstallDirectory) arguments.Add(definition.InstallDirectoryProperty + "=" + plan.InstallDirectory);
-            if (plan.Features.Count > 0) arguments.Add("ADDLOCAL=" + string.Join(',', plan.Features));
+            var msiFeatures = plan.Features.Where(x => !string.Equals(x, plan.Manifest.UpdateCompanion?.Feature, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (msiFeatures.Count > 0) arguments.Add("ADDLOCAL=" + string.Join(',', msiFeatures));
             arguments.AddRange(definition.Arguments);
         }
         else

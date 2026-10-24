@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>2026.10.24.3</Version>
+    <Version>2026.10.24.4</Version>
     <Authors>heirow</Authors>
     <Company>SocketJack</Company>
     <Product>heirowInstaller</Product>

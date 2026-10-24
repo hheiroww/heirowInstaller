@@ -35,6 +35,8 @@ internal static class Program
                 return result.RebootRequired ? 3010 : 0;
             }
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+            if (options.PackagePath is null && !options.Install && !options.Isolated && options.SmokeDirectory is null && options.SelfUpdateSmokeFeed is null && options.CapturePath is null)
+                global::SocketJack.HeirowUpdaterBootstrap.StartAfterExit();
             using var game = new InstallerGame(options);
             game.Run();
             return Environment.ExitCode;

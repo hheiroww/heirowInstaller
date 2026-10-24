@@ -30,7 +30,8 @@ $updaterDirectory = Join-Path $buildDirectory 'updater'
 foreach ($project in @(@('src/HeirowInstaller.App/HeirowInstaller.App.csproj',$appDirectory),@('src/HeirowInstaller.Cli/HeirowInstaller.Cli.csproj',$cliDirectory),@('src/HeirowUpdater/HeirowUpdater.csproj',$updaterDirectory))) {
     $publishArguments = @('publish',(Join-Path $projectRoot $project[0]),'-c',$Configuration,'-r',$Runtime,'--self-contained','true',
         '-p:PublishSingleFile=true','-p:IncludeNativeLibrariesForSelfExtract=true','-p:IncludeAllContentForSelfExtract=true',
-        '-p:EnableCompressionInSingleFile=true','-p:CopyOutputSymbolsToPublishDirectory=false','-p:DebugType=embedded',"-p:Version=$Version",'-o',$project[1],'--nologo')
+        '-p:EnableCompressionInSingleFile=true','-p:CopyOutputSymbolsToPublishDirectory=false','-p:DebugType=embedded',"-p:Version=$Version",'-o',$project[1],'--nologo',
+        '-m:1','-nodeReuse:false','-p:UseSharedCompilation=false')
     $publishArguments += @("-p:SourceRevisionId=$sourceCommit", "-p:RepositoryCommit=$sourceCommit")
     if ($PackageCache) { $publishArguments += "-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
     Invoke-DotNet -Arguments $publishArguments
@@ -79,6 +80,8 @@ $manifest = [ordered]@{
     entryPoint='heirowInstaller.exe'; installDirectory='{LocalAppData}/Programs/SocketJack/heirowInstaller'; scope='user'
     homepage='https://socketjack.com/heirowInstaller/'; licenseFile='LICENSE'
     updateUrl='https://github.com/hheiroww/heirowInstaller/releases/latest/download/update.json'
+    features=@(@{id='updates';name='Application updates';description='Check for updates after heirowInstaller exits.';required=$false;default=[bool]$SigningKey})
+    updateCompanion=@{feature='updates';mode='after-exit';authApplication='heirowinstaller';credentialOrigin='https://socketjack.com';tokenEnvironmentVariable='HEIROWUPDATER_TOKEN';cookieEnvironmentVariable='HEIROWUPDATER_COOKIE'}
     shortcuts=@(@{name='heirowInstaller';location='startMenu';target='heirowInstaller.exe'})
     registry=@(
         @{hive='user';key='Software\Classes\.hinst';name='';type='string';value='SocketJack.heirowInstaller.Package'},
@@ -86,7 +89,12 @@ $manifest = [ordered]@{
         @{hive='user';key='Software\Classes\SocketJack.heirowInstaller.Package\DefaultIcon';name='';type='string';value='"{InstallDir}\heirowInstaller.exe",0'},
         @{hive='user';key='Software\Classes\SocketJack.heirowInstaller.Package\shell\open\command';name='';type='string';value='"{InstallDir}\heirowInstaller.exe" "%1"'}
     )
-    payload=@()
+    payload=@(Get-ChildItem -LiteralPath $payloadDirectory -Recurse -File | ForEach-Object {
+        $relative=[IO.Path]::GetRelativePath($payloadDirectory,$_.FullName).Replace('\','/')
+        $file=[ordered]@{source=$relative;path=$relative}
+        if($relative -eq 'heirowUpdater.exe'){$file.feature='updates'}
+        $file
+    })
 }
 $manifestPath = Join-Path $OutputDirectory 'installer.json'
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM

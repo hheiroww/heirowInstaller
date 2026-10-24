@@ -67,7 +67,8 @@ public sealed class InstallerEngine
         if (previous is not null && !previous.Scope.Equals(scope, StringComparison.Ordinal)) throw new InvalidOperationException("Changing installation scope requires uninstalling the existing product first.");
         if (previous is not null && !options.AllowDowngrade && PackageVersion.Parse(manifest.Version).CompareTo(PackageVersion.Parse(previous.Version)) < 0)
             throw new InvalidOperationException($"Downgrade from {previous.Version} to {manifest.Version} is blocked. Pass --allow-downgrade to opt in.");
-        var target = options.TargetDirectory ?? previous?.InstallDirectory;
+        var reportedMsiDirectory = manifest.LegacyMsi is not null ? WindowsIntegration.GetMsiInstallLocation(previous?.MsiProductCode ?? manifest.LegacyMsi.ProductCode) : null;
+        var target = options.TargetDirectory ?? reportedMsiDirectory ?? previous?.InstallDirectory;
         if (string.IsNullOrWhiteSpace(target)) target = manifest.InstallDirectory;
         if (string.IsNullOrWhiteSpace(target)) target = scope == "machine"
             ? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ProgramFiles), manifest.Id)
@@ -76,7 +77,7 @@ public sealed class InstallerEngine
         if (Path.GetDirectoryName(target) is null) throw new InvalidDataException("A volume root cannot be an installation directory.");
         PackageSafety.EnsureNoReparsePoints(target);
         if (IsWithin(target, stateRoot) || IsWithin(stateRoot, target)) throw new InvalidDataException("Installation and installer-state directories must be separate.");
-        if (previous is not null && !Path.GetFullPath(previous.InstallDirectory).Equals(target, StringComparison.OrdinalIgnoreCase))
+        if (previous is not null && !previous.UseOriginalInstallDirectory && !Path.GetFullPath(previous.InstallDirectory).Equals(target, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Changing the installation directory requires uninstalling the existing product first.");
         var selected = options.Features is null
             ? manifest.Features.Where(x => x.Default || x.Required).Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase)
@@ -87,6 +88,22 @@ public sealed class InstallerEngine
         if (scope == "user" && (manifest.Services.Any(x => IsSelected(x.Feature, selected)) ||
             manifest.Registry.Any(x => x.Hive == "machine" && IsSelected(x.Feature, selected))))
             throw new InvalidDataException("Machine registry values and Windows services require machine installation scope. Select --scope machine.");
+        var companionEnabled = manifest.UpdateCompanion is { } companion && IsSelected(companion.Feature, selected);
+        if (companionEnabled && package.PublisherKeySha256 is null)
+            throw new CryptographicException("The optional app-local updater requires a signed package and pinned publisher identity.");
+        if (companionEnabled && manifest.LegacyExecutable is { } legacyExecutable)
+        {
+            BackendMaintenance.ValidateDefinition(legacyExecutable.MaintenanceRegistration ?? throw new InvalidDataException("Select application updates only after authoring the executable backend's exact maintenanceRegistration."), scope);
+            if (legacyExecutable.InstallDirectoryArgument is null)
+            {
+                var fixedDirectory = !string.IsNullOrWhiteSpace(manifest.InstallDirectory) ? Path.GetFullPath(Expand(manifest.InstallDirectory, ""))
+                    : previous is { UseOriginalInstallDirectory: false } ? Path.GetFullPath(previous.InstallDirectory) : null;
+                if (fixedDirectory is null || !fixedDirectory.Equals(target, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("This executable backend has a fixed application directory. Author its exact installDirectory, or an actually supported installDirectoryArgument before selecting a different target.");
+            }
+        }
+        if (companionEnabled && (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null) && !options.Isolated && !options.RegisterProduct)
+            throw new InvalidDataException("A legacy backend with application updates requires its own registered heirowInstaller maintenance host.");
         var files = manifest.Payload.Where(x => x.Feature is null || selected.Contains(x.Feature)).ToList();
         if (manifest.LegacyMsi is { } msi && !files.Any(x => x.Path.Equals(msi.PayloadPath, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("The MSI payload cannot be excluded by feature selection.");
@@ -96,11 +113,14 @@ public sealed class InstallerEngine
         var plan = new InstallPlan
         {
             Manifest = manifest, InstallDirectory = target, Scope = scope, Features = selected.ToList(), Files = files,
+            UpdateCompanionEnabled = companionEnabled,
             TotalBytes = files.Sum(x => x.Size), IsUpgrade = previous is not null,
             PreviousVersion = previous?.Version, RequiresElevation = scope == "machine" || manifest.Services.Any(x => IsSelected(x.Feature, selected)) || manifest.Registry.Any(x => x.Hive == "machine" && IsSelected(x.Feature, selected))
         };
         plan.UseOriginalInstallDirectory = (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null) &&
             options.TargetDirectory is null && string.IsNullOrWhiteSpace(manifest.InstallDirectory);
+        if (companionEnabled && plan.UseOriginalInstallDirectory && reportedMsiDirectory is null && (previous is null || previous.UseOriginalInstallDirectory))
+            throw new InvalidDataException("The original installer's application directory is unknown. Author its exact installDirectory/property or pass an explicit --target before selecting the app-local updater.");
         plan.Operations.Add(manifest.LegacyMsi is null ? $"Install {files.Count} verified files" : "Run Windows Installer with the original MSI database");
         if (plan.UseOriginalInstallDirectory) plan.Operations.Add("Preserve the original installer's authored destination");
         if (manifest.Registry.Count > 0) plan.Operations.Add($"Configure {manifest.Registry.Count} registry values");
@@ -108,6 +128,7 @@ public sealed class InstallerEngine
         if (manifest.Environment.Count > 0) plan.Operations.Add($"Configure {manifest.Environment.Count} environment values");
         if (manifest.Services.Count > 0) plan.Operations.Add($"Install {manifest.Services.Count} Windows services");
         if (manifest.Prerequisites.Count > 0) plan.Operations.Add("Check prerequisites; external installers manage their own rollback");
+        if (companionEnabled) plan.Operations.Add("Install the optional app-local updater; check for updates after the application exits");
         foreach (var configuration in manifest.Modules)
         {
             if (!modules.TryGetValue(configuration.Key, out var module)) throw new NotSupportedException("This installer does not have required module: " + configuration.Key);
@@ -126,16 +147,23 @@ public sealed class InstallerEngine
         using var machineState = OperatingSystem.IsWindows() && plan.Scope == "machine" && !options.Isolated ? MachineStateSecurity.Acquire(root, create: true) : null;
         if (machineState is null) Directory.CreateDirectory(root);
         using var operationLock = AcquireLock(root, package.Manifest.Id);
+        cancellationToken.ThrowIfCancellationRequested();
         // Re-evaluate after acquiring the cross-process product lock.
         plan = Plan(package, options);
         var previous = FindInstalled(package.Manifest.Id, options, plan.Scope);
+        if (options.CompanionStopAlreadyHandled && previous is null)
+            throw new InvalidOperationException("The staged update's application is no longer installed.");
+        if (options.CompanionStopAlreadyHandled) ValidateStagedApplication(previous!);
         var cache = PackageSafety.UnderRoot(root, package.Manifest.Id);
         var txRoot = Path.Combine(root, ".transactions", Guid.NewGuid().ToString("N"));
         using var transaction = new InstallTransaction(txRoot);
+        using var externalMedia = package.Manifest.LegacyMsi is not null || package.Manifest.LegacyExecutable is not null
+            ? new InstallTransaction(Path.Combine(txRoot, "external-media")) : null;
         var extracted = Path.Combine(txRoot, "payload");
         await package.VerifyAsync(progress, cancellationToken);
         await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
+        if (previous is not null && !options.CompanionStopAlreadyHandled) await StopCompanionAsync(previous, cancellationToken);
         Log(options, $"Installing {package.Manifest.Id} {package.Manifest.Version} to {plan.InstallDirectory}");
         var product = new InstalledProduct
         {
@@ -149,27 +177,37 @@ public sealed class InstallerEngine
             UseOriginalInstallDirectory = plan.UseOriginalInstallDirectory,
             MsiProductCode = package.Manifest.LegacyMsi?.ProductCode
         };
+        if (plan.UpdateCompanionEnabled && (product.IsMsi || product.IsExecutable) && !options.Isolated)
+        {
+            product.UninstallerPath = CacheUninstaller(options, cache, transaction) ?? previous?.UninstallerPath;
+            if (product.UninstallerPath is null || !File.Exists(product.UninstallerPath)) throw new InvalidOperationException("A selected backend updater requires an available trusted maintenance host. Supply InstallOptions.InstallerPath.");
+        }
         var reboot = await WindowsIntegration.InstallPrerequisitesAsync(package.Manifest, plan, extracted, options, progress, cancellationToken);
         if (previous is not null && (previous.IsMsi != product.IsMsi || previous.IsExecutable != product.IsExecutable))
             throw new InvalidOperationException("Changing installation backend requires uninstalling the existing product first.");
         var digest = PackageSafety.HashFile(package.PackagePath);
         if (product.IsMsi || product.IsExecutable)
-            product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, digest, transaction);
+            product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, digest, externalMedia!);
         if (OperatingSystem.IsWindows() && machineState is not null) MachineStateSecurity.ValidateExistingRoot(root);
         if (product.IsMsi)
         {
             var msi = package.Manifest.LegacyMsi!;
             var msiFile = PackageSafety.UnderRoot(product.LegacySourceDirectory!, msi.PayloadPath);
             ValidateMsiSourcePath(msiFile);
-            if (string.IsNullOrWhiteSpace(product.MsiProductCode)) product.MsiProductCode = WindowsIntegration.GetMsiProperty(msiFile, "ProductCode");
+            var actualProductCode = WindowsIntegration.GetMsiProperty(msiFile, "ProductCode");
+            if (!string.IsNullOrWhiteSpace(product.MsiProductCode) && Guid.Parse(product.MsiProductCode) != Guid.Parse(actualProductCode))
+                throw new InvalidDataException("The authored MSI ProductCode does not match its verified original database.");
+            product.MsiProductCode = actualProductCode;
             var exit = await WindowsIntegration.RunMsiAsync("install", msiFile, product.MsiProductCode, msi, plan, options, cancellationToken);
             reboot |= exit is 3010 or 1641;
+            externalMedia!.Commit();
             cancellationToken = CancellationToken.None;
         }
         else if (product.IsExecutable)
         {
             var exit = await WindowsIntegration.RunExecutableAsync("install", package.Manifest.LegacyExecutable!, product.LegacySourceDirectory!, plan.InstallDirectory, options, cancellationToken);
             reboot |= exit is 3010 or 1641;
+            externalMedia!.Commit();
             cancellationToken = CancellationToken.None;
         }
         else
@@ -177,6 +215,7 @@ public sealed class InstallerEngine
             if (previous is { IsMsi: true }) throw new InvalidOperationException("Migrating an MSI product to native payload installation requires uninstalling the MSI first.");
             if (previous is not null) await RestoreModulesAsync(previous, transaction, options, cancellationToken);
             var desired = plan.Files.Select(x => x.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (plan.UpdateCompanionEnabled) desired.Add(package.Manifest.UpdateCompanion!.ConfigurationPath);
             if (previous is not null)
                 foreach (var removed in previous.Files.Where(x => !desired.Contains(x.Path))) RestoreOwnedFile(previous, removed, cache, transaction);
             for (var i = 0; i < plan.Files.Count; i++)
@@ -195,6 +234,7 @@ public sealed class InstallerEngine
                 product.Files.Add(new() { Path = file.Path, Sha256 = file.Sha256, OriginalBackup = original });
                 progress?.Report(new("install", file.Path, i + 1, plan.Files.Count));
             }
+            if (plan.UpdateCompanionEnabled) InstallCompanionConfiguration(package.Manifest, plan, product, previous, root, cache, transaction);
             product.Modules = await WindowsIntegration.ApplyModulesAsync(package.Manifest, plan, transaction, options, cancellationToken);
             foreach (var configuration in package.Manifest.Modules)
             {
@@ -204,12 +244,22 @@ public sealed class InstallerEngine
                 product.Modules.Add(snapshot);
             }
         }
+        if (product.IsMsi || product.IsExecutable)
+        {
+            if (product.IsMsi && WindowsIntegration.GetMsiInstallLocation(product.MsiProductCode) is { } installedDirectory)
+            {
+                plan.InstallDirectory = installedDirectory; product.InstallDirectory = installedDirectory;
+            }
+            InstallLegacyCompanion(package.Manifest, plan, product, previous, root, cache, extracted, transaction);
+            if (OperatingSystem.IsWindows() && !options.Isolated)
+                product.BackendRegistrations = BackendMaintenance.Configure(product, previous, plan, transaction);
+        }
         cancellationToken.ThrowIfCancellationRequested();
         product.PackagePath = PackageSafety.UnderRoot(cache, "packages/" + digest + ".hinst");
         if (!File.Exists(product.PackagePath)) transaction.ReplaceFile(product.PackagePath, package.PackagePath);
         else if (!PackageSafety.HashEquals(PackageSafety.HashFile(product.PackagePath), digest)) throw new IOException("Cached package hash mismatch.");
-        product.UninstallerPath = CacheUninstaller(options, cache, transaction);
-        product.RegisteredProduct = options.RegisterProduct && !options.Isolated && !product.IsMsi && !product.IsExecutable && product.UninstallerPath is not null;
+        product.UninstallerPath ??= CacheUninstaller(options, cache, transaction);
+        product.RegisteredProduct = options.RegisterProduct && !options.Isolated && (!(product.IsMsi || product.IsExecutable) || plan.UpdateCompanionEnabled) && product.UninstallerPath is not null;
         if (product.RegisteredProduct) WindowsIntegration.RegisterProduct(product, root, transaction, package.Manifest);
         else if (previous is { RegisteredProduct: true }) WindowsIntegration.UnregisterProduct(previous, transaction);
         var receiptTemporary = Path.Combine(txRoot, "new-receipt.json");
@@ -219,10 +269,19 @@ public sealed class InstallerEngine
         transaction.Commit();
         progress?.Report(new("complete", "Installation completed", 1, 1));
         Log(options, $"Installed {product.Id} {product.Version}; reboot required: {reboot}");
-        if (options.Launch && !product.IsMsi && !product.IsExecutable && package.Manifest.EntryPoint.Length > 0)
+        if (options.Launch && package.Manifest.EntryPoint.Length > 0)
         {
-            var entry = PackageSafety.UnderRoot(plan.InstallDirectory, package.Manifest.EntryPoint);
-            if (File.Exists(entry)) Process.Start(new ProcessStartInfo(entry) { UseShellExecute = true, WorkingDirectory = plan.InstallDirectory });
+            var entry = PackageSafety.UnderRoot(plan.InstallDirectory, plan.UpdateCompanionEnabled ? package.Manifest.UpdateCompanion!.ExecutablePath : package.Manifest.EntryPoint);
+            if (File.Exists(entry))
+            {
+                var start = new ProcessStartInfo(entry) { UseShellExecute = true, WorkingDirectory = plan.InstallDirectory };
+                if (plan.UpdateCompanionEnabled)
+                {
+                    start.ArgumentList.Add("launch"); start.ArgumentList.Add("--config");
+                    start.ArgumentList.Add(PackageSafety.UnderRoot(plan.InstallDirectory, package.Manifest.UpdateCompanion!.ConfigurationPath));
+                }
+                Process.Start(start);
+            }
         }
         return Result(product, reboot);
     }
@@ -237,7 +296,7 @@ public sealed class InstallerEngine
         options.Scope = product.Scope;
         options.Features ??= product.Features;
         options.Isolated = product.Isolated;
-        options.RegisterProduct = product.RegisteredProduct;
+        options.RegisterProduct = product.RegisteredProduct || product.IsMsi || product.IsExecutable;
         if (product.IsMsi || product.IsExecutable)
         {
             if (product.Scope == "machine" && !IsElevated && !product.Isolated) throw new UnauthorizedAccessException("Repair requires administrator privileges.");
@@ -246,15 +305,41 @@ public sealed class InstallerEngine
             var cache = Path.GetDirectoryName(product.ReceiptPath)!;
             var root = Path.GetDirectoryName(cache)!;
             using var operationLock = AcquireLock(root, product.Id);
+            cancellationToken.ThrowIfCancellationRequested();
+            var previous = ReadReceipt(product.ReceiptPath, product.Scope, options.Isolated) ?? throw new InvalidDataException("Installation receipt is missing.");
+            var plan = Plan(package, options);
             using var transaction = new InstallTransaction(Path.Combine(root, ".transactions", Guid.NewGuid().ToString("N")));
+            using var externalMedia = new InstallTransaction(Path.Combine(transaction.Root, "external-media"));
             await package.VerifyAsync(progress, cancellationToken);
             var extracted = Path.Combine(transaction.Root, "payload");
             await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
-            product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, PackageSafety.HashFile(product.PackagePath), transaction);
+            await StopCompanionAsync(previous, cancellationToken);
+            product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, PackageSafety.HashFile(product.PackagePath), externalMedia);
             var exit = product.IsMsi
                 ? await WindowsIntegration.RunMsiAsync("repair", ValidateMsiSourcePath(PackageSafety.UnderRoot(product.LegacySourceDirectory, package.Manifest.LegacyMsi!.PayloadPath)), product.MsiProductCode, package.Manifest.LegacyMsi,
-                    new() { InstallDirectory = product.InstallDirectory, Features = product.Features, UseOriginalInstallDirectory = product.UseOriginalInstallDirectory }, options, cancellationToken)
+                    plan, options, cancellationToken)
                 : await WindowsIntegration.RunExecutableAsync("repair", package.Manifest.LegacyExecutable!, product.LegacySourceDirectory, product.InstallDirectory, options, cancellationToken);
+            externalMedia.Commit();
+            product.Features = plan.Features; product.Files = [];
+            if (product.IsMsi && WindowsIntegration.GetMsiInstallLocation(product.MsiProductCode) is { } installedDirectory)
+                plan.InstallDirectory = installedDirectory;
+            product.InstallDirectory = plan.InstallDirectory;
+            InstallLegacyCompanion(package.Manifest, plan, product, previous, root, cache, extracted, transaction);
+            if (OperatingSystem.IsWindows() && !options.Isolated)
+            {
+                product.BackendRegistrations = BackendMaintenance.Configure(product, previous, plan, transaction);
+                if (plan.UpdateCompanionEnabled)
+                {
+                    product.UninstallerPath = CacheUninstaller(options, cache, transaction) ?? previous.UninstallerPath;
+                    if (product.UninstallerPath is null || !File.Exists(product.UninstallerPath)) throw new InvalidOperationException("The backend companion's maintenance host is missing.");
+                    product.RegisteredProduct = true;
+                    WindowsIntegration.RegisterProduct(product, root, transaction, package.Manifest);
+                }
+                else if (previous.RegisteredProduct)
+                {
+                    WindowsIntegration.UnregisterProduct(previous, transaction); product.RegisteredProduct = false;
+                }
+            }
             var receipt = Path.Combine(transaction.Root, "receipt.json");
             await File.WriteAllTextAsync(receipt, JsonSerializer.Serialize(product, InstallerJson.Options), CancellationToken.None);
             transaction.ReplaceFile(product.ReceiptPath, receipt);
@@ -273,12 +358,16 @@ public sealed class InstallerEngine
         var root = Path.GetDirectoryName(Path.GetDirectoryName(product.ReceiptPath))!;
         using var machineState = GuardProductState(product, options);
         using var operationLock = AcquireLock(root, product.Id);
+        cancellationToken.ThrowIfCancellationRequested();
         product = ReadReceipt(product.ReceiptPath, product.Scope, options.Isolated) ?? throw new InvalidDataException("Installation receipt is missing.");
+        await StopCompanionAsync(product, cancellationToken);
         var cache = Path.GetDirectoryName(product.ReceiptPath)!;
         using var transaction = new InstallTransaction(Path.Combine(root, ".transactions", Guid.NewGuid().ToString("N")));
         options.Isolated = product.Isolated;
         var reboot = false;
-        if (product.IsExecutable)
+        var backendAlreadyRemoved = OperatingSystem.IsWindows() && (product.IsMsi && !WindowsIntegration.IsMsiInstalled(product.MsiProductCode) ||
+            product.IsExecutable && product.BackendRegistrations.Count > 0 && !BackendMaintenance.HasRegistration(product));
+        if (product.IsExecutable && !backendAlreadyRemoved)
         {
             using var package = PackageReader.Open(product.PackagePath);
             package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
@@ -288,14 +377,14 @@ public sealed class InstallerEngine
             var exit = await WindowsIntegration.RunExecutableAsync("uninstall", package.Manifest.LegacyExecutable!, product.LegacySourceDirectory, product.InstallDirectory, options, cancellationToken);
             reboot = exit is 3010 or 1641;
         }
-        else if (product.IsMsi)
+        else if (product.IsMsi && !backendAlreadyRemoved)
         {
             using var package = PackageReader.Open(product.PackagePath);
             var exit = await WindowsIntegration.RunMsiAsync("uninstall", product.PackagePath, product.MsiProductCode, package.Manifest.LegacyMsi!,
                 new() { InstallDirectory = product.InstallDirectory, Features = product.Features }, options, cancellationToken);
             reboot = exit is 3010 or 1641;
         }
-        else
+        else if (!product.IsMsi && !product.IsExecutable)
         {
             await RestoreModulesAsync(product, transaction, options, cancellationToken);
             for (var i = 0; i < product.Files.Count; i++)
@@ -304,6 +393,11 @@ public sealed class InstallerEngine
                 RestoreOwnedFile(product, product.Files[i], cache, transaction);
                 progress?.Report(new("uninstall", product.Files[i].Path, i + 1, product.Files.Count));
             }
+        }
+        if (product.IsMsi || product.IsExecutable)
+        {
+            foreach (var file in product.Files) RestoreOwnedFile(product, file, cache, transaction);
+            if (OperatingSystem.IsWindows() && !options.Isolated) BackendMaintenance.Restore(product.BackendRegistrations, product.Scope, transaction);
         }
         if (product.RegisteredProduct) WindowsIntegration.UnregisterProduct(product, transaction);
         transaction.DeleteFile(product.ReceiptPath);
@@ -319,6 +413,25 @@ public sealed class InstallerEngine
         Log(options, $"Uninstalled {product.Id}");
         progress?.Report(new("complete", "Uninstall completed", 1, 1));
         return Result(product, reboot);
+    }
+
+    private static async Task StopCompanionAsync(InstalledProduct product, CancellationToken cancellationToken)
+    {
+        // Read only signed authored metadata; never execute an installed updater as administrator.
+        using var package = PackageReader.Open(product.PackagePath);
+        package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
+        if (package.Manifest.UpdateCompanion is { } companion && product.Features.Contains(companion.Feature, StringComparer.OrdinalIgnoreCase))
+            await UpdateCompanionControl.StopAsync(product.InstallDirectory, companion.ExecutablePath, cancellationToken);
+    }
+
+    private static void ValidateStagedApplication(InstalledProduct product)
+    {
+        using var installed = PackageReader.Open(product.PackagePath);
+        installed.VerifySignature(product.PublisherKeySha256, requireSignature: true);
+        if (installed.Manifest.EntryPoint.Length == 0 || !File.Exists(PackageSafety.UnderRoot(product.InstallDirectory, installed.Manifest.EntryPoint)) ||
+            product.IsMsi && !WindowsIntegration.IsMsiInstalled(product.MsiProductCode) ||
+            OperatingSystem.IsWindows() && product.IsExecutable && product.BackendRegistrations.Count > 0 && !BackendMaintenance.HasRegistration(product))
+            throw new InvalidOperationException("The staged update's application was removed. Run its installer to install it again.");
     }
 
     private static string PrepareLegacySource(PackageManifest manifest, string extracted, string cache, string digest, InstallTransaction transaction)
@@ -355,6 +468,62 @@ public sealed class InstallerEngine
             await module.UninstallAsync(snapshot, new(plan, transaction, options.Isolated), token);
         }
         await WindowsIntegration.RestoreModulesAsync(product, transaction, options, token);
+    }
+
+    private static void InstallCompanionConfiguration(PackageManifest manifest, InstallPlan plan, InstalledProduct product,
+        InstalledProduct? previous, string stateRoot, string cache, InstallTransaction transaction)
+    {
+        var definition = manifest.UpdateCompanion!;
+        var destination = PackageSafety.UnderRoot(plan.InstallDirectory, definition.ConfigurationPath);
+        var previousFile = previous?.Files.SingleOrDefault(x => x.Path.Equals(definition.ConfigurationPath, StringComparison.OrdinalIgnoreCase));
+        string? original = previousFile?.OriginalBackup;
+        if (previousFile is null && File.Exists(destination))
+        {
+            original = "originals/" + Guid.NewGuid().ToString("N");
+            transaction.ReplaceFile(PackageSafety.UnderRoot(cache, original), destination);
+        }
+        var configuration = new UpdateCompanionConfiguration
+        {
+            ProductId = product.Id, Name = product.Name, CurrentVersion = product.Version, FeedUrl = manifest.UpdateUrl!,
+            InstallDirectory = product.InstallDirectory, StateRoot = stateRoot, Scope = product.Scope,
+            PublisherKeySha256 = product.PublisherKeySha256!, Features = product.Features, EntryPoint = manifest.EntryPoint,
+            Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin,
+            AuthApplication = definition.AuthApplication,
+            CookieEnvironmentVariable = definition.CookieEnvironmentVariable, TokenEnvironmentVariable = definition.TokenEnvironmentVariable
+        };
+        var temporary = Path.Combine(transaction.Root, "app-updater-config.json");
+        File.WriteAllText(temporary, JsonSerializer.Serialize(configuration, InstallerJson.Options));
+        transaction.ReplaceFile(destination, temporary);
+        product.Files.Add(new() { Path = definition.ConfigurationPath, Sha256 = PackageSafety.HashFile(temporary), OriginalBackup = original });
+    }
+
+    private static void InstallLegacyCompanion(PackageManifest manifest, InstallPlan plan, InstalledProduct product, InstalledProduct? previous,
+        string root, string cache, string extracted, InstallTransaction transaction)
+    {
+        var desired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (plan.UpdateCompanionEnabled)
+        {
+            var companion = manifest.UpdateCompanion!;
+            if (IsWithin(plan.InstallDirectory, root) || IsWithin(root, plan.InstallDirectory)) throw new InvalidDataException("The original installer reported a destination overlapping installer state.");
+            if (!File.Exists(PackageSafety.UnderRoot(plan.InstallDirectory, manifest.EntryPoint)))
+                throw new InvalidDataException("The authored application entry point was not found in the original installer's resolved directory; the updater was not copied.");
+            desired.Add(companion.ExecutablePath); desired.Add(companion.ConfigurationPath);
+        }
+        if (previous is not null)
+            foreach (var file in previous.Files.Where(x => !desired.Contains(x.Path))) RestoreOwnedFile(previous, file, cache, transaction);
+        if (!plan.UpdateCompanionEnabled) return;
+        var definition = manifest.UpdateCompanion!;
+        var destination = PackageSafety.UnderRoot(plan.InstallDirectory, definition.ExecutablePath);
+        var previousFile = previous?.Files.SingleOrDefault(x => x.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+        string? original = previousFile?.OriginalBackup;
+        if (previousFile is null && File.Exists(destination))
+        {
+            original = "originals/" + Guid.NewGuid().ToString("N");
+            transaction.ReplaceFile(PackageSafety.UnderRoot(cache, original), destination);
+        }
+        transaction.ReplaceFile(destination, PackageSafety.UnderRoot(extracted, definition.ExecutablePath));
+        product.Files.Add(new() { Path = definition.ExecutablePath, Sha256 = PackageSafety.HashFile(destination), OriginalBackup = original });
+        InstallCompanionConfiguration(manifest, plan, product, previous, root, cache, transaction);
     }
 
     private static void RestoreOwnedFile(InstalledProduct product, InstalledFile file, string cache, InstallTransaction transaction)
@@ -443,6 +612,7 @@ public sealed class InstallerEngine
 
     private static void ValidateReceiptIntegrationScope(InstalledProduct product)
     {
+        foreach (var snapshot in product.BackendRegistrations) BackendMaintenance.ValidateSnapshot(snapshot, product.Scope);
         if (product.Scope != "user") return;
         foreach (var snapshot in product.Modules)
             if (snapshot.Kind == "service" ||

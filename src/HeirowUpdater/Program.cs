@@ -19,6 +19,10 @@ heirowUpdater — application updates over the SocketJack network library
   enable [--interval-minutes 60] [--apply]
   disable
   status [--json]
+  launch --config <app-root/heirowUpdater.json> -- [application arguments]
+  after-exit --config <app-root/heirowUpdater.json> --application-pid <pid> --application-start <UTC ticks>
+  check-for-updates --config <app-root/heirowUpdater.json> [--json --no-prompt]
+  stop --config <app-root/heirowUpdater.json>
 
 Options: --target <directory>, --scope user|machine, --state-root <directory>,
   --download-directory <directory>, --log <path>, --silent, --json,
@@ -36,12 +40,16 @@ Credentials remain in environment variables and are sent only to their exact con
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
         string? helperStatusPath = null;
+        string? helperLifecycleStatePath = null;
         try
         {
             var parsed = new Arguments(args);
             var command = parsed.Positionals.FirstOrDefault()?.ToLowerInvariant();
             if (command is null || command == "help" || parsed.Has("help")) { Console.WriteLine(Help); return 0; }
-            if (command == "apply-bundle") { helperStatusPath = parsed.Get("status-file"); return await ApplyBundleAsync(parsed, cancellation.Token); }
+            if (command == "show-prompt") return await NativeUpdatePrompt.RunChildAsync(parsed, cancellation.Token);
+            if (command == "apply-bundle") { helperStatusPath = parsed.Get("status-file"); helperLifecycleStatePath = parsed.Get("lifecycle-state"); return await ApplyBundleAsync(parsed, cancellation.Token); }
+            if (command is "launch" or "after-exit" or "check-for-updates" or "repair" or "uninstall" or "stop")
+                return await ApplicationCommands.RunAsync(command, parsed, cancellation.Token);
             var configuration = parsed.Get("config") is { } configPath
                 ? UpdaterSchedule.ReadConfiguration(configPath) ?? (command is "enable" or "status" or "disable" ? new ScheduleConfiguration() : throw new FileNotFoundException("Updater configuration does not exist."))
                 : new ScheduleConfiguration();
@@ -124,14 +132,23 @@ Credentials remain in environment variables and are sent only to their exact con
                 await Task.Delay(TimeSpan.FromMinutes(configuration.IntervalMinutes), cancellation.Token);
             } while (true);
         }
-        catch (OperationCanceledException) { return 130; }
+        catch (OperationCanceledException)
+        {
+            if (helperLifecycleStatePath is not null) await ApplicationUpdater.CompleteHandoffAsync(helperLifecycleStatePath, CancellationToken.None);
+            if (helperStatusPath is not null) await UpdaterSchedule.WriteJsonAsync(helperStatusPath, new { status = "stopped" }, CancellationToken.None);
+            return 130;
+        }
         catch (Exception ex)
         {
             if (helperStatusPath is not null)
             {
                 try { await UpdaterSchedule.WriteJsonAsync(helperStatusPath, new { status = "error", error = ex.Message }, CancellationToken.None); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
-            else Console.Error.WriteLine(ex.Message);
+            else
+            {
+                Console.Error.WriteLine(ex.Message);
+                if (args.Contains("--json", StringComparer.OrdinalIgnoreCase)) Print(new { status = "error", error = ex.Message });
+            }
             return ex is ArgumentException ? 2 : 1;
         }
     }
@@ -202,6 +219,20 @@ Credentials remain in environment variables and are sent only to their exact con
     {
         var path = args.Positionals.ElementAtOrDefault(1) ?? throw new ArgumentException("apply-bundle requires a package path.");
         var expectedId = args.Require("product-id"); var expectedVersion = args.Require("expected-version");
+        var lifecycle = args.Get("lifecycle-config") is { } lifecyclePath
+            ? ApplicationUpdater.ReadConfiguration(lifecyclePath, args.Has("allow-loopback")) : null;
+        using var lifecycleCancellation = lifecycle is not null
+            ? new ApplicationStopMonitor(lifecycle.InstallDirectory, resetForOwner: false, token) : null;
+        if (lifecycleCancellation is not null) token = lifecycleCancellation.Token;
+        if (lifecycle is not null)
+        {
+            if (!lifecycle.ProductId.Equals(expectedId, StringComparison.OrdinalIgnoreCase) || !PackageSafety.HashEquals(lifecycle.PublisherKeySha256, args.Require("trust-key")) ||
+                !Path.GetFullPath(args.Require("target")).Equals(lifecycle.InstallDirectory, StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFullPath(args.Require("state-root")).Equals(Path.GetFullPath(lifecycle.StateRoot), StringComparison.OrdinalIgnoreCase) || args.Require("scope") != lifecycle.Scope)
+                throw new InvalidDataException("The app-local update handoff does not match its installed publisher and product.");
+            if (args.Get("lifecycle-ready") is { } readyPath)
+                await UpdaterSchedule.WriteJsonAsync(readyPath, new { status = "ready", helperProcessId = System.Environment.ProcessId }, CancellationToken.None);
+        }
         if (args.Get("wait-pid") is { } waiting)
         {
             var pid = int.Parse(waiting, System.Globalization.CultureInfo.InvariantCulture);
@@ -216,36 +247,46 @@ Credentials remain in environment variables and are sent only to their exact con
             catch (ArgumentException) { }
         }
         if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256"))) throw new System.Security.Cryptography.CryptographicException("Staged update hash mismatch.");
+        if (lifecycle is not null)
+        {
+            await ApplicationProcesses.WaitForExitAsync(PackageSafety.UnderRoot(lifecycle.InstallDirectory, lifecycle.EntryPoint), token, args.Get("application-host"), () => ApplicationHostRegistry.Paths(lifecycle));
+        }
         using var package = PackageReader.Open(path);
+        if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256"))) throw new System.Security.Cryptography.CryptographicException("Staged update changed while waiting for the application to close.");
         var key = args.Get("trust-key");
         package.VerifySignature(key, key is not null || !args.Has("allow-unsigned"));
         if (!package.Manifest.Id.Equals(expectedId, StringComparison.OrdinalIgnoreCase) || package.Manifest.Version != expectedVersion)
             throw new InvalidDataException("Staged update package identity mismatch.");
         await package.VerifyAsync(null, token);
-        var prior = InstallerEngine.ListInstalled(args.Get("state-root")).FirstOrDefault(x => x.Id.Equals(expectedId, StringComparison.OrdinalIgnoreCase));
+        var prior = InstallerEngine.ListInstalled(args.Get("state-root")).FirstOrDefault(x => x.Id.Equals(expectedId, StringComparison.OrdinalIgnoreCase) && x.Scope == (args.Get("scope") ?? "user"));
+        if (lifecycleCancellation?.StopRequested == true) throw new OperationCanceledException("Application maintenance stopped this update.", token);
         var result = await new InstallerEngine().InstallAsync(package, new()
         {
             TargetDirectory = args.Get("target"), StateRoot = args.Get("state-root"), Scope = args.Get("scope"),
             TrustedPublisherKeySha256 = key, RequireSignature = key is not null || !args.Has("allow-unsigned"),
             Features = prior?.Features, Silent = true, Launch = false, InstallerPath = args.Get("maintenance-host"),
-            RegisterProduct = prior?.RegisteredProduct ?? true, Isolated = args.Has("isolated"), LogPath = args.Get("log")
+            RegisterProduct = prior?.RegisteredProduct ?? true, Isolated = args.Has("isolated"), LogPath = args.Get("log"),
+            CompanionStopAlreadyHandled = lifecycle is not null
         }, null, token);
+        if (args.Get("lifecycle-state") is { } lifecycleState) await ApplicationUpdater.CompleteHandoffAsync(lifecycleState, CancellationToken.None);
         if (args.Get("status-file") is { } statusPath) await UpdaterSchedule.WriteJsonAsync(statusPath, new { status = "updated", result }, CancellationToken.None);
         if (!args.Has("background")) Print(result);
         return result.RebootRequired ? 3010 : 0;
     }
     private static void Print<T>(T value) => Console.WriteLine(JsonSerializer.Serialize(value, InstallerJson.Options));
     private sealed class InlineProgress(Action<InstallProgress> report) : IProgress<InstallProgress> { public void Report(InstallProgress value) => report(value); }
-    private sealed class Arguments
+    internal sealed class Arguments
     {
         private readonly Dictionary<string, string?> options = new(StringComparer.OrdinalIgnoreCase);
         public List<string> Positionals { get; } = [];
+        public List<string> ApplicationArguments { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "silent", "help", "background", "no-elevate", "elevated-child"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report"], StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < args.Length; i++)
             {
+                if (args[i] == "--") { ApplicationArguments.AddRange(args.Skip(i + 1)); break; }
                 if (args[i] is "-h" or "/?") { options["help"] = null; continue; }
                 if (!args[i].StartsWith("--", StringComparison.Ordinal)) { Positionals.Add(args[i]); continue; }
                 var key = args[i][2..];

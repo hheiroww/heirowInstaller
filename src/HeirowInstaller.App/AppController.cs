@@ -12,11 +12,15 @@ internal enum DesktopPage { Install, Installed, Workspace, Updates, Activity, Se
 internal enum SetupStage { Package, Features, Destination, Review, Progress, Complete }
 internal sealed record ActivityEntry(DateTimeOffset Time, string Title, string Detail, bool Error = false);
 
-internal sealed class AppController
+internal sealed class AppController : IDisposable
 {
     private readonly InstallerGame game;
     private readonly AppArguments arguments;
     private readonly InstallerEngine engine = new();
+    private PublisherSession? publisherSession;
+    internal bool SigningIn { get; private set; }
+    internal bool PublisherSignedIn => publisherSession is { } session && session.ExpiresUtc > DateTimeOffset.UtcNow;
+    internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username} · expires {publisherSession.ExpiresUtc.ToLocalTime():HH:mm}" : "Sign in to SocketJack to publish, or use publisher credentials from your environment.";
     internal DesktopSettings Settings { get; }
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
@@ -62,12 +66,16 @@ internal sealed class AppController
         this.game = game;
         this.arguments = arguments;
         Settings = DesktopSettings.Load();
-        OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application.hinst");
+        OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe");
         RefreshInstalled();
         AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
     }
 
     internal void Notify() => Changed?.Invoke();
+    internal void ExpirePublisherSession()
+    {
+        if (publisherSession is { } session && session.ExpiresUtc <= DateTimeOffset.UtcNow) { session.Dispose(); publisherSession = null; Notify(); }
+    }
 
     internal void Navigate(DesktopPage page)
     {
@@ -340,9 +348,22 @@ internal sealed class AppController
         try
         {
             var signingKey = Environment.GetEnvironmentVariable("HEIROWINSTALLER_SIGNING_KEY_PATH");
-            var options = new PackageBuildOptions { SigningKeyPath = string.IsNullOrWhiteSpace(signingKey) ? null : signingKey };
-            var result = await Task.Run(() => PackageBuilder.Build(manifest, source, output, options));
-            await game.OnUiAsync(() => { BuiltPackagePath = Path.GetFullPath(output); End(options.SigningKeyPath is null ? "Package built and verified" : "Signed package built and verified", $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes"); });
+            signingKey = string.IsNullOrWhiteSpace(signingKey) ? null : signingKey;
+            PackageManifest result;
+            if (output.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                var metadata = JsonSerializer.Deserialize<PackageManifest>(await File.ReadAllTextAsync(manifest, Cancellation!.Token), InstallerJson.Options) ?? throw new InvalidDataException("The application manifest is empty.");
+                var project = File.Exists(source) && Path.GetExtension(source).ToLowerInvariant() is ".csproj" or ".vbproj" or ".fsproj";
+                var built = await StandaloneInstallerBuilder.BuildAsync(manifest, output, new()
+                {
+                    SourceDirectory = project ? null : source, ApplicationProjectPath = project ? source : null,
+                    LauncherPath = Environment.GetEnvironmentVariable("HEIROWINSTALLER_LAUNCHER_PATH") ?? Environment.ProcessPath,
+                    SigningKeyPath = signingKey, UpdateCompanionExecutablePath = metadata.UpdateCompanion is not null && File.Exists(UpdaterPath) ? UpdaterPath : null
+                }, Reporter(), Cancellation.Token);
+                result = built.Manifest;
+            }
+            else result = await Task.Run(() => PackageBuilder.Build(manifest, source, output, new() { SigningKeyPath = signingKey }));
+            await game.OnUiAsync(() => { BuiltPackagePath = Path.GetFullPath(output); End(signingKey is null ? "Installer built and verified" : "Signed installer built and verified", $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes"); });
         }
         catch (Exception error) { await ErrorAsync("Build failed", error); }
     }
@@ -354,9 +375,9 @@ internal sealed class AppController
         Begin("Publishing to SocketJack", Path.GetFileName(path));
         try
         {
-            var token = Environment.GetEnvironmentVariable("SOCKETJACK_PUBLISHER_TOKEN");
-            var cookie = Environment.GetEnvironmentVariable("SOCKETJACK_PUBLISHER_COOKIE");
-            if (string.IsNullOrWhiteSpace(token) && string.IsNullOrWhiteSpace(cookie)) throw new InvalidOperationException("Sign in as an authorized SocketJack publisher and supply SOCKETJACK_PUBLISHER_TOKEN or SOCKETJACK_PUBLISHER_COOKIE through your environment. Credentials are never saved in the project or desktop settings.");
+            var token = PublisherSignedIn ? publisherSession!.AccessToken : Environment.GetEnvironmentVariable("SOCKETJACK_PUBLISHER_TOKEN");
+            var cookie = PublisherSignedIn ? null : Environment.GetEnvironmentVariable("SOCKETJACK_PUBLISHER_COOKIE");
+            if (string.IsNullOrWhiteSpace(token) && string.IsNullOrWhiteSpace(cookie)) throw new InvalidOperationException("Sign in as an authorized SocketJack publisher, or supply SOCKETJACK_PUBLISHER_TOKEN or SOCKETJACK_PUBLISHER_COOKIE through your environment. Credentials are never saved in the project or desktop settings.");
             using (var reader = PackageReader.Open(path)) await reader.VerifyAsync(cancellationToken: Cancellation!.Token);
             using var publisher = new PublisherClient(new Uri("https://socketjack.com"), bearerToken: token, sessionCookie: cookie);
             await publisher.PublishAsync(path, Cancellation!.Token, ReleaseNotes);
@@ -364,6 +385,25 @@ internal sealed class AppController
         }
         catch (Exception error) { await ErrorAsync("Publish failed", error); }
     }
+
+    internal async Task SignInPublisherAsync()
+    {
+        if (Busy) { if (SigningIn) Cancellation?.Cancel(); return; }
+        if (PublisherSignedIn) { publisherSession!.Dispose(); publisherSession = null; End("Signed out", "The in-memory SocketJack publisher session was cleared."); return; }
+        SigningIn = true;
+        Begin("Approve SocketJack sign-in", "Complete the publisher approval in your browser. You can cancel sign-in here.");
+        try
+        {
+            using var approval = await PublisherSignInClient.BeginAsync(new Uri("https://socketjack.com"), Cancellation!.Token);
+            Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
+            var session = await approval.CompleteAsync(Cancellation.Token);
+            await game.OnUiAsync(() => { publisherSession?.Dispose(); publisherSession = session; End("SocketJack sign-in complete", PublisherAccount); });
+        }
+        catch (Exception error) { await ErrorAsync("SocketJack sign-in failed", error); }
+        finally { await game.OnUiAsync(() => { SigningIn = false; Notify(); }); }
+    }
+
+    public void Dispose() { Cancellation?.Cancel(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; }
 
     internal void SaveSettings()
     {
