@@ -11,3 +11,5 @@ HTTPS publisher credentials are supplied through the process environment or a se
 Use a dedicated deployment account and limit package publication permission. Publisher uploads must verify all payload hashes before becoming visible, reject conflicting immutable versions, and keep product download access consistent with the hosting application's account policy.
 
 Source publication excludes signing private keys, live credentials, runtime state, product payloads, and hosting application source.
+
+Machine-wide receipts and cached media use `%ProgramData%\heirowInstaller\state`, with an Administrators/SYSTEM owner and protected permissions. Elevated maintenance refuses existing state or parent namespaces that unprivileged users can alter. It does not adopt or repair insecure state automatically. Per-user installations use the current user's local application data.

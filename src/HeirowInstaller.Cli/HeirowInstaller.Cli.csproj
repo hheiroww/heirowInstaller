@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>heirowInstaller.Cli</AssemblyName>
+    <Description>Command-line packaging, installation, maintenance, updating, and publishing for heirowInstaller.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+    <ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" />
+    <ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" />
+  </ItemGroup>
+</Project>

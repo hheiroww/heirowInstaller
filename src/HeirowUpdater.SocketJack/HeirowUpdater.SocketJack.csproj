@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><Description>SocketJack networking transport for heirowUpdater.</Description></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+    <PackageReference Include="SocketJack" Version="[2026.10.24]" />
+  </ItemGroup>
+</Project>

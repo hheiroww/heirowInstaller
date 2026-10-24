@@ -1,0 +1,46 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Preserve an existing reviewed release
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view '${{ github.ref_name }}' --json tagName 1>$null 2>$null
+          "exists=$($LASTEXITCODE -eq 0)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+          $global:LASTEXITCODE = 0
+      - name: Build installers
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          HINST_SIGNING_KEY: ${{ secrets.HINST_SIGNING_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:HINST_SIGNING_KEY)) { throw 'Configure HINST_SIGNING_KEY in the repository secret store before publishing an official release.' }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'heirowinstaller-signing.private.pem'
+          try {
+            [IO.File]::WriteAllText($keyPath, $env:HINST_SIGNING_KEY)
+            ./scripts/Build.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -SigningKey $keyPath
+          } finally {
+            if (Test-Path -LiteralPath $keyPath) { Remove-Item -LiteralPath $keyPath -Force }
+          }
+      - name: Publish release assets
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ github.ref_name }}'.Substring(1)
+          $root = "artifacts/release/$version"
+          gh release create '${{ github.ref_name }}' "$root/heirowInstaller-$version-Setup.exe" "$root/heirowInstaller-$version.hinst" "$root/update.json" "$root/SHA256SUMS.txt" --title "heirowInstaller $version" --generate-notes --verify-tag
