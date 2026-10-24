@@ -1,6 +1,6 @@
 namespace HeirowInstaller.Core;
 
-/// <summary>Builds an argument-list invocation without shell parsing, preserving authored MSI defaults when no destination override was requested.</summary>
+/// <summary>Builds logical arguments and encodes Windows Installer's own command-line grammar without a shell.</summary>
 public static class MsiAdapter
 {
     public static IReadOnlyList<string> BuildArguments(string operation, string packagePath, string? productCode,
@@ -27,4 +27,19 @@ public static class MsiAdapter
         if (options.LogPath is { } log) { arguments.Add("/L*v"); arguments.Add(Path.GetFullPath(log)); }
         return arguments;
     }
+
+    public static string SerializeArguments(IEnumerable<string> arguments) => string.Join(' ', arguments.Select(argument =>
+    {
+        ArgumentNullException.ThrowIfNull(argument);
+        if (argument.Contains('\0')) throw new ArgumentException("MSI arguments cannot contain a null character.", nameof(arguments));
+        var equals = argument.IndexOf('=');
+        if (equals > 0 && (char.IsAsciiLetter(argument[0]) || argument[0] == '_') &&
+            argument.AsSpan(0, equals).ToArray().All(character => char.IsAsciiLetterOrDigit(character) || character == '_'))
+            return argument[..(equals + 1)] + Quoted(argument[(equals + 1)..]);
+        return argument.Length == 0 || argument.Any(character => char.IsWhiteSpace(character) || character == '"') ? Quoted(argument) : argument;
+    }));
+
+    // msiexec does not use the C runtime argv parser. Quote the VALUE of a
+    // property, double literal quotes, and leave trailing backslashes intact.
+    private static string Quoted(string value) => "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 }

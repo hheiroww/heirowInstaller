@@ -51,6 +51,7 @@ try
             Check(request.Headers.GetValueOrDefault("X-HeirowInstaller-SHA256") == expectedHash, "Upload declares the exact package SHA-256");
             using var metadata = JsonDocument.Parse(request.Body);
             Check(metadata.RootElement.GetProperty("length").GetInt64() == body.Length && metadata.RootElement.GetProperty("sha256").GetString() == expectedHash, "Session metadata declares the complete upload length and hash");
+            Check(metadata.RootElement.GetProperty("releaseNotes").ValueKind == JsonValueKind.String && metadata.RootElement.GetProperty("releaseNotes").GetString() == "", "Omitted release notes use the publisher's required empty-string representation");
             return (200, "{\"uploadId\":\"" + uploadId + "\",\"chunkSize\":4194304,\"receivedBytes\":0}", null);
         });
         long offset = 0;

@@ -56,7 +56,7 @@ public sealed class PublisherClient : IDisposable
         {
             using var begin = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, "api/installer/publisher/uploads"));
             begin.Headers.Add("X-HeirowInstaller-SHA256", hash);
-            begin.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes }, Json));
+            begin.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "" }, Json));
             begin.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             using var opened = await client.SendAsync(begin, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             await EnsureSuccessAsync(opened, cancellationToken);

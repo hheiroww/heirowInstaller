@@ -365,6 +365,8 @@ internal sealed class AcceptanceSuite
         plan.Features = ["Core", "updates"];
         args = MsiAdapter.BuildArguments("install", @"C:\Original.msi", null, new(), plan, new());
         True(args.Contains("ADDLOCAL=Core"));
+        var commandLine = MsiAdapter.SerializeArguments(["/i", @"C:\Installer Source\Fixture.msi", @"INSTALLFOLDER=C:\Program Files\App\", "CUSTOM=Acme \"Widgets\"", "EMPTY=", "/qn", "/L*v", @"C:\Log Folder\setup.log"]);
+        Equal("/i \"C:\\Installer Source\\Fixture.msi\" INSTALLFOLDER=\"C:\\Program Files\\App\\\" CUSTOM=\"Acme \"\"Widgets\"\"\" EMPTY=\"\" /qn /L*v \"C:\\Log Folder\\setup.log\"", commandLine);
         return Task.CompletedTask;
     }
 

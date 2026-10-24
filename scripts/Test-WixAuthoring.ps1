@@ -240,6 +240,8 @@ try {
     Assert-Check (-not (Test-Path -LiteralPath (Join-Path $target 'payload.txt')) -and -not (Test-Path -LiteralPath (Join-Path $target 'module.txt'))) 'Uninstall removed the actual compiled application and module payloads'
     Assert-Check (-not (Test-Path -LiteralPath $registry)) 'Uninstall removed the unique fixture registry key'
     if ($Companion) {
+        if ((Test-Path -LiteralPath $target) -and @(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) { Remove-Item -LiteralPath $target }
+        $target = Join-Path $env:LOCALAPPDATA ('Temp/heirowInstaller MSI target ' + $id)
         $Companion = [IO.Path]::GetFullPath($Companion)
         if (-not (Test-Path -LiteralPath $Companion)) { throw 'The selected published companion does not exist.' }
         $outer = Join-Path $OutputDirectory 'outer'; New-Item -ItemType Directory -Path $outer | Out-Null
@@ -260,7 +262,7 @@ try {
         $manifest = [ordered]@{id=$outerId;name='Isolated compiled MSI companion fixture';version='1.0.0';publisher='heirowInstaller acceptance';scope=$CompanionScope;
             entryPoint='payload.txt';installDirectory=$target;updateUrl='https://updates.example.invalid/fixture.json';
             features=@(@{id='updates';name='Optional companion';default=$false});updateCompanion=@{feature='updates';executablePath='heirowUpdater.exe';configurationPath='heirowUpdater.json';mode='after-exit'};
-            legacyMsi=@{payloadPath='fixture.msi';productCode=$productCode;installDirectoryProperty='INSTALLFOLDER'};
+            legacyMsi=@{payloadPath='fixture.msi';productCode=$productCode;installDirectoryProperty='INSTALLFOLDER';arguments=@('ENCODER_EMPTY=','ENCODER_QUOTES=Acme "Widgets"')};
             payload=@(@{source='fixture.msi';path='fixture.msi'},@{source='heirowUpdater.exe';path='heirowUpdater.exe';feature='updates'})}
         $manifestPath = Join-Path $OutputDirectory 'outer.json'; $package = Join-Path $OutputDirectory 'outer.hinst'
         $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
@@ -271,8 +273,11 @@ try {
         Invoke-Tool $Cli @('pack',$unknownManifest,'--source',$outer,'--output',$unknownPackage,'--sign-key',$key) | Out-Null
         $unknown = Invoke-Tool $Cli @('plan',$unknownPackage,'--features','updates','--state-root',$outerState) -AllowFailure
         Assert-Check ($unknown.ExitCode -ne 0 -and $unknown.Error.Contains('directory is unknown')) 'A fresh MSI with an unknown destination cannot select a guessed companion root'
-        Invoke-Tool $Cli @('install',$package,'--features','updates','--state-root',$outerState,'--silent','--log',(Join-Path $OutputDirectory 'outer-install.log')) | Out-Null
+        $spacedLog = Join-Path $OutputDirectory 'outer install with spaces.log'
+        Invoke-Tool $Cli @('install',$package,'--features','updates','--state-root',$outerState,'--silent','--log',$spacedLog) | Out-Null
         $installed = $true
+        Assert-Check (Test-Path -LiteralPath (Join-Path $target 'payload.txt')) 'The real MSI installs into the exact directory containing spaces through the adapter'
+        Assert-Check ((Test-Path -LiteralPath $spacedLog) -and [IO.File]::ReadAllText($spacedLog).Contains('Acme "Widgets"')) 'The real MSI accepts a spaced log filename and preserves literal property quotes'
         $configurationPath = Join-Path $target 'heirowUpdater.json'
         $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json
         Assert-Check ($configuration.installDirectory -eq $target -and $configuration.publisherKeySha256 -eq $pin) 'The MSI companion root and generated configuration match the actual installation and publisher pin'

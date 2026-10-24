@@ -182,7 +182,7 @@ internal static class WindowsIntegration
         var arguments = MsiAdapter.BuildArguments(operation, packagePath, productCode, definition, plan, options);
         // Windows Installer handles its own cancellation and rollback. Once started, await completion before changing our receipt.
         token.ThrowIfCancellationRequested();
-        var exit = await RunProcessAsync(Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.System), "msiexec.exe"), arguments, CancellationToken.None);
+        var exit = await RunProcessAsync(Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.System), "msiexec.exe"), arguments, CancellationToken.None, msiArguments: true);
         if (exit is not (0 or 3010 or 1641)) throw new InvalidOperationException($"Windows Installer {operation} failed with exit code {exit}.");
         return exit;
     }
@@ -408,10 +408,11 @@ internal static class WindowsIntegration
         }
         throw new IOException("Service removal is still pending: " + name);
     }
-    internal static async Task<int> RunProcessAsync(string executable, IEnumerable<string> arguments, CancellationToken token)
+    internal static async Task<int> RunProcessAsync(string executable, IEnumerable<string> arguments, CancellationToken token, bool msiArguments = false)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        if (msiArguments) start.Arguments = MsiAdapter.SerializeArguments(arguments);
+        else foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new Win32Exception("Could not start installer component.");
         var output = process.StandardOutput.ReadToEndAsync(token);
         var error = process.StandardError.ReadToEndAsync(token);
