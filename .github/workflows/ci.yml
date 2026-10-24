@@ -41,16 +41,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Standalone CLI publication failed.' }
           dotnet publish src/HeirowUpdater/HeirowUpdater.csproj @common -o artifacts/ci/wix/updater
           if ($LASTEXITCODE -ne 0) { throw 'Standalone updater publication failed.' }
+          dotnet publish tests/HeirowInstaller.Tests/Fixtures/RawMsiUpdateProbe/RawMsiUpdateProbe.csproj @common -o artifacts/ci/wix/raw-msi-probe
+          if ($LASTEXITCODE -ne 0) { throw 'Direct raw-MSI update fixture publication failed.' }
       - name: Compile and exercise real MSI, MSM, MSP, and machine maintenance
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          ./scripts/Test-WixAuthoring.ps1 -Cli artifacts/ci/wix/cli/heirowInstaller.Cli.exe -Wix artifacts/tools/wix5/wix.exe -Companion artifacts/ci/wix/updater/heirowUpdater.exe -CompanionScope machine -OutputDirectory artifacts/wix-authoring/ci
+          ./scripts/Test-WixAuthoring.ps1 -Cli artifacts/ci/wix/cli/heirowInstaller.Cli.exe -Wix artifacts/tools/wix5/wix.exe -Companion artifacts/ci/wix/updater/heirowUpdater.exe -RawMsiProbe artifacts/ci/wix/raw-msi-probe/RawMsiUpdateProbe.exe -CompanionScope machine -OutputDirectory artifacts/wix-authoring/ci
           $receipt = Get-Content -LiteralPath artifacts/wix-authoring/ci/receipt.json -Raw | ConvertFrom-Json
-          if ($receipt.passed -lt 45) { throw 'The complete WiX and companion maintenance acceptance suite did not pass.' }
+          if ($receipt.passed -lt 47) { throw 'The complete WiX and companion maintenance acceptance suite did not pass.' }
           foreach ($required in @(
             'The real MSI installs into the exact directory containing spaces through the adapter',
-            'The real MSI accepts a spaced log filename and preserves literal property quotes'
+            'The real MSI accepts a spaced log filename and preserves literal property quotes',
+            'The direct raw MSI update feed installs into the exact directory containing spaces',
+            'The direct raw MSI update feed preserves a spaced log filename and literal property quotes'
           )) {
             if ($required -notin $receipt.checks) { throw ('Missing actual Windows Installer regression: ' + $required) }
           }

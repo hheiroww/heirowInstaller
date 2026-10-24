@@ -110,7 +110,8 @@ public sealed class UpdateClient : IDisposable
         }
         else { executable = Path.GetFullPath(downloadPath); arguments = feed.Arguments.Count > 0 ? feed.Arguments : ["--silent"]; }
         cancellationToken.ThrowIfCancellationRequested();
-        var exit = await WindowsIntegration.RunProcessAsync(executable, arguments, CancellationToken.None);
+        var exit = await WindowsIntegration.RunProcessAsync(executable, arguments, CancellationToken.None,
+            msiArguments: feed.PackageType.Equals("msi", StringComparison.OrdinalIgnoreCase));
         if (exit is not (0 or 3010 or 1641)) throw new InvalidOperationException($"Update installer failed with exit code {exit}.");
         return new() { ProductId = feed.ProductId, Version = feed.Version, InstallDirectory = options.TargetDirectory ?? "", RebootRequired = exit is 3010 or 1641 };
     }

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>RawMsiUpdateProbe</AssemblyName>
+    <Description>Invoked only by the isolated Windows Installer authoring acceptance harness.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../../src/HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+  </ItemGroup>
+</Project>

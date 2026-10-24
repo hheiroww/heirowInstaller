@@ -4,6 +4,7 @@ param(
     [string]$Cli,
     [string]$Wix,
     [string]$Companion,
+    [string]$RawMsiProbe,
     [ValidateSet('user','machine')][string]$CompanionScope = 'machine',
     [string]$SdkVersion = '5.0.2',
     [string]$OutputDirectory
@@ -13,8 +14,9 @@ if (-not $IsWindows) { throw 'The actual Windows Installer acceptance test requi
 $projectRoot = Split-Path $PSScriptRoot -Parent
 if (-not $Cli) { $Cli = Join-Path $projectRoot 'src/HeirowInstaller.Cli/bin/Release/net10.0/heirowInstaller.Cli.exe' }
 if (-not $Wix) { $Wix = Join-Path $projectRoot 'artifacts/tools/wix5/wix.exe' }
-$Cli = [IO.Path]::GetFullPath($Cli); $Wix = [IO.Path]::GetFullPath($Wix)
-if (-not (Test-Path -LiteralPath $Cli) -or -not (Test-Path -LiteralPath $Wix)) { throw 'Pass the built CLI and an explicitly selected official WiX executable.' }
+if (-not $RawMsiProbe) { $RawMsiProbe = Join-Path $projectRoot 'tests/HeirowInstaller.Tests/Fixtures/RawMsiUpdateProbe/bin/Release/net10.0/RawMsiUpdateProbe.exe' }
+$Cli = [IO.Path]::GetFullPath($Cli); $Wix = [IO.Path]::GetFullPath($Wix); $RawMsiProbe = [IO.Path]::GetFullPath($RawMsiProbe)
+if (-not (Test-Path -LiteralPath $Cli) -or -not (Test-Path -LiteralPath $Wix) -or -not (Test-Path -LiteralPath $RawMsiProbe)) { throw 'Pass the built CLI, RawMsiUpdateProbe, and an explicitly selected official WiX executable.' }
 $id = [Guid]::NewGuid().ToString('N')
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot ('artifacts/wix-authoring/' + $id) }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
@@ -239,6 +241,18 @@ try {
     Assert-Check ([HeirowInstallerAuthoringProductState]::Query($productCode) -eq -1) 'Uninstall removed the exact fixture ProductCode'
     Assert-Check (-not (Test-Path -LiteralPath (Join-Path $target 'payload.txt')) -and -not (Test-Path -LiteralPath (Join-Path $target 'module.txt'))) 'Uninstall removed the actual compiled application and module payloads'
     Assert-Check (-not (Test-Path -LiteralPath $registry)) 'Uninstall removed the unique fixture registry key'
+    if ((Test-Path -LiteralPath $target) -and @(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) { Remove-Item -LiteralPath $target }
+    $target = Join-Path $env:LOCALAPPDATA ('Temp/heirowInstaller raw MSI update ' + $id)
+    if (Test-Path -LiteralPath $target) { throw 'The unique direct update fixture target already exists.' }
+    $rawUpdateLog = Join-Path $OutputDirectory 'raw update with spaces.log'
+    $rawUpdateId = 'test.wix.raw.' + $id
+    $rawUpdate = (Invoke-Tool $RawMsiProbe @($v1,$rawUpdateId,$target,$rawUpdateLog)).Output | ConvertFrom-Json
+    $installed = $true
+    Assert-Check ($rawUpdate.productId -eq $rawUpdateId -and [IO.File]::ReadAllText((Join-Path $target 'payload.txt')) -eq 'payload v1') 'The direct raw MSI update feed installs into the exact directory containing spaces'
+    Assert-Check ((Test-Path -LiteralPath $rawUpdateLog) -and [IO.File]::ReadAllText($rawUpdateLog).Contains('Acme "Widgets"')) 'The direct raw MSI update feed preserves a spaced log filename and literal property quotes'
+    Invoke-Tool 'msiexec.exe' @('/x',$productCode,'/qn','/norestart','/l*v',(Join-Path $OutputDirectory 'raw-update-uninstall.log')) | Out-Null
+    $installed = $false
+    if ([HeirowInstallerAuthoringProductState]::Query($productCode) -ne -1) { throw 'The exact direct raw MSI fixture ProductCode was not removed.' }
     if ($Companion) {
         if ((Test-Path -LiteralPath $target) -and @(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) { Remove-Item -LiteralPath $target }
         $target = Join-Path $env:LOCALAPPDATA ('Temp/heirowInstaller MSI target ' + $id)

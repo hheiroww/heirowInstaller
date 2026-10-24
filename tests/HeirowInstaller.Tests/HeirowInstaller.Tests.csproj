@@ -10,5 +10,6 @@
     <ProjectReference Include="../../src/HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" />
     <ProjectReference Include="../../src/HeirowUpdater/HeirowUpdater.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="Fixtures/LegacyArgumentProbe/LegacyArgumentProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="Fixtures/RawMsiUpdateProbe/RawMsiUpdateProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>
