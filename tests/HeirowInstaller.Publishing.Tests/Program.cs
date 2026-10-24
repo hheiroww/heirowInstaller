@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HeirowInstaller.Publishing;
 
 var passed = 0;
@@ -34,18 +35,41 @@ try
     var endpoint = (IPEndPoint)listener.LocalEndpoint;
     var origin = new Uri($"http://127.0.0.1:{endpoint.Port}/");
     using var client = new PublisherClient(origin, bearerToken: "test-publisher-credential", allowLoopback: true);
-    var body = Encoding.UTF8.GetBytes("publisher upload test payload");
+    var body = new byte[4 * 1024 * 1024 + 513];
+    new Random(17).NextBytes(body);
     var package = Path.Combine(root, "test.hinst");
     await File.WriteAllBytesAsync(package, body);
     var expectedHash = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
 
-    var uploadServer = ServeOnceAsync(listener, request =>
+    var uploadId = Guid.NewGuid().ToString("N");
+    var uploadServer = Task.Run(async () =>
     {
-        Check(request.RequestLine == "POST /api/installer/publisher/releases HTTP/1.1", "Upload uses the publisher release endpoint");
-        Check(request.Headers.GetValueOrDefault("Authorization") == "Bearer test-publisher-credential", "Publisher credential supplied only as an HTTP header");
-        Check(request.Headers.GetValueOrDefault("X-HeirowInstaller-SHA256") == expectedHash, "Upload hash matches the transmitted payload");
-        Check(request.Body.SequenceEqual(body), "Upload streams the exact package bytes");
-        return (200, "{\"productId\":\"test.product\",\"version\":\"1.0.0\",\"installerUrl\":\"https://publisher.example/test.hinst\",\"updateUrl\":\"https://publisher.example/update.json\",\"sha256\":\"" + expectedHash + "\",\"size\":" + body.Length + "}", null);
+        await ServeOnceAsync(listener, request =>
+        {
+            Check(request.RequestLine == "POST /api/installer/publisher/uploads HTTP/1.1", "Upload opens a bounded publisher session");
+            Check(request.Headers.GetValueOrDefault("Authorization") == "Bearer test-publisher-credential", "Publisher credential supplied only as an HTTP header");
+            Check(request.Headers.GetValueOrDefault("X-HeirowInstaller-SHA256") == expectedHash, "Upload declares the exact package SHA-256");
+            using var metadata = JsonDocument.Parse(request.Body);
+            Check(metadata.RootElement.GetProperty("length").GetInt64() == body.Length && metadata.RootElement.GetProperty("sha256").GetString() == expectedHash, "Session metadata declares the complete upload length and hash");
+            return (200, "{\"uploadId\":\"" + uploadId + "\",\"chunkSize\":4194304,\"receivedBytes\":0}", null);
+        });
+        long offset = 0;
+        while (offset < body.Length)
+        {
+            await ServeOnceAsync(listener, request =>
+            {
+                Check(request.RequestLine == $"PUT /api/installer/publisher/uploads/{uploadId}?offset={offset} HTTP/1.1", "Chunk uses the acknowledged sequential offset");
+                Check(request.Body.Length <= 4 * 1024 * 1024 && request.Body.AsSpan().SequenceEqual(body.AsSpan((int)offset, request.Body.Length)), "Chunk body preserves exact package bytes within the 4 MiB limit");
+                Check(request.Headers.GetValueOrDefault("X-HeirowInstaller-Chunk-SHA256") == Convert.ToHexString(SHA256.HashData(request.Body)).ToLowerInvariant(), "Each chunk has its own SHA-256");
+                offset += request.Body.Length;
+                return (200, "{\"receivedBytes\":" + offset + "}", null);
+            });
+        }
+        await ServeOnceAsync(listener, request =>
+        {
+            Check(request.RequestLine == $"POST /api/installer/publisher/uploads/{uploadId}/complete HTTP/1.1", "Publication commits only after all chunks are accepted");
+            return (200, "{\"productId\":\"test.product\",\"version\":\"1.0.0\",\"installerUrl\":\"https://publisher.example/test.hinst\",\"updateUrl\":\"https://publisher.example/update.json\",\"sha256\":\"" + expectedHash + "\",\"size\":" + body.Length + "}", null);
+        });
     });
     var published = await client.PublishAsync(package);
     await uploadServer;
@@ -112,7 +136,7 @@ static async Task ServeOnceAsync(TcpListener listener, Func<HttpRequest, (int Co
         if (colon > 0) headers[line[..colon]] = line[(colon + 1)..].Trim();
     }
     var length = int.TryParse(headers.GetValueOrDefault("Content-Length"), out var parsed) ? parsed : 0;
-    if (length > 1024 * 1024) throw new InvalidDataException("Test upload exceeds its limit.");
+    if (length > 4 * 1024 * 1024) throw new InvalidDataException("Test upload exceeds its chunk limit.");
     var body = new byte[length];
     await stream.ReadExactlyAsync(body, timeout.Token);
     var result = responder(new HttpRequest(lines[0], headers, body));
