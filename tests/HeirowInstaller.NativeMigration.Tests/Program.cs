@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HeirowInstaller.Core;
+using Microsoft.Win32;
 
 if (args is ["--probe-boot"])
 {
@@ -13,6 +14,7 @@ if (args is ["--probe-boot"])
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("format 3 is explicit, legacy serialization stays unchanged and unknown formats fail", Format),
+    ("one owned HKCU key shared by both registry views counts once while MSI state and machine ambiguity stay strict", UserRegistryViews),
     ("recorded MSI retires under one lock and commits a native receipt", () => Success("msi", "user")),
     ("recorded machine Burn retires without deleting installer registrations manually", () => Success("burn", "machine")),
     ("one immutable native target accepts two separately signed published baselines", MultipleBaselines),
@@ -29,11 +31,16 @@ var tests = new (string Name, Func<Task> Run)[]
     ("prepare interruption resumes exact owned media while cancellation cleans and unknown, replaced or active files preserve", PreparingRecovery),
     ("a native commit interrupted before its completion marker never reinstalls the old backend", CommittedResume)
 };
+if (args is ["--filter", var filter])
+{
+    tests = tests.Where(test => test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToArray();
+    if (tests.Length == 0) throw new ArgumentException("No native migration case matches the filter.");
+}
 var passed = 0;
 try
 {
     foreach (var test in tests) { await test.Run(); passed++; Console.WriteLine("PASS " + test.Name); }
-    Console.WriteLine($"Passed {passed}/{tests.Length} native migration cases. No real MSI, Burn, application, registry or service was changed.");
+    Console.WriteLine($"Passed {passed}/{tests.Length} native migration cases. One uniquely marked temporary HKCU fixture key was removed; no real MSI, Burn, application or service was changed.");
     return 0;
 }
 catch (Exception failure) { Console.Error.WriteLine($"FAIL after {passed}/{tests.Length}: {failure}"); return 1; }
@@ -53,6 +60,53 @@ static async Task Format()
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
     invalid.FormatVersion = 3; invalid.NativeMigration!.Baselines[0].FromManifestSha256 = "not-a-digest";
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
+}
+static Task UserRegistryViews()
+{
+    if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
+    var code = Guid.NewGuid().ToString("B").ToUpperInvariant();
+    var path = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + code;
+    const string markerName = "heirowInstallerFixture";
+    var marker = "native-migration-shared-hkcu-" + Guid.NewGuid().ToString("N");
+    var definition = new NativeMigrationBaselineDefinition { Backend = "msi", Scope = "user", MsiProductCode = code };
+    var backend = new WindowsNativeMigrationBackend();
+    True(backend.ObserveDeclared(definition, isolated: false) == NativeBackendState.Absent, "The exact fixture GUID must be absent before registry creation.");
+    using var user = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64);
+    using (var existing = user.OpenSubKey(path)) True(existing is null, "The generated fixture registry destination must be absent.");
+    var created = false;
+    try
+    {
+        using (var key = user.CreateSubKey(path, writable: true)) { key.SetValue(markerName, marker, RegistryValueKind.String); created = true; }
+        var logicalViews = 0;
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        {
+            using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view); using var key = hive.OpenSubKey(path);
+            True(key?.GetValue(markerName) is string actual && actual == marker, "Both logical views must identify the same exact owned marker.");
+            logicalViews++;
+            using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view); using var other = machine.OpenSubKey(path);
+            True(other is null, "The fixture must not create or adopt an HKLM registration.");
+        }
+        True(logicalViews == 2 && WindowsNativeMigrationBackend.ClassifyMsiObservation("user", 5, logicalViews) == NativeBackendState.Installed);
+        True(WindowsNativeMigrationBackend.ClassifyMsiObservation("machine", 5, 2) == NativeBackendState.Uncertain);
+        True(WindowsNativeMigrationBackend.ClassifyMsiObservation("machine", 5, 1) == NativeBackendState.Installed);
+        foreach (var state in new[] { -1, 1, 2 })
+            True(WindowsNativeMigrationBackend.ClassifyMsiObservation("user", state, logicalViews) == NativeBackendState.Uncertain);
+        True(WindowsNativeMigrationBackend.ClassifyMsiObservation("user", -1, 0) == NativeBackendState.Absent);
+        True(backend.ObserveDeclared(definition, isolated: false) == NativeBackendState.Uncertain, "A registry key alone must never authorize adopting an uninstalled MSI.");
+    }
+    finally
+    {
+        if (created)
+        {
+            using (var key = user.OpenSubKey(path, writable: true))
+                if (key is null || key.GetSubKeyNames().Length != 0 || key.GetValueNames() is not [markerName] || key.GetValue(markerName) is not string actual || actual != marker)
+                    throw new InvalidOperationException("The temporary registry marker changed; its exact key was preserved.");
+            user.DeleteSubKey(path, throwOnMissingSubKey: true);
+        }
+    }
+    True(backend.ObserveDeclared(definition, isolated: false) == NativeBackendState.Absent, "The exact owned registry key must be gone after cleanup.");
+    Console.WriteLine("CHECK exact temporary HKCU fixture " + code + " created and removed; real MSI state remained unknown.");
+    return Task.CompletedTask;
 }
 static async Task Success(string kind, string scope)
 {

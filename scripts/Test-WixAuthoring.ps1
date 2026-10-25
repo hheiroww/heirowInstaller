@@ -112,12 +112,47 @@ public static class HeirowInstallerAuthoringProductState {
 }
 $installed = $false
 $outerId = $null; $outerState = $null
+$peerId = $null; $peerTarget = $null; $primaryFailure = $null
 function Remove-OwnedMachineState {
     if ($CompanionScope -ne 'machine' -or -not $outerState -or -not (Test-Path -LiteralPath $outerState)) { return }
     $resolved = [IO.Path]::GetFullPath($outerState)
     $parent = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
     if ([IO.Path]::GetDirectoryName($resolved) -ne $parent -or [IO.Path]::GetFileName($resolved) -ne ('heirowInstaller-Acceptance-' + $id)) { throw 'Unexpected fixture state directory; cleanup refused.' }
+    foreach ($ownedId in @($outerId,$peerId)) {
+        if ($ownedId -and (Test-Path -LiteralPath (Join-Path $resolved ($ownedId + '/receipt.json')))) { throw 'An owned maintenance receipt remains; fixture state was preserved.' }
+    }
     Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+function Read-SharedBinding([string]$ConfigurationPath,[string]$ExpectedId,[string]$ExpectedTarget) {
+    $profile = Get-Content -LiteralPath $ConfigurationPath -Raw | ConvertFrom-Json
+    if ($profile.productId -ne $ExpectedId -or $profile.scope -ne $CompanionScope -or $profile.isolated -or
+        [IO.Path]::GetFullPath($profile.installDirectory).TrimEnd('\') -ne [IO.Path]::GetFullPath($ExpectedTarget).TrimEnd('\') -or $profile.publisherKeySha256 -ne $pin) { throw 'Shared fixture profile identity does not match its signed installation.' }
+    $binding = $profile.sharedRuntime
+    if ($null -eq $binding -or $binding.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $binding.version -notmatch '^\d+(\.\d+){1,3}$' -or $binding.size -le 0) { throw 'The shared runtime binding is missing or malformed.' }
+    $stateParent = if ($CompanionScope -eq 'machine') { Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'heirowInstaller/state' }
+        else { Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'SocketJack/heirowInstaller/state' }
+    $runtimeRoot = Join-Path $stateParent '.updater-runtime'
+    $runtime = Join-Path $runtimeRoot ($binding.version + '-' + $binding.sha256.ToLowerInvariant() + '/heirowUpdater.exe')
+    $identity = $ExpectedId.ToLowerInvariant() + "`n" + [IO.Path]::GetFullPath($ExpectedTarget).TrimEnd('\').ToLowerInvariant()
+    $referenceKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+    $reference = Join-Path $runtimeRoot ('references/' + $referenceKey + '.json')
+    if (-not (Test-Path -LiteralPath $reference)) { throw 'The exact application shared-runtime reference is missing.' }
+    $owner = Get-Content -LiteralPath $reference -Raw | ConvertFrom-Json
+    if ($owner.formatVersion -ne 1 -or $owner.productId -ne $ExpectedId -or $owner.installDirectory -ne $profile.installDirectory -or $owner.publisherKeySha256 -ne $pin -or
+        $owner.runtime.sha256 -ne $binding.sha256 -or $owner.runtime.size -ne $binding.size) { throw 'The shared runtime reference belongs to another installation or payload.' }
+    return [pscustomobject]@{ Profile=$profile; Executable=$runtime; Reference=$reference; ReferenceHash=(Get-FileHash -LiteralPath $reference -Algorithm SHA256).Hash }
+}
+function Assert-SharedRuntime($Binding) {
+    $source = Get-Item -LiteralPath $Companion
+    Assert-Check ($Binding.Profile.sharedRuntime.sha256 -eq (Get-FileHash -LiteralPath $Companion -Algorithm SHA256).Hash -and
+        $Binding.Profile.sharedRuntime.size -eq $source.Length -and $Binding.Profile.sharedRuntime.version -eq [Diagnostics.FileVersionInfo]::GetVersionInfo($Companion).FileVersion) 'The shared runtime profile is bound to the exact published updater hash, size and file version'
+    Assert-Check ((Test-Path -LiteralPath $Binding.Executable) -and (Get-Item -LiteralPath $Binding.Executable).Length -eq $source.Length -and
+        (Get-FileHash -LiteralPath $Binding.Executable -Algorithm SHA256).Hash -eq $Binding.Profile.sharedRuntime.sha256 -and
+        [Diagnostics.FileVersionInfo]::GetVersionInfo($Binding.Executable).FileVersion -eq $Binding.Profile.sharedRuntime.version) 'The scope-wide updater executable matches its signed content binding'
+}
+function Assert-PeerReference($Binding,[string]$Stage) {
+    Assert-Check ((Test-Path -LiteralPath $Binding.Reference) -and (Get-FileHash -LiteralPath $Binding.Reference -Algorithm SHA256).Hash -eq $Binding.ReferenceHash -and
+        (Test-Path -LiteralPath $Binding.Executable) -and (Get-FileHash -LiteralPath $Binding.Executable -Algorithm SHA256).Hash -eq $Binding.Profile.sharedRuntime.sha256) ('The other installed application keeps its exact reference and runtime after ' + $Stage)
 }
 try {
     Assert-Check ([HeirowInstallerAuthoringProductState]::Query($productCode) -eq -1) 'The unique fixture ProductCode is not installed'
@@ -267,12 +302,26 @@ try {
             $pin = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rsa.ExportSubjectPublicKeyInfo())).ToLowerInvariant()
         } finally { $rsa.Dispose() }
         $outerId = 'test.wix.' + $id
+        $peerId = 'test.wix.peer.' + $id
+        $peerTarget = Join-Path $env:LOCALAPPDATA ('Temp/heirowInstaller shared peer ' + $id)
         if ($CompanionScope -eq 'machine') {
             $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
             try { if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Machine maintenance acceptance requires an already elevated administrator process.' } } finally { $identity.Dispose() }
             $outerState = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) ('heirowInstaller-Acceptance-' + $id)
         } else { $outerState = Join-Path $OutputDirectory 'state' }
         Assert-Check (-not (Test-Path -LiteralPath $outerState)) 'The dedicated maintenance fixture state does not exist'
+        Assert-Check (-not (Test-Path -LiteralPath $peerTarget)) 'The separate shared-runtime peer fixture target does not exist'
+        [IO.File]::WriteAllText((Join-Path $outer 'peer.txt'),'Owned shared runtime reference acceptance')
+        $peerManifest = [ordered]@{id=$peerId;name='Owned shared-runtime peer fixture';version='1.0.0';publisher='heirowInstaller acceptance';scope=$CompanionScope;
+            entryPoint='peer.txt';installDirectory=$peerTarget;updateUrl='https://updates.example.invalid/peer.json';
+            features=@(@{id='updates';name='Optional companion';default=$false});updateCompanion=@{feature='updates';runtimeMode='shared';mode='after-exit'};
+            payload=@(@{source='peer.txt';path='peer.txt'},@{source='heirowUpdater.exe';path='heirowUpdater.exe';feature='updates'})}
+        $peerManifestPath = Join-Path $OutputDirectory 'peer.json'; $peerPackage = Join-Path $OutputDirectory 'peer.hinst'
+        $peerManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $peerManifestPath -Encoding utf8NoBOM
+        Invoke-Tool $Cli @('pack',$peerManifestPath,'--source',$outer,'--output',$peerPackage,'--sign-key',$key) | Out-Null
+        Invoke-Tool $Cli @('install',$peerPackage,'--features','updates','--state-root',$outerState,'--silent') | Out-Null
+        $peerBinding = Read-SharedBinding (Join-Path $peerTarget 'heirowUpdater.json') $peerId $peerTarget
+        Assert-SharedRuntime $peerBinding
         $manifest = [ordered]@{id=$outerId;name='Isolated compiled MSI companion fixture';version='1.0.0';publisher='heirowInstaller acceptance';scope=$CompanionScope;
             entryPoint='payload.txt';installDirectory=$target;updateUrl='https://updates.example.invalid/fixture.json';
             features=@(@{id='updates';name='Optional companion';default=$false});updateCompanion=@{feature='updates';executablePath='heirowUpdater.exe';configurationPath='heirowUpdater.json';mode='after-exit'};
@@ -295,14 +344,18 @@ try {
         $configurationPath = Join-Path $target 'heirowUpdater.json'
         $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json
         Assert-Check ($configuration.installDirectory -eq $target -and $configuration.publisherKeySha256 -eq $pin) 'The MSI companion root and generated configuration match the actual installation and publisher pin'
-        Assert-Check (Test-Path -LiteralPath (Join-Path $target 'heirowUpdater.exe')) 'The optional published updater was installed at the actual MSI application root'
+        Assert-Check (-not (Test-Path -LiteralPath (Join-Path $target 'heirowUpdater.exe'))) 'A shared MSI companion leaves only its small updater profile at the application root'
+        $sharedBinding = Read-SharedBinding $configurationPath $outerId $target
+        Assert-SharedRuntime $sharedBinding
+        Assert-Check ($sharedBinding.Executable -eq $peerBinding.Executable -and $sharedBinding.Reference -ne $peerBinding.Reference) 'Two installed applications share one verified updater executable with distinct owned references'
         $products = (Invoke-Tool $Cli @('list','--state-root',$outerState)).Output | ConvertFrom-Json
-        Assert-Check ($products[0].files.Count -eq 2 -and $products[0].files.path -contains 'heirowUpdater.exe' -and $products[0].files.path -contains 'heirowUpdater.json') 'Outer receipts own only companion files while the MSI keeps ownership of application and module payloads'
+        $outerProduct = @($products | Where-Object id -eq $outerId)[0]
+        Assert-Check ($null -ne $outerProduct -and $outerProduct.files.Count -eq 1 -and $outerProduct.files.path -contains 'heirowUpdater.json') 'Outer receipts own only the small companion profile while the MSI keeps ownership of application and module payloads'
         $registryHive = if ($CompanionScope -eq 'machine') { 'HKLM:\' } else { 'HKCU:\' }
         $backendArp = $registryHive + 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $productCode
         $managedArp = $registryHive + 'Software\Microsoft\Windows\CurrentVersion\Uninstall\heirowInstaller.' + $outerId
         Assert-Check ((Get-ItemProperty -LiteralPath $backendArp).SystemComponent -eq 1 -and (Test-Path -LiteralPath $managedArp)) 'The selected companion uses one visible owned maintenance registration and hides only the exact MSI ProductCode'
-        Assert-Check ($products[0].registeredProduct -and $products[0].backendRegistrations.Count -eq 1) 'The receipt retains the precise original MSI visibility snapshot'
+        Assert-Check ($outerProduct.registeredProduct -and $outerProduct.backendRegistrations.Count -eq 1) 'The receipt retains the precise original MSI visibility snapshot'
         $resolved = (Invoke-Tool $Cli @('plan',$unknownPackage,'--features','updates','--state-root',$outerState)).Output | ConvertFrom-Json
         Assert-Check ($resolved.useOriginalInstallDirectory -and $resolved.installDirectory.TrimEnd('\') -eq $target.TrimEnd('\')) 'An existing original-directory MSI resolves its actual registered install location without inventing an override'
         [IO.File]::WriteAllText($configurationPath,'corrupted fixture profile')
@@ -310,18 +363,25 @@ try {
         Invoke-Tool $Cli @('repair',$outerId,'--state-root',$outerState,'--silent','--log',(Join-Path $OutputDirectory 'outer-repair.log')) | Out-Null
         $repaired = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json
         Assert-Check ($repaired.publisherKeySha256 -eq $pin) 'MSI repair regenerates the pinned optional companion profile'
+        $sharedBinding = Read-SharedBinding $configurationPath $outerId $target
+        Assert-SharedRuntime $sharedBinding
         Assert-Check ((Get-ItemProperty -LiteralPath $backendArp).SystemComponent -eq 1) 'MSI repair restores maintenance ownership after a backend rewrites its registration'
         Invoke-Tool $Cli @('install',$package,'--features','','--state-root',$outerState,'--silent','--log',(Join-Path $OutputDirectory 'outer-feature-off.log')) | Out-Null
         Assert-Check (-not (Test-Path -LiteralPath $managedArp) -and $null -eq (Get-ItemProperty -LiteralPath $backendArp).SystemComponent -and -not (Test-Path -LiteralPath $configurationPath)) 'Deselecting the companion restores original MSI visibility and removes companion ownership'
+        Assert-Check (-not (Test-Path -LiteralPath $sharedBinding.Reference)) 'Deselecting the MSI companion removes only its owned shared-runtime reference'
+        Assert-PeerReference $peerBinding 'MSI companion feature-off'
         Invoke-Tool $Cli @('install',$package,'--features','updates','--state-root',$outerState,'--silent','--log',(Join-Path $OutputDirectory 'outer-feature-on.log')) | Out-Null
-        $ownedReceipt = @((Invoke-Tool $Cli @('list','--state-root',$outerState)).Output | ConvertFrom-Json)[0]
+        $ownedReceipt = @((Invoke-Tool $Cli @('list','--state-root',$outerState)).Output | ConvertFrom-Json | Where-Object id -eq $outerId)[0]
+        $sharedBinding = Read-SharedBinding $configurationPath $outerId $target
         $registeredCommand = (Get-ItemProperty -LiteralPath $managedArp).QuietUninstallString
         $expectedCommand = '"' + $ownedReceipt.uninstallerPath + '" uninstall "' + $outerId + '" --state-root "' + $outerState + '" --scope ' + $CompanionScope + ' --silent'
         Assert-Check ($registeredCommand -eq $expectedCommand -and (Test-Path -LiteralPath $ownedReceipt.uninstallerPath)) 'Windows Settings has the exact cached maintenance executable and product-specific uninstall command'
         Invoke-Tool $ownedReceipt.uninstallerPath @('uninstall',$outerId,'--state-root',$outerState,'--scope',$CompanionScope,'--silent') | Out-Null
         $installed = $false
         Assert-Check ([HeirowInstallerAuthoringProductState]::Query($productCode) -eq -1 -and -not (Test-Path -LiteralPath $configurationPath) -and -not (Test-Path -LiteralPath (Join-Path $target 'heirowUpdater.exe'))) 'Uninstall removes the compiled MSI product and its outer companion files'
-        Assert-Check (@((Invoke-Tool $Cli @('list','--state-root',$outerState)).Output | ConvertFrom-Json).Count -eq 0) 'Companion uninstall removes the outer maintenance receipt'
+        Assert-Check (@((Invoke-Tool $Cli @('list','--state-root',$outerState)).Output | ConvertFrom-Json | Where-Object id -eq $outerId).Count -eq 0) 'Companion uninstall removes the outer maintenance receipt'
+        Assert-Check (-not (Test-Path -LiteralPath $sharedBinding.Reference)) 'MSI uninstall removes its exact shared-runtime reference'
+        Assert-PeerReference $peerBinding 'MSI uninstall'
         Assert-Check (-not (Test-Path -LiteralPath $managedArp) -and -not (Test-Path -LiteralPath $backendArp)) 'The registered Settings uninstall removes both exact maintenance and MSI registrations'
         Invoke-Tool $Cli @('install',$package,'--features','updates','--state-root',$outerState,'--silent','--log',(Join-Path $OutputDirectory 'outer-external-install.log')) | Out-Null
         $installed = $true
@@ -330,20 +390,41 @@ try {
         Assert-Check (-not (Test-Path -LiteralPath (Join-Path $target 'payload.txt')) -and (Test-Path -LiteralPath $configurationPath)) 'An explicit external MSI removal is distinguishable from stale companion state'
         Invoke-Tool $Cli @('uninstall',$outerId,'--state-root',$outerState,'--silent') | Out-Null
         Assert-Check (-not (Test-Path -LiteralPath $configurationPath) -and -not (Test-Path -LiteralPath (Join-Path $target 'heirowUpdater.exe')) -and -not (Test-Path -LiteralPath $managedArp)) 'Maintenance cleans stale companion state after an external backend uninstall without reinstalling the application'
+        Assert-Check (-not (Test-Path -LiteralPath $sharedBinding.Reference)) 'Stale backend maintenance releases only its own shared-runtime reference'
+        Assert-PeerReference $peerBinding 'external MSI removal and stale maintenance'
+        Invoke-Tool $Cli @('uninstall',$peerId,'--state-root',$outerState,'--scope',$CompanionScope,'--silent') | Out-Null
+        Assert-Check (-not (Test-Path -LiteralPath $peerBinding.Reference) -and (Test-Path -LiteralPath $peerBinding.Executable)) 'Removing the peer releases its reference and preserves the immutable shared runtime'
+        Assert-Check (@((Invoke-Tool $Cli @('list','--state-root',$outerState)).Output | ConvertFrom-Json).Count -eq 0) 'All owned maintenance fixtures are uninstalled before protected state cleanup'
         Remove-OwnedMachineState
         Assert-Check (-not (Test-Path -LiteralPath $outerState)) 'The dedicated protected machine fixture state was removed after all products were uninstalled'
     }
     $receipt = [ordered]@{passed=$checks.Count;productCode=$productCode;target=$target;wix=(Invoke-Tool $Wix @('--version')).Output.Trim();checks=$checks;artifacts=@($msm,$v1,$msp) | ForEach-Object { @{name=[IO.Path]::GetFileName($_);sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()} }}
     $receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'receipt.json') -Encoding utf8NoBOM
     $receipt | ConvertTo-Json -Depth 10
-} finally {
-    if ($outerId -and $outerState -and (Test-Path -LiteralPath (Join-Path $outerState ($outerId + '/receipt.json')))) {
-        Invoke-Tool $Cli @('uninstall',$outerId,'--state-root',$outerState,'--silent','--log',(Join-Path $OutputDirectory 'outer-cleanup.log')) -AllowFailure | Out-Null
+} catch { $primaryFailure = $_; throw } finally {
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
+    foreach ($ownedId in @($outerId,$peerId)) {
+        try {
+            if ($ownedId -and $outerState -and (Test-Path -LiteralPath (Join-Path $outerState ($ownedId + '/receipt.json')))) {
+                $cleanup = Invoke-Tool $Cli @('uninstall',$ownedId,'--state-root',$outerState,'--scope',$CompanionScope,'--silent','--log',(Join-Path $OutputDirectory ($ownedId + '-cleanup.log'))) -AllowFailure
+                if ($cleanup.ExitCode -notin @(0,3010)) { $cleanupErrors.Add('CLI cleanup for ' + $ownedId + ' failed: ' + $cleanup.ExitCode) }
+            }
+        } catch { $cleanupErrors.Add($_.Exception.Message) }
     }
-    if ($installed -or [HeirowInstallerAuthoringProductState]::Query($productCode) -ne -1) {
-        Invoke-Tool 'msiexec.exe' @('/x',$productCode,'/qn','/norestart','/l*v',(Join-Path $OutputDirectory 'cleanup.log')) | Out-Null
+    try {
+        # Query AFTER CLI maintenance: the stale $installed flag must never cause a second uninstall.
+        if ([HeirowInstallerAuthoringProductState]::Query($productCode) -ne -1) {
+            $cleanup = Invoke-Tool 'msiexec.exe' @('/x',$productCode,'/qn','/norestart','/l*v',(Join-Path $OutputDirectory 'cleanup.log')) -AllowFailure
+            if ($cleanup.ExitCode -notin @(0,3010)) { $cleanupErrors.Add('Exact MSI cleanup failed: ' + $cleanup.ExitCode) }
+        }
+        if ([HeirowInstallerAuthoringProductState]::Query($productCode) -eq -1) { Remove-OwnedMachineState }
+    } catch { $cleanupErrors.Add($_.Exception.Message) }
+    foreach ($ownedTarget in @($target,$peerTarget)) {
+        try { if ($ownedTarget -and (Test-Path -LiteralPath $ownedTarget) -and @(Get-ChildItem -LiteralPath $ownedTarget -Force).Count -eq 0) { Remove-Item -LiteralPath $ownedTarget } }
+        catch { $cleanupErrors.Add($_.Exception.Message) }
     }
-    if ([HeirowInstallerAuthoringProductState]::Query($productCode) -eq -1) { Remove-OwnedMachineState }
-    # Keep compiler artifacts and logs as evidence. Remove only this unique fixture's now-empty installation directory.
-    if ((Test-Path -LiteralPath $target) -and @(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) { Remove-Item -LiteralPath $target }
+    if ($cleanupErrors.Count -gt 0) {
+        if ($null -ne $primaryFailure) { Write-Warning -WarningAction Continue ('Cleanup also needs attention; original failure preserved: ' + ($cleanupErrors -join '; ')) }
+        else { throw ('Owned fixture cleanup failed: ' + ($cleanupErrors -join '; ')) }
+    }
 }

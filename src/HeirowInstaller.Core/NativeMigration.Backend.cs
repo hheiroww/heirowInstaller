@@ -71,6 +71,15 @@ internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
             if (key is not null) registrations++;
         }
         var state = MsiQueryProductState(code);
+        return ClassifyMsiObservation(scope, state, registrations);
+    }
+
+    internal static NativeBackendState ClassifyMsiObservation(string scope, int state, int logicalRegistrations)
+    {
+        if (scope is not ("user" or "machine") || logicalRegistrations is < 0 or > 2)
+            throw new ArgumentException("MSI observation requires an exact supported scope and registry-view count.");
+        // HKCU\SOFTWARE is shared across WOW64 views. Its exact Uninstall key is one registration, even when both handles find it.
+        var registrations = scope == "user" && logicalRegistrations > 0 ? 1 : logicalRegistrations;
         // ABSENT means installed for another user; only UNKNOWN plus no registration proves absence.
         return state == 5 && registrations == 1 ? NativeBackendState.Installed : state == -1 && registrations == 0 ? NativeBackendState.Absent : NativeBackendState.Uncertain;
     }
