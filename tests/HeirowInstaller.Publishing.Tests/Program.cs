@@ -138,10 +138,20 @@ try
     try { await client.PublishSealedDeliveryAsync(package, "test.product", "1.0.0"); throw new Exception("Unauthorized sealed delivery accepted."); }
     catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden && !error.Message.Contains("private denial", StringComparison.Ordinal), "Sealed delivery retains server authorization and redacted failures"); }
     await sealedServer;
+    var preparationServer = ServeOnceAsync(listener, request =>
+    {
+        Check(request.Headers.GetValueOrDefault("X-HeirowInstaller-Protected-Preparation") == "true" && !request.Headers.ContainsKey("X-HeirowInstaller-Sealed-Delivery"), "Native preparation explicitly selects encrypted quarantine without requesting full delivery");
+        return (403, "", null);
+    });
+    try { await client.PublishProtectedPreparationAsync(package); throw new Exception("Unauthorized native preparation accepted."); }
+    catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden, "Native preparation retains server-side administrator and ownership enforcement"); }
+    await preparationServer;
     using (var cookieClient = new PublisherClient(origin, sessionCookie: "fixture-cookie", allowLoopback: true))
     {
         try { await cookieClient.PublishSealedDeliveryAsync(package, "test.product", "1.0.0"); throw new Exception("Cookie credential accepted for native sealed delivery."); }
         catch (InvalidOperationException) { Check(true, "Native sealed delivery refuses browser-cookie authentication before any request"); }
+        try { await cookieClient.PublishProtectedPreparationAsync(package); throw new Exception("Cookie credential accepted for native protected preparation."); }
+        catch (InvalidOperationException) { Check(true, "Native preparation refuses browser-cookie authentication before any request"); }
     }
 
     await BrowserSignInChecksAsync(listener, origin, Check);

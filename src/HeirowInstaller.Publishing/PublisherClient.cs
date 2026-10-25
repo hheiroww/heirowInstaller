@@ -54,8 +54,17 @@ public sealed partial class PublisherClient : IDisposable
         return PublishCoreAsync(packagePath, productId, version, cancellationToken, releaseNotes, progress);
     }
 
+    /// <summary>Explicitly selects encrypted source preparation for a native administrator; it never installs the returned preparation bundle.</summary>
+    public Task<PublishedRelease> PublishProtectedPreparationAsync(string packagePath, CancellationToken cancellationToken = default,
+        string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
+    {
+        if (client.DefaultRequestHeaders.Authorization?.Scheme != "Bearer" || client.DefaultRequestHeaders.Contains("Cookie"))
+            throw new InvalidOperationException("Native protected preparation requires the publisher's in-memory bearer session.");
+        return PublishCoreAsync(packagePath, null, null, cancellationToken, releaseNotes, progress, protectedPreparation: true);
+    }
+
     private async Task<PublishedRelease> PublishCoreAsync(string packagePath, string? sealedProduct, string? sealedVersion,
-        CancellationToken cancellationToken, string? releaseNotes, IProgress<PublishProgress>? progress)
+        CancellationToken cancellationToken, string? releaseNotes, IProgress<PublishProgress>? progress, bool protectedPreparation = false)
     {
         var path = Path.GetFullPath(packagePath);
         if (!string.Equals(Path.GetExtension(path), ".hinst", StringComparison.OrdinalIgnoreCase) &&
@@ -70,6 +79,7 @@ public sealed partial class PublisherClient : IDisposable
         // Keep failed/cancelled uploads resumable until the server's bounded expiry.
         using var begin = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, "api/installer/publisher/uploads"));
         begin.Headers.Add("X-HeirowInstaller-SHA256", hash);
+        if (protectedPreparation) begin.Headers.Add("X-HeirowInstaller-Protected-Preparation", "true");
         object metadata = new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "" };
         if (sealedProduct != null)
         {
