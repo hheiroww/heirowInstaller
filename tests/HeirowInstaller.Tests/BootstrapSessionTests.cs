@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using HeirowInstaller.Core;
 
@@ -33,6 +35,44 @@ internal sealed partial class AcceptanceSuite
             True(!File.Exists(Path.Combine(root, "heirowUpdater.exe")), "Bootstrap must use the shared runtime outside the application root.");
             var contents = File.ReadAllText(Path.Combine(root, "child.json"));
             True(!contents.Contains("fixture-bootstrap-native", StringComparison.Ordinal) && !contents.Contains("fixture-inherited-browser", StringComparison.Ordinal));
+            if (OperatingSystem.IsWindows())
+            {
+                var longArea = Path.Combine(area, new string('a', 80), new string('b', 80));
+                var longRoot = Path.Combine(longArea, "app"); Directory.CreateDirectory(longRoot);
+                var longProfile = new UpdateCompanionConfiguration { ProductId = profile.ProductId, InstallDirectory = longRoot,
+                    Scope = "user", Isolated = true, StateRoot = Path.Combine(longArea, "state"), SharedRuntime = reference };
+                var longRuntime = Path.Combine(SharedUpdaterRuntime.Root(longProfile), reference.Version + "-" + reference.Sha256.ToLowerInvariant(), "heirowUpdater.exe");
+                Directory.CreateDirectory(Path.GetDirectoryName(longRuntime)!); File.Copy(executable, longRuntime);
+                True(longRuntime.Length > 260, "Each compiled bootstrap must verify real PE metadata beyond MAX_PATH.");
+                Equal(reference.Sha256, PackageSafety.HashFile(longRuntime));
+                var longConfiguration = Path.Combine(longRoot, "heirowUpdater.json");
+                File.WriteAllText(longConfiguration, JsonSerializer.Serialize(longProfile, InstallerJson.Options));
+                // Invoke the compiled dependency-free resolver without executing the long-path PE or opening any UI.
+                var resolver = Assembly.LoadFrom(Path.Combine(source, name + ".dll")).GetType("SocketJack.HeirowUpdaterBootstrap")!
+                    .GetMethod("Resolve", BindingFlags.NonPublic | BindingFlags.Static)!;
+                Equal(longRuntime, (string)resolver.Invoke(null, [longRoot, longConfiguration])!);
+                longProfile.SharedRuntime = new() { Version = reference.Version, Sha256 = reference.Sha256, Size = reference.Size + 1 };
+                File.WriteAllText(longConfiguration, JsonSerializer.Serialize(longProfile, InstallerJson.Options));
+                await Throws<CryptographicException>(() => Task.Run(() => ResolveWithUnwrappedFailure(resolver, longRoot, longConfiguration)));
+                longProfile.SharedRuntime = reference;
+                File.WriteAllText(longConfiguration, JsonSerializer.Serialize(longProfile, InstallerJson.Options));
+                var originalBytes = File.ReadAllBytes(longRuntime);
+                originalBytes[^1] ^= 1; File.WriteAllBytes(longRuntime, originalBytes);
+                await Throws<CryptographicException>(() => Task.Run(() => ResolveWithUnwrappedFailure(resolver, longRoot, longConfiguration)));
+                var wrongVersion = reference.Version == "0.0.0.0" ? "1.0.0.0" : "0.0.0.0";
+                var mismatched = Path.Combine(SharedUpdaterRuntime.Root(longProfile), wrongVersion + "-" + reference.Sha256.ToLowerInvariant(), "heirowUpdater.exe");
+                Directory.CreateDirectory(Path.GetDirectoryName(mismatched)!); File.Copy(executable, mismatched);
+                longProfile.SharedRuntime = new() { Version = wrongVersion, Sha256 = reference.Sha256, Size = reference.Size };
+                File.WriteAllText(longConfiguration, JsonSerializer.Serialize(longProfile, InstallerJson.Options));
+                await Throws<CryptographicException>(() => Task.Run(() => ResolveWithUnwrappedFailure(resolver, longRoot, longConfiguration)));
+            }
         }
+    }
+
+    private static object? ResolveWithUnwrappedFailure(MethodInfo resolver, string root, string configuration)
+    {
+        try { return resolver.Invoke(null, [root, configuration]); }
+        catch (TargetInvocationException failure) when (failure.InnerException is CryptographicException)
+        { throw failure.InnerException; }
     }
 }

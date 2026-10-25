@@ -84,10 +84,19 @@ Namespace Global.SocketJack
                 Dim executable = Path.Combine(parent, ".updater-runtime", version & "-" & hash.ToLowerInvariant(), "heirowUpdater.exe")
                 NoLinks(executable)
                 Using input = File.OpenRead(executable)
-                    If input.Length <> size OrElse Not Convert.ToHexString(SHA256.HashData(input)).Equals(hash, StringComparison.OrdinalIgnoreCase) OrElse FileVersionInfo.GetVersionInfo(executable).FileVersion <> version Then Throw New CryptographicException("Updater runtime integrity failed.")
+                    If input.Length <> size OrElse Not Convert.ToHexString(SHA256.HashData(input)).Equals(hash, StringComparison.OrdinalIgnoreCase) OrElse ReadFileVersion(executable) <> version Then Throw New CryptographicException("Updater runtime integrity failed.")
                 End Using
                 Return executable
             End Using
+        End Function
+
+        Private Shared Function ReadFileVersion(pathValue As String) As String
+            ' Version metadata uses a native API that requires an extended path for long Windows filenames.
+            Dim absolute = Path.GetFullPath(pathValue)
+            If OperatingSystem.IsWindows() AndAlso Not absolute.StartsWith("\\?\", StringComparison.Ordinal) Then
+                absolute = If(absolute.StartsWith("\\", StringComparison.Ordinal), "\\?\UNC\" & absolute.Substring(2), "\\?\" & absolute)
+            End If
+            Return FileVersionInfo.GetVersionInfo(absolute).FileVersion
         End Function
 
         Private Shared Sub NoLinks(pathValue As String)

@@ -44,6 +44,7 @@ internal sealed partial class AcceptanceSuite
         Equal(2, Directory.EnumerateFiles(Path.Combine(SharedUpdaterRuntime.Root(configA), "references"), "*.json").Count());
         Equal(PackageSafety.HashFile(fixture), PackageSafety.HashFile(executable));
         True(File.Exists(SharedUpdaterRuntime.ReferencePath(configA))); True(File.Exists(SharedUpdaterRuntime.ReferencePath(configB)));
+        await LongPathSharedRuntime(first, configA, fixture);
         Equal(SharedUpdaterRuntime.ApplicationStateDirectory(configA), ApplicationUpdater.StateDirectory(configA));
         True(SharedUpdaterRuntime.ApplicationStateDirectory(configA) != SharedUpdaterRuntime.ApplicationStateDirectory(configB));
 
@@ -108,5 +109,36 @@ internal sealed partial class AcceptanceSuite
         await engine.UninstallAsync(migrated.Manifest.Id, legacyOptions);
         True(File.Exists(executable));
         True(!JsonSerializer.Serialize(new UpdateCompanionDefinition(), InstallerJson.Options).Contains("runtimeMode", StringComparison.Ordinal));
+    }
+
+    private async Task LongPathSharedRuntime(PackageReader trustedPackage, UpdateCompanionConfiguration original, string fixture)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var area = Path.Combine(Area("long-runtime-version"), new string('a', 80), new string('b', 80));
+        var source = Path.Combine(area, "source"); Directory.CreateDirectory(source);
+        var longSource = Path.Combine(source, "heirowUpdater.exe"); File.Copy(fixture, longSource);
+        True(longSource.Length > 260, "The PE metadata source must exceed MAX_PATH.");
+        var identity = new InstalledProduct { Id = trustedPackage.Manifest.Id, Scope = "user", Isolated = true,
+            InstallDirectory = Path.Combine(area, "app"), PublisherKeySha256 = original.PublisherKeySha256 };
+        var state = Path.Combine(area, "state");
+        var reference = SharedUpdaterRuntime.Provision(trustedPackage.Manifest, identity, source, state);
+        Equal(original.SharedRuntime!.Version, reference.Version);
+        var profile = JsonSerializer.Deserialize<UpdateCompanionConfiguration>(JsonSerializer.Serialize(original, InstallerJson.Options), InstallerJson.Options)!;
+        profile.InstallDirectory = identity.InstallDirectory; profile.StateRoot = state; profile.SharedRuntime = reference;
+        var resolved = SharedUpdaterRuntime.Resolve(profile);
+        True(resolved.Length > 260, "The immutable runtime path must exceed MAX_PATH.");
+        Equal(PackageSafety.HashFile(fixture), PackageSafety.HashFile(resolved));
+        Equal(resolved, SharedUpdaterRuntime.Resolve(profile));
+        var binding = SharedUpdaterRuntime.GetReferenceBinding(trustedPackage.Manifest, identity, state, enabled: true);
+        Directory.CreateDirectory(Path.GetDirectoryName(binding.Path)!); File.WriteAllBytes(binding.Path, binding.Content!);
+        var recovered = SharedUpdaterRuntime.RecoverReference(profile, trustedPackage.Manifest)!;
+        Equal(reference.Version, recovered.Version); Equal(reference.Sha256, recovered.Sha256); Equal(reference.Size, recovered.Size);
+
+        var wrongVersion = reference.Version == "0.0.0.0" ? "1.0.0.0" : "0.0.0.0";
+        var mismatched = Path.Combine(SharedUpdaterRuntime.Root(profile), wrongVersion + "-" + reference.Sha256.ToLowerInvariant(), "heirowUpdater.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(mismatched)!); File.Copy(fixture, mismatched);
+        profile.SharedRuntime = new() { Version = wrongVersion, Sha256 = reference.Sha256, Size = reference.Size };
+        await Throws<InvalidDataException>(() => Task.Run(() => SharedUpdaterRuntime.Resolve(profile)));
+        await Throws<InvalidDataException>(() => Task.Run(() => SharedUpdaterRuntime.RecoverReference(profile, trustedPackage.Manifest)));
     }
 }

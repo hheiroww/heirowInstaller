@@ -65,8 +65,16 @@ public static class HeirowUpdaterBootstrap
         var executable = Path.Combine(parent, ".updater-runtime", version + "-" + hash.ToLowerInvariant(), "heirowUpdater.exe");
         NoLinks(executable);
         using var input = File.OpenRead(executable);
-        if (input.Length != size || !Convert.ToHexString(SHA256.HashData(input)).Equals(hash, StringComparison.OrdinalIgnoreCase) || FileVersionInfo.GetVersionInfo(executable).FileVersion != version) throw new CryptographicException("Updater runtime integrity failed.");
+        if (input.Length != size || !Convert.ToHexString(SHA256.HashData(input)).Equals(hash, StringComparison.OrdinalIgnoreCase) || ReadFileVersion(executable) != version) throw new CryptographicException("Updater runtime integrity failed.");
         return executable;
+    }
+    private static string? ReadFileVersion(string path)
+    {
+        // Version metadata uses a native API that requires an extended path for long Windows filenames.
+        var absolute = Path.GetFullPath(path);
+        if (OperatingSystem.IsWindows() && !absolute.StartsWith(@"\\?\", StringComparison.Ordinal))
+            absolute = absolute.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + absolute[2..] : @"\\?\" + absolute;
+        return FileVersionInfo.GetVersionInfo(absolute).FileVersion;
     }
     private static void NoLinks(string path)
     {

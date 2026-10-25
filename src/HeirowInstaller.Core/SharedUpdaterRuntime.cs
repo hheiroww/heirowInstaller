@@ -60,7 +60,7 @@ public static class SharedUpdaterRuntime
         var payload = manifest.Payload.Single(x => x.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
         var source = PackageSafety.UnderRoot(extractedRoot, payload.Path);
         VerifyFile(source, payload.Sha256, payload.Size);
-        var version = FileVersionInfo.GetVersionInfo(source).FileVersion ?? throw new InvalidDataException("The updater runtime has no file version.");
+        var version = ReadFileVersion(source) ?? throw new InvalidDataException("The updater runtime has no file version.");
         ValidateVersion(version);
         var reference = new SharedUpdaterRuntimeReference { Version = version, Sha256 = payload.Sha256, Size = payload.Size };
         var configuration = new UpdateCompanionConfiguration
@@ -127,7 +127,7 @@ public static class SharedUpdaterRuntime
         using var protection = Guard(configuration, create: false);
         var executable = ExecutablePath(configuration);
         VerifyFile(executable, configuration.SharedRuntime.Sha256, configuration.SharedRuntime.Size);
-        if (FileVersionInfo.GetVersionInfo(executable).FileVersion != configuration.SharedRuntime.Version)
+        if (ReadFileVersion(executable) != configuration.SharedRuntime.Version)
             throw new InvalidDataException("The shared updater runtime version does not match its binding.");
         return executable;
     }
@@ -153,11 +153,20 @@ public static class SharedUpdaterRuntime
             var executable = Path.Combine(directory, "heirowUpdater.exe");
             if (!File.Exists(executable)) continue;
             VerifyFile(executable, content.Sha256, content.Size);
-            if (FileVersionInfo.GetVersionInfo(executable).FileVersion != version) throw new InvalidDataException("The recovered updater runtime has a different file version.");
+            if (ReadFileVersion(executable) != version) throw new InvalidDataException("The recovered updater runtime has a different file version.");
             matches.Add(new() { Version = version, Sha256 = content.Sha256, Size = content.Size });
         }
         if (matches.Count > 1) throw new InvalidDataException("Multiple updater runtime directories claim this application's signed content.");
         return matches.SingleOrDefault();
+    }
+
+    private static string? ReadFileVersion(string path)
+    {
+        // The native version API still needs an extended path even when ordinary file I/O supports long paths.
+        var absolute = Path.GetFullPath(path);
+        if (OperatingSystem.IsWindows() && !absolute.StartsWith(@"\\?\", StringComparison.Ordinal))
+            absolute = absolute.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + absolute[2..] : @"\\?\" + absolute;
+        return FileVersionInfo.GetVersionInfo(absolute).FileVersion;
     }
 
     internal static void Bind(UpdateCompanionConfiguration configuration, InstallTransaction transaction)
