@@ -230,6 +230,13 @@ public static class ApplicationUpdater
             if (request is null || request.Nonce == state.LastManualRequestId) return false;
             manualRequestId = request.Nonce; manual = true; return true;
         }
+        async Task AcknowledgeQueuedManualRequest()
+        {
+            // Direct checks have independent feedback IDs; they must not make a previously consumed queue entry look new.
+            if (ReadManualRequest(requestPath)?.Nonce != manualRequestId) return;
+            state.LastManualRequestId = manualRequestId;
+            await WriteJsonAsync(statePath, state, cancellationToken);
+        }
         try
         {
             state = ReadState(statePath);
@@ -239,7 +246,7 @@ public static class ApplicationUpdater
             {
                 if (manual) await BeginManualFeedback();
                 var pendingResult = await Status("update-staged");
-                if (manual) { state.LastManualRequestId = manualRequestId; await WriteJsonAsync(statePath, state, cancellationToken); }
+                if (manual) await AcknowledgeQueuedManualRequest();
                 return pendingResult;
             }
             stopMonitor = new ApplicationStopMonitor(configuration.InstallDirectory, resetForOwner: true, cancellationToken);
@@ -270,8 +277,7 @@ public static class ApplicationUpdater
                     if (manual)
                     {
                         // Acknowledge only after the host has opened feedback. Active metadata coalesces clicks during initialization.
-                        state.LastManualRequestId = manualRequestId;
-                        await WriteJsonAsync(statePath, state, cancellationToken);
+                        await AcknowledgeQueuedManualRequest();
                     }
                     check = await Authorized(client => client.CheckAsync(target, cancellationToken));
                 }

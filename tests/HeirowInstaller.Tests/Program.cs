@@ -1059,8 +1059,40 @@ internal sealed class AcceptanceSuite
             queuedCancellation = new CancellationTokenSource();
             owner = ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, Settings(), NoUpdatePrompt, queuedCancellation.Token);
             await Wait(() => feedback.Any(x => x.Status == "current")); True(!owner.IsCompleted);
+            var consumedQueuedId = feedback.First(x => x.Status == "current").ManualRequestId;
             queuedCancellation.Cancel(); await Throws<OperationCanceledException>(async () => { using var ignored = await owner; }); owner = null;
+            string? QueuedAcknowledgement()
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(stateDirectory, "state.json")));
+                return document.RootElement.GetProperty("lastManualRequestId").GetString();
+            }
+            Equal(consumedQueuedId, QueuedAcknowledgement());
+
+            // A direct check D must not overwrite the acknowledgement of queued Q and replay Q on the next automatic startup.
+            queuedCancellation.Dispose(); queuedCancellation = new CancellationTokenSource(); feedback.Clear();
+            owner = ApplicationUpdater.RunAsync(profile, null, null, true, Settings(), NoUpdatePrompt, queuedCancellation.Token);
+            await Wait(() => feedback.Any(x => x.Status == "current"));
+            var directId = feedback.First(x => x.Status == "current").ManualRequestId;
+            True(directId != consumedQueuedId); Equal(consumedQueuedId, QueuedAcknowledgement());
+            queuedCancellation.Cancel(); await Throws<OperationCanceledException>(async () => { using var ignored = await owner; }); owner = null;
+            await ApplicationUpdater.MarkHandoffAsync(Path.Combine(stateDirectory, "state.json"), application);
+            using (var pendingDirect = await ApplicationUpdater.RunAsync(profile, null, null, true, Settings(), NoUpdatePrompt))
+            { Equal("update-staged", pendingDirect.Status); True(pendingDirect.ManualRequestId != consumedQueuedId); Equal(consumedQueuedId, QueuedAcknowledgement()); }
             await ApplicationUpdater.CompleteHandoffAsync(Path.Combine(stateDirectory, "state.json")); // Reset only the isolated fixture's earlier Postpone choice.
+
+            queuedCancellation.Dispose(); queuedCancellation = new CancellationTokenSource(); feedback.Clear();
+            var beforeFreshAutomatic = Volatile.Read(ref requests); Volatile.Write(ref ownerStatus, "");
+            var freshAutomaticOptions = Settings(); freshAutomaticOptions.StatusChanged = status => Volatile.Write(ref ownerStatus, status.Status);
+            owner = ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, freshAutomaticOptions, NoUpdatePrompt, queuedCancellation.Token);
+            await Wait(() => Volatile.Read(ref ownerStatus) == "waiting-for-exit");
+            True(feedback.IsEmpty); Equal(beforeFreshAutomatic, Volatile.Read(ref requests));
+            using (var freshQueued = await Relay())
+            {
+                True(freshQueued.ManualRequestId != consumedQueuedId && freshQueued.ManualRequestId != directId);
+                await Wait(() => feedback.Any(x => x.Status == "current" && x.ManualRequestId == freshQueued.ManualRequestId));
+                Equal(beforeFreshAutomatic + 1, Volatile.Read(ref requests)); Equal(freshQueued.ManualRequestId, QueuedAcknowledgement());
+            }
+            queuedCancellation.Cancel(); await Throws<OperationCanceledException>(async () => { using var ignored = await owner; }); owner = null;
             File.WriteAllText(Path.Combine(run, "exit.flag"), "owned fixture release"); await application.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             feedback.Clear();
             using (var automatic = await ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, Settings(), NoUpdatePrompt)) { Equal("current", automatic.Status); True(!automatic.ManualCheck); }
