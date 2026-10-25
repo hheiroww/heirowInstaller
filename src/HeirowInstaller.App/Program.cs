@@ -56,7 +56,7 @@ internal static class Program
     private static int Maintain(string[] args)
     {
         var options = AppArguments.Parse(args.Skip(2).ToArray());
-        var install = new InstallOptions { StateRoot = options.StateRoot, Scope = options.Scope, Silent = options.Silent, InstallerPath = Environment.ProcessPath };
+        var install = new InstallOptions { StateRoot = options.StateRoot, Scope = options.Scope, Silent = options.Silent, InstallerPath = Environment.ProcessPath, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
         var product = InstallerEngine.ListInstalled(options.StateRoot).FirstOrDefault(value => value.Id.Equals(args[1], StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException("The application is not installed.");
         if (AppController.NeedsMaintenanceElevation(product)) return Elevate(args);
         if (args[0] == "uninstall" && !options.Silent && System.Windows.Forms.MessageBox.Show($"Uninstall {product.Name}?", "heirowInstaller", System.Windows.Forms.MessageBoxButtons.YesNo, System.Windows.Forms.MessageBoxIcon.Question) != System.Windows.Forms.DialogResult.Yes) return 0;

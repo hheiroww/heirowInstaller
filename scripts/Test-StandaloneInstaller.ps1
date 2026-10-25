@@ -39,8 +39,9 @@ function Invoke-Child([string]$Executable,[string[]]$Arguments,[switch]$Recipien
         return $output
     } finally { $process.Dispose() }
 }
-[IO.File]::WriteAllText((Join-Path $project 'Application.csproj'),'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><AssemblyName>StandaloneFixture</AssemblyName><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>')
+[IO.File]::WriteAllText((Join-Path $project 'Application.csproj'),'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><AssemblyName>StandaloneFixture</AssemblyName><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><Content Include="repair-sentinel.txt" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" /></ItemGroup></Project>')
 [IO.File]::WriteAllText((Join-Path $project 'Program.cs'),'if(args.Length!=1 || !Path.IsPathFullyQualified(args[0])) return 2; File.WriteAllText(args[0],System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription); return 0;')
+$sentinelText='Native maintenance payload'; [IO.File]::WriteAllText((Join-Path $project 'repair-sentinel.txt'),$sentinelText)
 $rsa=[Security.Cryptography.RSA]::Create(2048)
 try {
     $key=Join-Path $OutputDirectory 'publisher.private.pem'; [IO.File]::WriteAllText($key,$rsa.ExportPkcs8PrivateKeyPem())
@@ -64,6 +65,14 @@ try {
     Assert-Check ([IO.File]::ReadAllText($report).StartsWith('.NET 10.')) 'The installed application ran with tool lookup removed and DOTNET_ROOT set to an absent directory'
     $receiptPath=Join-Path $state ($id + '/receipt.json'); $installed=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
     Assert-Check ($installed.publisherKeySha256 -eq $pin -and (Test-Path -LiteralPath $installed.uninstallerPath)) 'The recipient retained its publisher pin and its own self-contained maintenance host'
+    $sentinel=Join-Path $target 'repair-sentinel.txt'
+    Assert-Check ((Test-Path -LiteralPath $sentinel) -and [IO.File]::ReadAllText($sentinel) -ceq $sentinelText) 'The fixture installed its separate repair payload'
+    [IO.File]::Delete($sentinel)
+    $repairLog=Join-Path $OutputDirectory 'maintenance logs/repair.log'
+    Invoke-Child $installed.uninstallerPath @('repair',$id,'--state-root',$state,'--silent','--log',$repairLog) -RecipientEnvironment | Out-Null
+    Assert-Check ((Test-Path -LiteralPath $sentinel) -and [IO.File]::ReadAllText($sentinel) -ceq $sentinelText) 'The cached native host repaired its missing payload without the builder'
+    Assert-Check ((Test-Path -LiteralPath $repairLog) -and [IO.File]::ReadAllText($repairLog).Contains("Installed $id 1.0.0")) 'The cached native repair wrote the requested log with the repaired product identity'
+    $installed=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
     if ($UpdaterPath) {
         $manifest.updateUrl='https://updates.example.invalid/fixture.json'
         $manifest.features=@(@{id='updates';name='Optional app updates';default=$false})
@@ -78,8 +87,10 @@ try {
         $folderBuild=Invoke-Child $Cli @('verify',$withUpdater,'--trust-key',$pin,'--require-signature') | ConvertFrom-Json
         Assert-Check ($folderBuild.valid) 'The folder-based setup with an injected root companion verifies independently'
     }
-    Invoke-Child $installed.uninstallerPath @('uninstall',$id,'--state-root',$state,'--silent') -RecipientEnvironment | Out-Null
+    $uninstallLog=Join-Path $OutputDirectory 'maintenance logs/uninstall.log'
+    Invoke-Child $installed.uninstallerPath @('uninstall',$id,'--state-root',$state,'--silent','--log',$uninstallLog) -RecipientEnvironment | Out-Null
     Assert-Check (-not (Test-Path -LiteralPath $application) -and -not (Test-Path -LiteralPath $receiptPath)) 'The recipient uninstalled through its cached standalone host without the builder'
+    Assert-Check ((Test-Path -LiteralPath $uninstallLog) -and [IO.File]::ReadAllText($uninstallLog).Contains("Uninstalled $id")) 'The cached native uninstall wrote the requested log with the removed product identity'
     [ordered]@{passed=$checks.Count;productId=$id;setup=$setup;sha256=(Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant();checks=$checks} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'receipt.json') -Encoding utf8NoBOM
     Get-Content -LiteralPath (Join-Path $OutputDirectory 'receipt.json')
 } finally {
