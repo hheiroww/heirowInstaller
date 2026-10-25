@@ -71,6 +71,47 @@ internal sealed class InstallTransaction : IDisposable
         File.Delete(destination);
     }
 
+    // Cleanup operations require an exact caller-derived journal allowlist, even for a full installation.
+    internal void DeleteHeldFile(LegacyStagingFileGuard file)
+    {
+        file.Recheck();
+        var backup = Path.Combine(Root, "rollback", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
+        file.CopyDurable(backup);
+        var operation = journal?.Prepare(file.Path, backup, null, null, null);
+        if (operation is null || !operation.Recoverable) throw new InvalidDataException("Legacy deletion lacks verified recovery authority.");
+        undo.Add(() => { Restore(file.Path, backup, null); journal!.Restored(operation); });
+        file.DeleteAndClose();
+    }
+
+    internal void CreateFromHeld(string destination, LegacyStagingFileGuard file) =>
+        CreateDeclaredFile(destination, file.Sha256!, file.Size, file.CopyDurable);
+
+    internal void CreateDeclaredFile(string destination, byte[] content) =>
+        CreateDeclaredFile(destination, IncrementalPackageIO.Hash(content), content.LongLength, temporary =>
+        {
+            using var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, FileOptions.WriteThrough);
+            output.Write(content); output.Flush(true);
+        });
+
+    private void CreateDeclaredFile(string destination, string hash, long size, Action<string> write)
+    {
+        PackageSafety.EnsureNoReparsePoints(destination);
+        if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("A legacy quarantine or ledger destination is already occupied.");
+        EnsureDirectory(Path.GetDirectoryName(destination)!);
+        var temporary = destination + ".hinst-" + Guid.NewGuid().ToString("N") + ".tmp";
+        var operation = journal?.Prepare(destination, null, temporary, hash, size);
+        if (operation is null || !operation.Recoverable) throw new InvalidDataException("Legacy quarantine lacks verified recovery authority.");
+        undo.Add(() => { LegacyStagingCleanupModule.RemoveRecoveryCreation(destination, hash, size); journal!.Restored(operation); });
+        try
+        {
+            write(temporary);
+            IncrementalPackageIO.VerifyFile(temporary, size, hash);
+            File.Move(temporary, destination, false);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     private string? Backup(string destination)
     {
         if (!File.Exists(destination)) return null;
@@ -115,7 +156,16 @@ internal sealed class InstallTransaction : IDisposable
         foreach (var action in undo.AsEnumerable().Reverse())
             try { action(); } catch (Exception ex) { errors.Add(ex); }
         foreach (var directory in directories.OrderByDescending(x => x.Length))
-            try { if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory); } catch (Exception ex) { errors.Add(ex); }
+            try
+            {
+                if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+                {
+                    if (RecoveryContext is not null && LegacyStagingCleanupModule.IsRecoveryDirectory(RecoveryContext, directory))
+                        LegacyStagingCleanupModule.RemoveEmptyRecoveryDirectory(directory);
+                    else Directory.Delete(directory);
+                }
+            }
+            catch (Exception ex) { errors.Add(ex); }
         finished = true;
         if (errors.Count > 0) { preserveRecovery = true; throw new AggregateException("Installation rollback needs attention. Recovery files remain in " + Root, errors); }
         journal?.RollbackComplete();

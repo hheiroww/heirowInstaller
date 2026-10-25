@@ -19,7 +19,15 @@ public sealed class InstallerModuleContext
     public string Scope => Plan.Scope;
     public IReadOnlyList<string> Features => Plan.Features;
     public bool Isolated { get; }
+    internal VerifiedModuleAuthority? Authority { get; private init; }
+    internal bool ProductLockHeld { get; private init; }
+    internal InstallTransaction Transaction => transaction ?? throw new InvalidOperationException("Planning cannot mutate state.");
     internal InstallerModuleContext(InstallPlan plan, InstallTransaction? transaction, bool isolated) { Plan = plan; this.transaction = transaction; Isolated = isolated; }
+    internal static InstallerModuleContext ForVerifiedPackage(InstallPlan plan, InstallTransaction? transaction, PackageReader package,
+        InstallOptions options, InstalledProduct? previous = null, bool productLockHeld = false) => new(plan, transaction, options.Isolated)
+        {
+            Authority = VerifiedModuleAuthority.Create(package, plan, options, previous), ProductLockHeld = productLockHeld
+        };
     public bool IsFeatureSelected(string? feature) => InstallerEngine.IsSelected(feature, Features);
     public string Expand(string value) => InstallerEngine.Expand(value, InstallDirectory);
     public string ResolveTarget(string relativePath) => PackageSafety.UnderRoot(InstallDirectory, relativePath);

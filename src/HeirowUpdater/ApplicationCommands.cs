@@ -43,7 +43,8 @@ internal static class ApplicationCommands
         if (command == "launch")
         {
             var root = configuration.InstallDirectory;
-            var start = new ProcessStartInfo(PackageSafety.UnderRoot(root, configuration.EntryPoint)) { UseShellExecute = false, WorkingDirectory = root };
+            var start = new ProcessStartInfo(PackageSafety.UnderRoot(root, configuration.EntryPoint))
+            { UseShellExecute = false, WorkingDirectory = PackageSafety.ResolveWorkingDirectory(root, configuration.LaunchWorkingDirectory) };
             foreach (var argument in args.ApplicationArguments) start.ArgumentList.Add(argument);
             using var application = Process.Start(start) ?? throw new InvalidOperationException("The application did not start.");
             var watcher = new ProcessStartInfo(ApplicationUpdater.ResolveExecutable(configuration)) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };

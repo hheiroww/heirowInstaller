@@ -47,7 +47,10 @@ public sealed class FileTransactionRecoveryContext
             baseDigest = IncrementalPackageIO.Hash(bytes);
             oldManifest = JsonSerializer.Deserialize<PackageManifest>(bytes, InstallerJson.Options)!;
         }
-        return Create(plan, previous, options, oldManifest, baseDigest, IncrementalPackageIO.Hash(targetManifest), package.PublisherKeySha256, requireExactBase);
+        var signedTarget = JsonSerializer.Deserialize<PackageManifest>(targetManifest, InstallerJson.Options)!;
+        if (signedTarget.Modules.ContainsKey(LegacyStagingCleanupModule.ModuleId) && options.TrustedPublisherKeySha256 is null && previous?.PublisherKeySha256 is null)
+            throw new CryptographicException("Legacy staging recovery requires an explicitly trusted or previously installed publisher pin.");
+        return Create(plan, previous, options, oldManifest, baseDigest, IncrementalPackageIO.Hash(targetManifest), package.PublisherKeySha256, requireExactBase, signedTarget);
     }
 
     /// <summary>Can be built before reconstruction, so a crashed update can restore its base files first.</summary>
@@ -71,11 +74,11 @@ public sealed class FileTransactionRecoveryContext
             Files = target.Payload.Where(file => file.Feature is null || selected.Contains(file.Feature)).ToList(),
             UpdateCompanionEnabled = target.UpdateCompanion is { } companion && selected.Contains(companion.Feature)
         };
-        return Create(plan, installed, options, update.BaseManifest, transition.BaseManifestSha256, transition.TargetManifestSha256, update.PublisherKeySha256, true);
+        return Create(plan, installed, options, update.BaseManifest, transition.BaseManifestSha256, transition.TargetManifestSha256, update.PublisherKeySha256, true, update.TargetManifest);
     }
 
     private static FileTransactionRecoveryContext Create(InstallPlan plan, InstalledProduct? previous, InstallOptions options,
-        PackageManifest? oldManifest, string? baseDigest, string targetDigest, string? publisherPin, bool requireExactBase)
+        PackageManifest? oldManifest, string? baseDigest, string targetDigest, string? publisherPin, bool requireExactBase, PackageManifest signedTarget)
     {
         var manifest = plan.Manifest;
         if (oldManifest is not null) PayloadDestinations.ValidateUpgrade(oldManifest, manifest);
@@ -133,6 +136,9 @@ public sealed class FileTransactionRecoveryContext
                 AfterSha256 = next.Content is null ? null : IncrementalPackageIO.Hash(next.Content), AfterSize = next.Content?.Length
             };
         }
+        foreach (var target in LegacyStagingCleanupModule.RecoveryTargets(signedTarget, installRoot, stateRoot, publisherPin, plan.Features))
+            if (!files.TryAdd(target.Location + ":" + target.Path, target))
+                throw new InvalidDataException("Legacy cleanup recovery overlaps an existing owned destination.");
         var result = new FileTransactionRecoveryContext
         {
             ProductId = manifest.Id, StateRoot = stateRoot, InstallDirectory = installRoot, Scope = plan.Scope,

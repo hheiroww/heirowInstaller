@@ -20,7 +20,11 @@ public static class PackageBuilder
         if (manifest.UpdateCompanion is { RuntimeMode: null } companion) companion.RuntimeMode = "shared";
         if (manifest.UpdateCompanion is { RuntimeMode: "shared", UpdateMode: null } fileUpdater && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             fileUpdater.UpdateMode = "files";
-        if (manifest.InstallationRoots?.Count > 0 || manifest.UpdateCompanion is { RuntimeMode: "shared" } or { UpdateMode: "files" }) manifest.FormatVersion = 2;
+        if (manifest.InstallationRoots?.Count > 0 || manifest.UpdateCompanion is { RuntimeMode: "shared" } or { UpdateMode: "files" })
+            manifest.FormatVersion = Math.Max(manifest.FormatVersion, 2);
+        if (manifest.NativeMigration is not null || manifest.Prerequisites.Any(x => x.Detection is not null) ||
+            manifest.LaunchWorkingDirectory is not null || manifest.Shortcuts.Any(x => x.WorkingDirectory is not null))
+            manifest.FormatVersion = Math.Max(manifest.FormatVersion, 3);
         if (manifest.Payload.Count == 0)
         {
             foreach (var path in EnumerateSafeFiles(sourceDirectory).Order(StringComparer.OrdinalIgnoreCase))

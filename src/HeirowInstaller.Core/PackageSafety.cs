@@ -32,6 +32,14 @@ public static partial class PackageSafety
         return result;
     }
 
+    public static string ResolveWorkingDirectory(string root, string? relative)
+    {
+        var directory = relative is null ? Path.GetFullPath(root) : UnderRoot(root, relative);
+        EnsureNoReparsePoints(directory);
+        if (!Directory.Exists(directory)) throw new DirectoryNotFoundException("The application's declared working directory is missing.");
+        return directory;
+    }
+
     public static void EnsureNoReparsePoints(string path)
     {
         var current = Path.GetFullPath(path);
@@ -54,7 +62,7 @@ public static partial class PackageSafety
     public static void ValidateManifest(PackageManifest manifest, bool requireHashes)
     {
         ValidateId(manifest.Id);
-        if (manifest.FormatVersion is not (1 or 2)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
+        if (manifest.FormatVersion is not (1 or 2 or 3)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
         if (string.IsNullOrWhiteSpace(manifest.Name) || string.IsNullOrWhiteSpace(manifest.Publisher))
             throw new InvalidDataException("Package name and publisher are required.");
         _ = PackageVersion.Parse(manifest.Version);
@@ -98,6 +106,15 @@ public static partial class PackageSafety
         PayloadDestinations.ValidateDefinitions(manifest);
         if (manifest.FormatVersion == 1 && (manifest.InstallationRoots?.Count > 0 || manifest.UpdateCompanion is { RuntimeMode: "shared" } or { UpdateMode: "files" }))
             throw new InvalidDataException("Shared runtimes, component roots and file updates require package format 2.");
+        if (manifest.FormatVersion < 3 && (manifest.NativeMigration is not null || manifest.Prerequisites.Any(x => x.Detection is not null) ||
+            manifest.LaunchWorkingDirectory is not null || manifest.Shortcuts.Any(x => x.WorkingDirectory is not null)))
+            throw new InvalidDataException("Native backend migration, structured prerequisite detection and explicit working directories require package format 3.");
+        NativeMigrationValidation.ValidateDefinition(manifest);
+        foreach (var prerequisite in manifest.Prerequisites)
+            if (prerequisite.Detection is { } detection) PrerequisiteDetection.Validate(detection);
+        if (manifest.LaunchWorkingDirectory is not null) manifest.LaunchWorkingDirectory = NormalizeRelativePath(manifest.LaunchWorkingDirectory);
+        foreach (var shortcut in manifest.Shortcuts)
+            if (shortcut.WorkingDirectory is not null) shortcut.WorkingDirectory = NormalizeRelativePath(shortcut.WorkingDirectory);
         if (manifest.UpdateCompanion is { } companion)
         {
             if (companion.RuntimeMode is not (null or "shared" or "app-local"))

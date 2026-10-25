@@ -93,6 +93,7 @@ public static class SharedUpdaterRuntime
         if (!SameOrigin(configuration.CredentialOrigin, definition.CredentialOrigin) ||
             configuration.AuthApplication != definition.AuthApplication ||
             configuration.UpdateMode != definition.UpdateMode ||
+            !string.Equals(configuration.LaunchWorkingDirectory, manifest.LaunchWorkingDirectory, StringComparison.OrdinalIgnoreCase) ||
             configuration.CookieEnvironmentVariable != definition.CookieEnvironmentVariable ||
             configuration.TokenEnvironmentVariable != definition.TokenEnvironmentVariable ||
             !configuration.FeedUrl.Equals(manifest.UpdateUrl, StringComparison.Ordinal))

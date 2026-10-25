@@ -48,7 +48,7 @@ public static class FileTransactionRecovery
             {
                 var events = FileTransactionJournal.ReadEvents(root);
                 // A durable receipt is written only after all application/module work. Verify the actual signed target and files before discarding a late crash journal.
-                if (TargetIsInstalled(context)) remove = true;
+                if (TargetIsInstalled(context, events.Files)) remove = true;
                 else
                 {
                     if (!FileTransactionJournal.SameIdentity(owner, context, includeBase: true) || owner.BindingSha256 != context.BindingHash)
@@ -66,7 +66,11 @@ public static class FileTransactionRecovery
                         if (FileTransactionJournal.AllowedDirectory(context, directory) && Directory.Exists(directory))
                         {
                             PackageSafety.EnsureNoReparsePoints(directory);
-                            if (!Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
+                            if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                            {
+                                if (LegacyStagingCleanupModule.IsRecoveryDirectory(context, directory)) LegacyStagingCleanupModule.RemoveEmptyRecoveryDirectory(directory);
+                                else Directory.Delete(directory);
+                            }
                         }
                     if (uncertain)
                         throw new FileTransactionRecoveryRequiredException("Application files were recovered where ownership was verified. Interrupted external or unverified metadata requires a trusted repair; recovery files remain in " + root);
@@ -96,7 +100,7 @@ public static class FileTransactionRecovery
         catch (IOException error) { throw new IOException("Another installer operation is running for " + context.ProductId + ".", error); }
     }
 
-    internal static bool TargetIsInstalled(FileTransactionRecoveryContext context)
+    internal static bool TargetIsInstalled(FileTransactionRecoveryContext context, IReadOnlyList<JournalFileOperation>? operations = null)
     {
         var installed = InstallerEngine.ListInstalled(context.StateRoot).SingleOrDefault(product => product.Id == context.ProductId && product.Scope == context.Scope);
         if (installed is null || installed.Version != context.TargetVersion || !Path.GetFullPath(installed.InstallDirectory).Equals(Path.GetFullPath(context.InstallDirectory), StringComparison.OrdinalIgnoreCase) ||
@@ -128,7 +132,7 @@ public static class FileTransactionRecovery
                     SharedUpdaterRuntime.ValidateBinding(configuration, package.Manifest); _ = SharedUpdaterRuntime.Resolve(configuration);
                 }
             }
-            return true;
+            return operations is null || LegacyStagingCleanupModule.RecoveryOperationsComplete(context, package.Manifest, operations);
         }
         catch (Exception error) when (error is IOException or InvalidDataException or CryptographicException or JsonException) { return false; }
     }
@@ -237,7 +241,9 @@ internal sealed class FileTransactionJournal : IDisposable
         else if (File.Exists(destination))
         {
             if (!Matches(destination, operation.AfterSha256, operation.AfterSize)) throw new CryptographicException("A newly created update target changed; automatic removal was refused.");
-            File.Delete(destination);
+            if (LegacyStagingCleanupModule.IsRecoveryCreation(context, destination))
+                LegacyStagingCleanupModule.RemoveRecoveryCreation(destination, operation.AfterSha256!, operation.AfterSize!.Value);
+            else File.Delete(destination);
         }
         if (operation.Temporary is not null && File.Exists(operation.Temporary))
         {

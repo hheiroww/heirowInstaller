@@ -143,6 +143,22 @@ public sealed class RunningApplicationTarget
 /// <summary>Query-only discovery and explicitly consented normal window closure. Never terminates a process.</summary>
 public static class RunningApplications
 {
+    // Query-only inventory guard. A file in a signed cleanup inventory never grants process closure authority.
+    internal static bool HasResourceUsers(IReadOnlyList<string> files)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Legacy staging activity checks require Windows Restart Manager.");
+        if (files.Count > 4096) throw new InvalidDataException("Too many legacy staging resources.");
+        foreach (var path in files)
+        {
+            if (!Path.IsPathFullyQualified(path) || RunningApplicationTarget.IsSystemPath(path) || Directory.Exists(path))
+                throw new InvalidDataException("A cleanup resource must be an exact application file.");
+            PackageSafety.EnsureNoReparsePoints(path);
+        }
+        foreach (var batch in files.Chunk(256))
+            if (RestartManager.Query(batch).Count != 0) return true;
+        return false;
+    }
+
     public static Task<IReadOnlyList<RunningApplication>> InspectAsync(RunningApplicationTarget target, CancellationToken cancellationToken = default) =>
         Task.Run(() => Inspect(target, cancellationToken), cancellationToken);
 

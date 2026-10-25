@@ -22,6 +22,24 @@ The project route runs `dotnet publish --self-contained true`, bundles managed/n
 
 `scripts/New-Installer.ps1` exposes these commands with `-SourceDirectory` or `-ApplicationProject`. A `.hinst` output remains useful for managed distribution; an `.exe` is the standalone recipient-facing setup. `pack` and `bundle` remain available separately.
 
+## Launch working directories
+
+For an application installed in a subdirectory, declare its original working directory explicitly:
+
+```json
+{
+  "entryPoint": "App/Example.exe",
+  "launchWorkingDirectory": "App",
+  "shortcuts": [
+    { "name": "Example", "target": "App/Example.exe", "workingDirectory": "App" }
+  ]
+}
+```
+
+These paths stay relative to the application root. Absolute paths, traversal and reparse points are rejected. The directory must exist when the application is launched or its shortcut is created. Omitting either setting preserves the existing application-root behavior. The builder selects format 3 for these settings so older runtimes reject unsupported behavior.
+
+The signed launch directory is preserved by direct post-install launch, the wizard's Finish action and the shared updater's `launch` command. Generated updater profiles bind it to the cached signed package; changing the writable profile cannot select another working directory.
+
 ## Existing WiX source and extensions
 
 The explicit build-time compiler backend delegates original WiX authoring to the selected official WiX compiler or project SDK. It preserves the actual extension, localization, custom-action, merge-module, patch, and Burn build pipeline. It does not claim an independent reimplementation of the WiX source language.

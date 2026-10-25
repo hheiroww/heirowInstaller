@@ -80,7 +80,7 @@ internal static class WindowsIntegration
             }
             var snapshot = new ModuleSnapshot { Kind = "shortcut", Key = path, Values = new() { ["data"] = File.Exists(path) ? Convert.ToBase64String(File.ReadAllBytes(path)) : null } };
             var temporary = Path.Combine(transaction.Root, Guid.NewGuid().ToString("N") + ".lnk");
-            CreateShortcut(temporary, target, arguments, plan.InstallDirectory,
+            CreateShortcut(temporary, target, arguments, PackageSafety.ResolveWorkingDirectory(plan.InstallDirectory, definition.WorkingDirectory),
                 definition.Icon is { Length: > 0 } ? PackageSafety.UnderRoot(plan.InstallDirectory, definition.Icon) : applicationTarget);
             transaction.ReplaceFile(path, temporary);
             snapshots.Add(snapshot);
@@ -153,7 +153,11 @@ internal static class WindowsIntegration
         {
             token.ThrowIfCancellationRequested();
             PackageSafety.ValidateId(prerequisite.Id);
-            if (prerequisite.DetectFile is { Length: > 0 } detect && File.Exists(InstallerEngine.Expand(detect, plan.InstallDirectory))) continue;
+            if (prerequisite.Detection is { } detection)
+            {
+                if (PrerequisiteDetection.IsSatisfied(detection)) continue;
+            }
+            else if (prerequisite.DetectFile is { Length: > 0 } detect && File.Exists(InstallerEngine.Expand(detect, plan.InstallDirectory))) continue;
             if (options.Isolated) throw new InvalidOperationException("Isolated validation cannot run an external prerequisite installer.");
             progress?.Report(new("prerequisite", prerequisite.Name, 0, 1));
             string executable;

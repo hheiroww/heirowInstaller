@@ -36,22 +36,7 @@ internal sealed partial class AppController
         var product = InstallerEngine.ListInstalled(arguments.StateRoot).SingleOrDefault(x => x.Id == manifest.Id && x.Version == result.Version &&
             Path.GetFullPath(x.InstallDirectory).Equals(Path.GetFullPath(result.InstallDirectory), StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidDataException("The installed application receipt is unavailable. Repair the application before opening it.");
-        var executable = PackageSafety.UnderRoot(product.InstallDirectory, manifest.EntryPoint);
-        PackageSafety.EnsureNoReparsePoints(executable);
-        if (!File.Exists(executable)) throw new FileNotFoundException("The installed application executable is missing.", executable);
-        if (product.Files.FirstOrDefault(x => PackageSafety.UnderRoot(product.InstallDirectory, x.Path).Equals(executable, StringComparison.OrdinalIgnoreCase)) is { } owned &&
-            !PackageSafety.HashEquals(PackageSafety.HashFile(executable), owned.Sha256))
-            throw new InvalidDataException("The installed application changed after installation. Repair it before opening it.");
-        var start = new ProcessStartInfo(executable) { UseShellExecute = true, WorkingDirectory = product.InstallDirectory };
-        if (Plan!.UpdateCompanionEnabled && manifest.UpdateCompanion is { } companion)
-        {
-            var profilePath = PackageSafety.UnderRoot(product.InstallDirectory, companion.ConfigurationPath);
-            _ = ApplicationUpdater.ReadConfiguration(profilePath);
-            var updater = UpdaterHostResolver.FindExecutable(executable, product.InstallDirectory)
-                ?? throw new FileNotFoundException("The optional updater is missing. Repair this application before opening it.");
-            start.FileName = updater;
-            start.ArgumentList.Add("launch"); start.ArgumentList.Add("--config"); start.ArgumentList.Add(profilePath);
-        }
+        var start = InstalledApplicationLaunch.Create(product, Plan!.UpdateCompanionEnabled);
         _ = Process.Start(start) ?? throw new InvalidOperationException("Windows did not open the installed application.");
         return Task.CompletedTask;
     }

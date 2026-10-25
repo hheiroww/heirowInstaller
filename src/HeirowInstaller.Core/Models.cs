@@ -25,6 +25,7 @@ public sealed class PackageManifest
     public string Publisher { get; set; } = "";
     public string Description { get; set; } = "";
     public string EntryPoint { get; set; } = "";
+    public string? LaunchWorkingDirectory { get; set; }
     public string InstallDirectory { get; set; } = "";
     public string Scope { get; set; } = "user";
     public string? UpdateUrl { get; set; }
@@ -40,6 +41,8 @@ public sealed class PackageManifest
     public List<AffectedResourceDefinition> AffectedResources { get; set; } = [];
     public LegacyMsiDefinition? LegacyMsi { get; set; }
     public LegacyExecutableDefinition? LegacyExecutable { get; set; }
+    /// <summary>Optional signed authorization for retiring one recorded MSI or Burn baseline before native installation.</summary>
+    public NativeMigrationDefinition? NativeMigration { get; set; }
     public UpdateCompanionDefinition? UpdateCompanion { get; set; }
     public Dictionary<string, JsonElement> Modules { get; set; } = [];
     public List<InstallationRootDefinition>? InstallationRoots { get; set; }
@@ -88,6 +91,7 @@ public sealed class UpdateCompanionConfiguration
     public string PublisherKeySha256 { get; set; } = "";
     public List<string> Features { get; set; } = [];
     public string EntryPoint { get; set; } = "";
+    public string? LaunchWorkingDirectory { get; set; }
     public string Mode { get; set; } = "after-exit";
     public bool Isolated { get; set; }
     public string CredentialOrigin { get; set; } = "https://socketjack.com";
@@ -134,6 +138,7 @@ public sealed class ShortcutDefinition
     public string Location { get; set; } = "startMenu";
     public string Target { get; set; } = "";
     public string Arguments { get; set; } = "";
+    public string? WorkingDirectory { get; set; }
     public string? Icon { get; set; }
     public string? Feature { get; set; }
 }
@@ -168,6 +173,26 @@ public sealed class PrerequisiteDefinition
     public List<string> Arguments { get; set; } = [];
     public List<int> SuccessExitCodes { get; set; } = [0, 3010, 1641];
     public string? Feature { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PrerequisiteDetectionDefinition? Detection { get; set; }
+}
+
+/// <summary>Matches an already recorded, signed legacy installation; never authorizes discovering or adopting an unknown installation.</summary>
+public sealed class NativeMigrationDefinition
+{
+    public List<NativeMigrationBaselineDefinition> Baselines { get; set; } = [];
+}
+
+public sealed class NativeMigrationBaselineDefinition
+{
+    public string FromVersion { get; set; } = "";
+    public string FromManifestSha256 { get; set; } = "";
+    public string Backend { get; set; } = "";
+    public string Scope { get; set; } = "";
+    public string? MsiProductCode { get; set; }
+    public BackendRegistrationDefinition? BurnRegistration { get; set; }
+    /// <summary>All application MSI children of this Burn bundle. An explicit empty list declares a chain with no MSI children.</summary>
+    public List<string>? BurnMsiProductCodes { get; set; }
 }
 
 public sealed class LegacyMsiDefinition
