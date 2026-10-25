@@ -12,13 +12,20 @@ internal static class TrustedPublishingChecks
         check(GitHubActionsOidcClient.Audience == "https://socketjack.com/installer-publisher", "GitHub identity uses only the registered installer publisher audience");
         var descriptor = JsonSerializer.SerializeToElement(new
         {
-            formatVersion = 1, hostedSigning = true,
+            formatVersion = 1, hostedSigning = true, preparationOnly = true,
             components = new[] { new { id = "worker", sourcePath = "private/worker.dll", executionMode = "remote", entryType = "Private.Worker", runtime = "net10.0", dependencies = Array.Empty<string>() } },
             operations = new[] { new { id = "calculate", componentId = "worker", argumentsSchema = new { type = "object" }, resultSchema = new { type = "object" } } },
             publicPayload = new[] { "bootstrap.dll" }, bootstrapPath = "bootstrap.dll", bootstrapSha256 = new string('a', 64)
         });
         var payload = new Dictionary<string, string> { ["private/worker.dll"] = new string('b', 64), ["bootstrap.dll"] = new string('a', 64) };
         check(SecurityLoaderManifest.Validate(descriptor, payload).HostedSigning, "Protected descriptor validates exact hashed payload and explicit hosted signing without loading application code");
+        check(SecurityLoaderManifest.Validate(descriptor, payload).PreparationOnly, "Preparation-only source descriptors remain valid publishing inputs without becoming installable releases");
+        foreach (var invalidFlag in new[] { "null", "1", "\"true\"" })
+        {
+            using var invalidFlagDocument = JsonDocument.Parse(descriptor.GetRawText().Replace("\"preparationOnly\":true", "\"preparationOnly\":" + invalidFlag, StringComparison.Ordinal));
+            try { SecurityLoaderManifest.Validate(invalidFlagDocument.RootElement, payload); throw new Exception("A malformed preparation flag was accepted."); }
+            catch (JsonException) { check(true, "Preparation-only publishing flags must be JSON booleans"); }
+        }
         foreach (var invalidDescriptor in new[]
         {
             descriptor.GetRawText().Replace("\"publicPayload\":[\"bootstrap.dll\"]", "\"publicPayload\":[\"private/worker.dll\"]", StringComparison.Ordinal),

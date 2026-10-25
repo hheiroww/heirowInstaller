@@ -9,6 +9,7 @@ public sealed class SecurityLoaderManifest
 {
     public int FormatVersion { get; set; } = 1;
     public bool HostedSigning { get; set; }
+    public bool PreparationOnly { get; set; }
     public string? ApplicationId { get; set; }
     public string PublisherOrigin { get; set; } = "https://socketjack.com";
     public List<SecurityLoaderComponent> Components { get; set; } = [];
