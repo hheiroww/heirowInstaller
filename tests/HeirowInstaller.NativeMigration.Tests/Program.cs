@@ -4,6 +4,16 @@ using System.Text.Json.Nodes;
 using HeirowInstaller.Core;
 using Microsoft.Win32;
 
+if (args is ["--probe-msi-context", var reviewedCode])
+{
+    if (!OperatingSystem.IsWindows() || !Guid.TryParse(reviewedCode, out var product)) throw new ArgumentException("Choose one explicit Windows Installer ProductCode.");
+    var observation = WindowsNativeMigrationBackend.CaptureMsiContext(product.ToString("B"));
+    Console.WriteLine(JsonSerializer.Serialize(new { productCode = product.ToString("B"), readOnly = true,
+        userClassification = WindowsNativeMigrationBackend.ClassifyMsiContext("user", observation).ToString(),
+        machineClassification = WindowsNativeMigrationBackend.ClassifyMsiContext("machine", observation).ToString(), observation }, InstallerJson.Options));
+    return 0;
+}
+
 if (args is ["--probe-boot"])
 {
     var identity = await new WindowsNativeMigrationBackend().BootIdentityAsync(CancellationToken.None);
@@ -15,6 +25,7 @@ var tests = new (string Name, Func<Task> Run)[]
 {
     ("format 3 is explicit, legacy serialization stays unchanged and unknown formats fail", Format),
     ("one owned HKCU key shared by both registry views counts once while MSI state and machine ambiguity stay strict", UserRegistryViews),
+    ("exact MSI context and current SID authorize scope while ARP placement alone cannot", ExactMsiContextAuthority),
     ("recorded MSI retires under one lock and commits a native receipt", () => Success("msi", "user")),
     ("recorded machine Burn retires without deleting installer registrations manually", () => Success("burn", "machine")),
     ("one immutable native target accepts two separately signed published baselines", MultipleBaselines),
@@ -86,12 +97,8 @@ static Task UserRegistryViews()
             using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view); using var other = machine.OpenSubKey(path);
             True(other is null, "The fixture must not create or adopt an HKLM registration.");
         }
-        True(logicalViews == 2 && WindowsNativeMigrationBackend.ClassifyMsiObservation("user", 5, logicalViews) == NativeBackendState.Installed);
-        True(WindowsNativeMigrationBackend.ClassifyMsiObservation("machine", 5, 2) == NativeBackendState.Uncertain);
-        True(WindowsNativeMigrationBackend.ClassifyMsiObservation("machine", 5, 1) == NativeBackendState.Installed);
-        foreach (var state in new[] { -1, 1, 2 })
-            True(WindowsNativeMigrationBackend.ClassifyMsiObservation("user", state, logicalViews) == NativeBackendState.Uncertain);
-        True(WindowsNativeMigrationBackend.ClassifyMsiObservation("user", -1, 0) == NativeBackendState.Absent);
+        True(logicalViews == 2 && WindowsNativeMigrationBackend.CountMsiArpRegistrations(true, true, false, false) == 1);
+        True(WindowsNativeMigrationBackend.CountMsiArpRegistrations(false, false, true, true) == 2);
         True(backend.ObserveDeclared(definition, isolated: false) == NativeBackendState.Uncertain, "A registry key alone must never authorize adopting an uninstalled MSI.");
     }
     finally
@@ -106,6 +113,33 @@ static Task UserRegistryViews()
     }
     True(backend.ObserveDeclared(definition, isolated: false) == NativeBackendState.Absent, "The exact owned registry key must be gone after cleanup.");
     Console.WriteLine("CHECK exact temporary HKCU fixture " + code + " created and removed; real MSI state remained unknown.");
+    return Task.CompletedTask;
+}
+static Task ExactMsiContextAuthority()
+{
+    var user = new MsiContextInstance(2, true, true, false, "5", 0);
+    var machine = new MsiContextInstance(4, true, false, true, "5", 0);
+    MsiContextObservation Snapshot(int query = 5, int arp = 1, params MsiContextInstance[] instances) => new(query, true, 0, arp, instances);
+    var hklmOnly = WindowsNativeMigrationBackend.CountMsiArpRegistrations(false, false, true, false);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, hklmOnly, user)) == NativeBackendState.Installed,
+        "A real current-user installation remains user-scoped even when its sole ARP key is in HKLM.");
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("machine", Snapshot(5, hklmOnly, user)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("machine", Snapshot(5, 1, machine)) == NativeBackendState.Installed);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 1, machine)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 1, user with { Context = 1 })) == NativeBackendState.Installed);
+    foreach (var bad in new[] { user with { State = "1" }, user with { CurrentUserSidMatches = false }, user with { ExactProductCode = false },
+        user with { InfoError = 1605 }, user with { State = null }, user with { Context = 7 }, user with { MachineSidEmpty = true } })
+        True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 1, bad)) == NativeBackendState.Uncertain);
+    foreach (var query in new[] { -1, 1, 2 }) True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(query, 1, user)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 1, user, machine)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 1, user, user)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("machine", Snapshot(5, 2, machine)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 0, user) with { Complete = false }) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(5, 0, user) with { Error = 5 }) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(-1, 0)) == NativeBackendState.Absent);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(-1, 1)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("user", Snapshot(2, 0)) == NativeBackendState.Uncertain);
+    True(WindowsNativeMigrationBackend.ClassifyMsiContext("machine", Snapshot(5, 1, machine with { MachineSidEmpty = false })) == NativeBackendState.Uncertain);
     return Task.CompletedTask;
 }
 static async Task Success(string kind, string scope)
