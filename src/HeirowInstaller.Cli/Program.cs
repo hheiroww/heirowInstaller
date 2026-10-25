@@ -28,7 +28,7 @@ heirowInstaller — modular Windows installation and publishing
   check-update|update <product-id> [--feed <https-url>]
   import-msi <original.msi> --output <package.hinst> [--id <id>] [--name <name>] [--version <version>] [--publisher <name>]
   import-exe <original.exe> --id <id> --name <name> --version <version> --publisher <publisher> --install-args <json-array> --output <package.hinst>
-  publish <package.hinst> [--publisher <https-origin>] [--token-env <name>|--cookie-env <name>|--github-oidc] [--wait-for-activation] [--resume-upload <id>]
+  publish <package.hinst> [--publisher <https-origin>] [--token-env <name>|--cookie-env <name>|--github-oidc] [--wait-for-activation] [--resume-upload <id>] [--sealed-delivery]
   publisher-status|catalog [--publisher <https-origin>]
 
 Maintenance options: --silent, --no-launch, --launch, --log <path>, --state-root <directory>,
@@ -171,7 +171,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                     Print(await PublishingCommands.PublishAsync(Subject(), new Uri(parsed.Get("publisher") ?? "https://socketjack.com"),
                         parsed.Has("github-oidc"), parsed.Has("wait-for-activation"), options, parsed.Has("allow-loopback"),
                         PublishingCommands.ReadCredentialFromEnvironment(parsed.Get("token-env")), PublishingCommands.ReadCredentialFromEnvironment(parsed.Get("cookie-env")),
-                        parsed.Get("resume-upload"), cancellation.Token)); break;
+                        parsed.Get("resume-upload"), cancellation.Token, parsed.Has("sealed-delivery"))); break;
                 case "publisher-status":
                     using (var publisher = Publisher(parsed)) Print(await publisher.GetStatusAsync(cancellation.Token)); break;
                 case "catalog":

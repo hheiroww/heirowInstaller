@@ -39,8 +39,23 @@ public sealed partial class PublisherClient : IDisposable
         return await response.Content.ReadFromJsonAsync<JsonElement>(Json, cancellationToken);
     }
 
-    public async Task<PublishedRelease> PublishAsync(string packagePath, CancellationToken cancellationToken = default,
+    public Task<PublishedRelease> PublishAsync(string packagePath, CancellationToken cancellationToken = default,
         string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
+        => PublishCoreAsync(packagePath, null, null, cancellationToken, releaseNotes, progress);
+
+    /// <summary>Publishes a finished sealed installer through the native administrator delivery lane, retaining the existing outer publisher trust.</summary>
+    public Task<PublishedRelease> PublishSealedDeliveryAsync(string packagePath, string productId, string version,
+        CancellationToken cancellationToken = default, string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
+    {
+        if (productId is not { Length: > 0 and <= 100 } || !productId.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-') || !Version.TryParse(version, out _))
+            throw new ArgumentException("Supply the exact sealed installer's product and numeric version.");
+        if (client.DefaultRequestHeaders.Authorization?.Scheme != "Bearer" || client.DefaultRequestHeaders.Contains("Cookie"))
+            throw new InvalidOperationException("Sealed installer delivery requires the native publisher's in-memory bearer session.");
+        return PublishCoreAsync(packagePath, productId, version, cancellationToken, releaseNotes, progress);
+    }
+
+    private async Task<PublishedRelease> PublishCoreAsync(string packagePath, string? sealedProduct, string? sealedVersion,
+        CancellationToken cancellationToken, string? releaseNotes, IProgress<PublishProgress>? progress)
     {
         var path = Path.GetFullPath(packagePath);
         if (!string.Equals(Path.GetExtension(path), ".hinst", StringComparison.OrdinalIgnoreCase) &&
@@ -55,7 +70,13 @@ public sealed partial class PublisherClient : IDisposable
         // Keep failed/cancelled uploads resumable until the server's bounded expiry.
         using var begin = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, "api/installer/publisher/uploads"));
         begin.Headers.Add("X-HeirowInstaller-SHA256", hash);
-        begin.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "" }, Json));
+        object metadata = new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "" };
+        if (sealedProduct != null)
+        {
+            begin.Headers.Add("X-HeirowInstaller-Sealed-Delivery", "true");
+            metadata = new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "", productId = sealedProduct, version = sealedVersion };
+        }
+        begin.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(metadata, Json));
         begin.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         using var opened = await client.SendAsync(begin, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         await EnsureSuccessAsync(opened, cancellationToken);

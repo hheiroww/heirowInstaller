@@ -129,6 +129,22 @@ try
     catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Conflict, "Immutable version conflicts reach the caller"); }
     await collisionServer;
 
+    var sealedServer = ServeOnceAsync(listener, request =>
+    {
+        using var metadata = JsonDocument.Parse(request.Body);
+        Check(request.Headers.GetValueOrDefault("X-HeirowInstaller-Sealed-Delivery") == "true", "Finished sealed delivery explicitly selects its dedicated native lane");
+        Check(metadata.RootElement.GetProperty("productId").GetString() == "test.product" && metadata.RootElement.GetProperty("version").GetString() == "1.0.0", "Sealed delivery binds the exact product and version before upload");
+        return (403, "private denial must stay private", null);
+    });
+    try { await client.PublishSealedDeliveryAsync(package, "test.product", "1.0.0"); throw new Exception("Unauthorized sealed delivery accepted."); }
+    catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden && !error.Message.Contains("private denial", StringComparison.Ordinal), "Sealed delivery retains server authorization and redacted failures"); }
+    await sealedServer;
+    using (var cookieClient = new PublisherClient(origin, sessionCookie: "fixture-cookie", allowLoopback: true))
+    {
+        try { await cookieClient.PublishSealedDeliveryAsync(package, "test.product", "1.0.0"); throw new Exception("Cookie credential accepted for native sealed delivery."); }
+        catch (InvalidOperationException) { Check(true, "Native sealed delivery refuses browser-cookie authentication before any request"); }
+    }
+
     await BrowserSignInChecksAsync(listener, origin, Check);
     listener.Stop();
     Console.WriteLine($"Passed {passed} publishing checks.");
