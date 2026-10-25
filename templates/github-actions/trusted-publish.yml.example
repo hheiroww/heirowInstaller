@@ -1,0 +1,54 @@
+# Copy to .github/workflows/publish-installer.yml in an authorized application repository.
+# Supply the application's existing draft build script and verified installer CLI tooling.
+# Register its exact workflow PATH (without @), numeric repository/owner IDs,
+# environment installer-publishing, and allowed ref refs/tags/v* on SocketJack.com.
+# Every tag vVERSION must build that exact numeric manifest VERSION.
+name: Publish installer
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable numeric package version
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: windows-latest
+    environment: installer-publishing
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: installer-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Bind the immutable package version to the release tag
+        shell: pwsh
+        env:
+          MANUAL_INSTALLER_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            if ($env:MANUAL_INSTALLER_VERSION -cnotmatch '^[0-9]+(?:\.[0-9]+){1,3}$') { throw 'Supply a numeric immutable version.' }
+            $releaseVersion = $env:MANUAL_INSTALLER_VERSION
+          } elseif ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cmatch '^v([0-9]+(?:\.[0-9]+){1,3})$') {
+            $releaseVersion = $Matches[1]
+          } else {
+            throw 'Publish from a version tag or an explicitly authorized manual workflow ref.'
+          }
+          "INSTALLER_VERSION=$releaseVersion" >> $env:GITHUB_ENV
+      # Replace with the application's established build steps. A protected draft can
+      # request hostedSigning:true; the registered private service seals and signs it.
+      - name: Build draft using existing release script
+        shell: pwsh
+        run: ./tools/Build-InstallerDraft.ps1 -Version $env:INSTALLER_VERSION -Output ./artifacts/draft.hinst
+      - name: Publish with GitHub identity and wait for activation
+        shell: pwsh
+        run: heirowInstaller.Cli publish ./artifacts/draft.hinst --publisher https://socketjack.com --github-oidc --wait-for-activation

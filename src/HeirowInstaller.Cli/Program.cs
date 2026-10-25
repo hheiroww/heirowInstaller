@@ -28,7 +28,7 @@ heirowInstaller — modular Windows installation and publishing
   check-update|update <product-id> [--feed <https-url>]
   import-msi <original.msi> --output <package.hinst> [--id <id>] [--name <name>] [--version <version>] [--publisher <name>]
   import-exe <original.exe> --id <id> --name <name> --version <version> --publisher <publisher> --install-args <json-array> --output <package.hinst>
-  publish <package.hinst> [--publisher <https-origin>] [--token-env <name>|--cookie-env <name>]
+  publish <package.hinst> [--publisher <https-origin>] [--token-env <name>|--cookie-env <name>|--github-oidc] [--wait-for-activation] [--resume-upload <id>]
   publisher-status|catalog [--publisher <https-origin>]
 
 Maintenance options: --silent, --no-launch, --launch, --log <path>, --state-root <directory>,
@@ -168,12 +168,10 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                 case "import-exe":
                     Print(ImportExecutable(Subject(), parsed)); break;
                 case "publish":
-                    using (var package = PackageReader.Open(Subject()))
-                    {
-                        package.VerifySignature(options.TrustedPublisherKeySha256, options.RequireSignature);
-                        await package.VerifyAsync(progress, cancellation.Token);
-                    }
-                    using (var publisher = Publisher(parsed)) Print(await publisher.PublishAsync(Subject(), cancellation.Token)); break;
+                    Print(await PublishingCommands.PublishAsync(Subject(), new Uri(parsed.Get("publisher") ?? "https://socketjack.com"),
+                        parsed.Has("github-oidc"), parsed.Has("wait-for-activation"), options, parsed.Has("allow-loopback"),
+                        PublishingCommands.ReadCredentialFromEnvironment(parsed.Get("token-env")), PublishingCommands.ReadCredentialFromEnvironment(parsed.Get("cookie-env")),
+                        parsed.Get("resume-upload"), cancellation.Token)); break;
                 case "publisher-status":
                     using (var publisher = Publisher(parsed)) Print(await publisher.GetStatusAsync(cancellation.Token)); break;
                 case "catalog":
@@ -262,8 +260,8 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         public List<string> LocalizationFiles { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base", "resume-upload"], StringComparer.OrdinalIgnoreCase);
             var repeated = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) { ["compiler-arg"] = CompilerArguments, ["extension"] = Extensions,
                 ["define"] = Defines, ["source-file"] = SourceFiles, ["bind-path"] = BindPaths, ["include"] = IncludeDirectories, ["localization"] = LocalizationFiles };
             for (var i = 0; i < args.Length; i++)

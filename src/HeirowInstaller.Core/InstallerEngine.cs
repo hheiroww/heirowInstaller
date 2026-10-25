@@ -10,7 +10,7 @@ public sealed class InstallerEngine
     private readonly Dictionary<string, IInstallerModule> modules;
     public InstallerEngine(IEnumerable<IInstallerModule>? modules = null)
     {
-        this.modules = new(StringComparer.OrdinalIgnoreCase);
+        this.modules = new(StringComparer.OrdinalIgnoreCase) { ["SocketJackSecurityLoader"] = new SecurityLoaderInstallerModule() };
         foreach (var module in modules ?? [])
         {
             PackageSafety.ValidateId(module.Id);
@@ -62,6 +62,14 @@ public sealed class InstallerEngine
         if (scope is not ("user" or "machine")) throw new InvalidDataException("Scope must be user or machine.");
         var stateRoot = GetStateRoot(options, scope);
         var previous = FindInstalled(manifest.Id, options, scope);
+        if (manifest.Modules.TryGetValue("SocketJackSecurityLoader", out var protectedDelivery))
+        {
+            var trustedKey = options.TrustedPublisherKeySha256 ?? previous?.PublisherKeySha256;
+            if (trustedKey == null) throw new CryptographicException("Protected components require the registered publisher key pin from a trusted installation or --trust-key.");
+            package.VerifySignature(trustedKey, requireSignature: true);
+            if (!protectedDelivery.TryGetProperty("publisherKeySha256", out var declaredKey) || !PackageSafety.HashEquals(declaredKey.GetString() ?? "", trustedKey))
+                throw new CryptographicException("Protected delivery metadata must match the trusted installer publisher.");
+        }
         if (previous?.PublisherKeySha256 is { } pinnedKey && !PackageSafety.HashEquals(pinnedKey, package.PublisherKeySha256 ?? ""))
             throw new CryptographicException("This update does not match the installed product's pinned publisher key.");
         if (previous is not null && !previous.Scope.Equals(scope, StringComparison.Ordinal)) throw new InvalidOperationException("Changing installation scope requires uninstalling the existing product first.");

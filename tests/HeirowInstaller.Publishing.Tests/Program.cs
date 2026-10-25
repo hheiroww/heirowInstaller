@@ -30,6 +30,7 @@ var root = Path.Combine(Path.GetTempPath(), "heirowinstaller-publishing-tests-" 
 Directory.CreateDirectory(root);
 try
 {
+    await TrustedPublishingChecks.RunAsync(Check, root);
     using var listener = new TcpListener(IPAddress.Loopback, 0);
     listener.Start();
     var endpoint = (IPEndPoint)listener.LocalEndpoint;
@@ -104,6 +105,18 @@ try
     try { await client.PublishAsync(standalone); throw new Exception("Denied standalone upload accepted."); }
     catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden, "Standalone publication still requires real publisher authorization"); }
     await standaloneServer;
+
+    var delta = Path.Combine(root, "application-update.hupd");
+    File.Copy(package, delta);
+    var deltaServer = ServeOnceAsync(listener, request =>
+    {
+        using var metadata = JsonDocument.Parse(request.Body);
+        Check(metadata.RootElement.GetProperty("filename").GetString() == "application-update.hupd", "Signed incremental updates use the same bounded publisher upload protocol");
+        return (403, "", null);
+    });
+    try { await client.PublishAsync(delta); throw new Exception("Denied incremental upload accepted."); }
+    catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden, "Incremental publication retains real publisher authorization"); }
+    await deltaServer;
 
     var redirectServer = ServeOnceAsync(listener, _ => (302, "", "https://other.example/collect"));
     try { await client.PublishAsync(package); throw new Exception("Publisher redirect was followed."); }
