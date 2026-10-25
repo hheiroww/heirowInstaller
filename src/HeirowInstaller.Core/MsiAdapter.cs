@@ -19,8 +19,31 @@ public static class MsiAdapter
         {
             if (operation is not ("repair" or "uninstall")) throw new ArgumentException("Unknown MSI operation.", nameof(operation));
             if (!Guid.TryParse(productCode, out _)) throw new InvalidDataException("Repair and uninstall require the original MSI ProductCode.");
-            var source = operation == "repair" && packagePath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ? packagePath : productCode!;
-            arguments.AddRange([operation == "repair" ? "/fa" : "/x", source]);
+            if (operation == "repair" && !plan.UseOriginalInstallDirectory)
+            {
+                // /f ignores command-line properties. The caller supplies the authenticated durable MSI source.
+                if (!Path.IsPathFullyQualified(packagePath) || !packagePath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) || !File.Exists(packagePath))
+                    throw new InvalidDataException("Repairing a recorded MSI directory requires its verified durable .msi source.");
+                var source = Path.GetFullPath(packagePath);
+                PackageSafety.EnsureNoReparsePoints(source);
+                arguments.AddRange(["/i", source, "REINSTALL=ALL", "REINSTALLMODE=a"]);
+            }
+            else
+            {
+                var source = operation == "repair" && packagePath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ? packagePath : productCode!;
+                arguments.AddRange([operation == "repair" ? "/fa" : "/x", source]);
+            }
+            if (!plan.UseOriginalInstallDirectory)
+            {
+                var property = definition.InstallDirectoryProperty;
+                if (property.Length == 0 || !char.IsAsciiLetterUpper(property[0]) || property.Any(c => !char.IsAsciiLetterUpper(c) && !char.IsAsciiDigit(c) && c != '_') ||
+                    property is "ALLUSERS" or "MSIINSTALLPERUSER" or "REINSTALL" or "REINSTALLMODE" or "ADDLOCAL" or "REMOVE" or "REBOOT")
+                    throw new InvalidDataException("MSI maintenance requires a public directory property, never a context or operation property.");
+                if (!Path.IsPathFullyQualified(plan.InstallDirectory) || Path.GetDirectoryName(Path.GetFullPath(plan.InstallDirectory)) is null)
+                    throw new InvalidDataException("MSI maintenance requires the recorded absolute application directory.");
+                PackageSafety.EnsureNoReparsePoints(plan.InstallDirectory);
+                arguments.Add(property + "=" + plan.InstallDirectory);
+            }
         }
         if (options.Silent) arguments.Add("/qn");
         arguments.Add("/norestart");

@@ -468,7 +468,8 @@ public sealed class InstallerEngine
         {
             using var package = PackageReader.Open(product.PackagePath);
             var exit = await WindowsIntegration.RunMsiAsync("uninstall", product.PackagePath, product.MsiProductCode, package.Manifest.LegacyMsi!,
-                new() { InstallDirectory = product.InstallDirectory, Features = product.Features }, options, cancellationToken);
+                new() { InstallDirectory = product.InstallDirectory, Scope = product.Scope, Features = product.Features,
+                    UseOriginalInstallDirectory = product.UseOriginalInstallDirectory }, options, cancellationToken);
             reboot = exit is 3010 or 1641;
         }
         else if (!product.IsMsi && !product.IsExecutable)

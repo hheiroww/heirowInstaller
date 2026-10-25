@@ -42,7 +42,7 @@ internal sealed partial class AcceptanceSuite
             ("explicit installer modules participate in planning, rollback, and uninstall", Modules),
             ("reparse points cannot redirect payload writes", ReparsePoints),
             ("semantic version and reserved Windows paths are validated", Versions)
-            ,("MSI arguments preserve original destination and features unless explicitly overridden", MsiArguments)
+            ,("MSI maintenance honors the recorded directory, preserves original mode and rejects context or source substitutions", MsiArguments)
             ,("injected update transports validate redirects before making another request", TransportRedirects)
             ,("SocketJack updater streams signed updates through validated redirects and keeps credentials on their origin", SocketJackUpdates)
             ,("an attached signed package never authorizes execution of an untrusted executable prefix", UntrustedBundlePrefix)
@@ -364,7 +364,7 @@ internal sealed partial class AcceptanceSuite
             await Throws<InvalidDataException>(() => { PackageSafety.NormalizeRelativePath(path); return Task.CompletedTask; });
     }
 
-    private Task MsiArguments()
+    private async Task MsiArguments()
     {
         var plan = new InstallPlan { InstallDirectory = @"C:\IgnoredFallback", UseOriginalInstallDirectory = true };
         var args = MsiAdapter.BuildArguments("install", @"C:\Original.msi", null, new(), plan, new());
@@ -374,8 +374,38 @@ internal sealed partial class AcceptanceSuite
         True(args.Contains(@"APPLICATIONFOLDER=C:\IgnoredFallback")); True(args.Contains("ADDLOCAL=Core,Tools"));
         args = MsiAdapter.BuildArguments("install", @"C:\Original.msi", null, new(), plan, new() { Silent = false });
         True(!args.Contains("/qn") && !args.Contains("/passive"));
-        args = MsiAdapter.BuildArguments("repair", @"C:\Durable\Original.msi", "{11111111-1111-1111-1111-111111111111}", new(), plan, new());
-        True(args.Contains(@"C:\Durable\Original.msi"));
+        var durable = Path.Combine(root, "Durable Media", "Original.msi");
+        Directory.CreateDirectory(Path.GetDirectoryName(durable)!);
+        File.WriteAllText(durable, "Owned argument-only fixture; never executed as MSI.");
+        var recordedDirectory = Path.Combine(root, "Recorded Application Directory");
+        var code = "{11111111-1111-1111-1111-111111111111}";
+        var maintenance = new LegacyMsiDefinition { InstallDirectoryProperty = "APPLICATIONFOLDER",
+            Arguments = ["ALLUSERS=1", "MSIINSTALLPERUSER=0", "ADDLOCAL=Unrelated", "EXTRA=not-forwarded"] };
+        plan.InstallDirectory = recordedDirectory;
+        args = MsiAdapter.BuildArguments("repair", durable, code, maintenance, plan, new() { TargetDirectory = @"C:\CallerMustNotRelocateMaintenance" });
+        True(args[0] == "/i" && args[1] == durable && args.Contains("REINSTALL=ALL") && args.Contains("REINSTALLMODE=a") && !args.Contains("/fa"));
+        True(args.Count(x => x == "APPLICATIONFOLDER=" + recordedDirectory) == 1);
+        True(!args.Any(x => maintenance.Arguments.Contains(x) || x.Contains("CallerMustNotRelocateMaintenance", StringComparison.Ordinal)));
+        args = MsiAdapter.BuildArguments("uninstall", @"C:\Cached\Original.hinst", code, maintenance, plan, new());
+        True(args[0] == "/x" && args[1] == code && args.Count(x => x == "APPLICATIONFOLDER=" + recordedDirectory) == 1);
+        True(!args.Any(x => maintenance.Arguments.Contains(x) || x.StartsWith("REINSTALL", StringComparison.Ordinal)));
+        foreach (var invalidSource in new[] { code, @"C:\Original.hinst", "relative.msi", Path.Combine(root, "missing.msi") })
+            await Throws<InvalidDataException>(() => Task.Run(() => MsiAdapter.BuildArguments("repair", invalidSource, code, maintenance, plan, new())));
+        foreach (var property in new[] { "ALLUSERS", "MSIINSTALLPERUSER", "REINSTALL", "REINSTALLMODE", "ADDLOCAL", "REMOVE", "REBOOT", "private", "DIR=VALUE" })
+            await Throws<InvalidDataException>(() => Task.Run(() => MsiAdapter.BuildArguments("uninstall", "unused", code, new() { InstallDirectoryProperty = property }, plan, new())));
+        foreach (var invalidDirectory in new[] { "", "relative", Path.GetPathRoot(root)! })
+        {
+            plan.InstallDirectory = invalidDirectory;
+            await Throws<InvalidDataException>(() => Task.Run(() => MsiAdapter.BuildArguments("uninstall", "unused", code, maintenance, plan, new())));
+        }
+        plan.UseOriginalInstallDirectory = true; plan.InstallDirectory = @"C:\IgnoredFallback";
+        args = MsiAdapter.BuildArguments("repair", durable, code, maintenance, plan, new());
+        True(args[0] == "/fa" && args[1] == durable && !args.Any(x => x.StartsWith("APPLICATIONFOLDER=", StringComparison.Ordinal) || x.StartsWith("REINSTALL", StringComparison.Ordinal) || maintenance.Arguments.Contains(x)));
+        args = MsiAdapter.BuildArguments("repair", @"C:\Cached\Original.hinst", code, maintenance, plan, new());
+        True(args[0] == "/fa" && args[1] == code);
+        args = MsiAdapter.BuildArguments("uninstall", "unused", code, maintenance, plan, new());
+        True(args[0] == "/x" && args[1] == code && !args.Any(x => x.Contains('=') || maintenance.Arguments.Contains(x)));
+        plan.UseOriginalInstallDirectory = false;
         plan.Manifest.UpdateCompanion = new(); plan.Features = ["updates"];
         args = MsiAdapter.BuildArguments("install", @"C:\Original.msi", null, new(), plan, new());
         True(!args.Any(x => x.StartsWith("ADDLOCAL=", StringComparison.Ordinal)));
@@ -384,7 +414,6 @@ internal sealed partial class AcceptanceSuite
         True(args.Contains("ADDLOCAL=Core"));
         var commandLine = MsiAdapter.SerializeArguments(["/i", @"C:\Installer Source\Fixture.msi", @"INSTALLFOLDER=C:\Program Files\App\", "CUSTOM=Acme \"Widgets\"", "EMPTY=", "/qn", "/L*v", @"C:\Log Folder\setup.log"]);
         Equal("/i \"C:\\Installer Source\\Fixture.msi\" INSTALLFOLDER=\"C:\\Program Files\\App\\\" CUSTOM=\"Acme \"\"Widgets\"\"\" EMPTY=\"\" /qn /L*v \"C:\\Log Folder\\setup.log\"", commandLine);
-        return Task.CompletedTask;
     }
 
     private async Task TransportRedirects()

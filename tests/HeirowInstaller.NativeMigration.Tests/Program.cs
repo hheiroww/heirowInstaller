@@ -34,6 +34,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("unknown legacy installations are never discovered or adopted", UnknownInstallation),
     ("default discovery follows one recorded scope, rejects ambiguity and fresh isolation never inspects a real backend", DiscoveryAndIsolation),
     ("an unauthorized backend change fails before extraction or prerequisites", UnauthorizedTransition),
+    ("an original-directory fallback never authorizes native ownership, backend calls or staging", UnknownOriginalDirectory),
     ("3010 stops native writes until a verified new boot", () => Restart(3010)),
     ("1641 stops native writes until a verified new boot", () => Restart(1641)),
     ("unknown external completion requires restart and exact registration reconciliation", InterruptedRetirement),
@@ -254,6 +255,27 @@ static async Task UnauthorizedTransition()
     await Throws<InvalidOperationException>(() => fixture.Engine.InstallAsync(target, fixture.Options));
     fixture.Unchanged(); True(!Directory.Exists(Path.Combine(fixture.StateRoot, ".transactions")));
 }
+static async Task UnknownOriginalDirectory()
+{
+    foreach (var kind in new[] { "msi", "burn" })
+    {
+        using var fixture = new Fixture(kind);
+        fixture.Original.UseOriginalInstallDirectory = true;
+        File.WriteAllText(fixture.Original.ReceiptPath, JsonSerializer.Serialize(fixture.Original, InstallerJson.Options));
+        using var target = fixture.Build(includePrerequisite: true);
+        string[] StateInventory() => Directory.EnumerateFileSystemEntries(fixture.StateRoot, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(fixture.StateRoot, path) + "|" + (File.Exists(path) ? PackageSafety.HashFile(path) : "directory"))
+            .Order(StringComparer.Ordinal).ToArray();
+        var before = StateInventory();
+        try { fixture.Engine.Plan(target, fixture.Options); throw new Exception("A fallback directory unexpectedly authorized native planning."); }
+        catch (InvalidOperationException failure) when (failure.Message.Contains("explicitly recorded installation directory", StringComparison.Ordinal)) { }
+        await Throws<InvalidOperationException>(() => fixture.Engine.InstallAsync(target, fixture.Options));
+        fixture.Unchanged();
+        True(fixture.Backend.Observations == 0 && fixture.Backend.Uninstalls == 0 && fixture.Backend.Restores == 0);
+        True(before.SequenceEqual(StateInventory()), "A rejected fallback must leave the exact receipt/cache inventory unchanged.");
+        True(!Directory.Exists(Path.Combine(fixture.StateRoot, ".transactions")) && !Directory.Exists(Path.Combine(fixture.StateRoot, ".native-migrations")));
+    }
+}
 static async Task Restart(int code)
 {
     using var fixture = new Fixture(); fixture.Backend.ExitCode = code; using var target = fixture.Build();
@@ -431,14 +453,14 @@ sealed class Fixture : IDisposable
 }
 sealed class FakeBackend(Fixture fixture) : INativeMigrationBackend
 {
-    internal int Uninstalls, Restores, ExitCode;
+    internal int Uninstalls, Restores, ExitCode, Observations;
     internal bool LockHeld, ReceiptPreserved, FailAfterRemoval, ChildRemains, FailAfterNativeReceipt;
     internal string Boot = "boot-before";
     private NativeBackendState state = NativeBackendState.Installed;
     public NativeBackendState ObserveDeclared(NativeMigrationBaselineDefinition definition, bool isolated)
-    { fixture.Guard(); return state; } // Read-only synthetic observation is safe even for a rejected non-isolated Plan.
+    { fixture.Guard(); Observations++; return state; } // Read-only synthetic observation is safe even for a rejected non-isolated Plan.
     public NativeBackendState Observe(NativeMigrationBaseline baseline)
-    { fixture.Guard(); if (!baseline.Product.Isolated) throw new InvalidOperationException("Fixture isolation is mandatory.");
+    { fixture.Guard(); Observations++; if (!baseline.Product.Isolated) throw new InvalidOperationException("Fixture isolation is mandatory.");
         var receipt = JsonSerializer.Deserialize<InstalledProduct>(File.ReadAllText(fixture.Original.ReceiptPath), InstallerJson.Options)!;
         if (FailAfterNativeReceipt && !receipt.IsMsi && !receipt.IsExecutable) throw new IOException("Isolated completion marker fault."); return state; }
     internal void Reappear() { fixture.Guard(); File.WriteAllText(fixture.AppFile, "original application"); state = NativeBackendState.Installed; }

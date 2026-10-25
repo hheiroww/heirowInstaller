@@ -70,6 +70,8 @@ internal static class NativeMigrationValidation
         if (!changed) return null;
         if (targetLegacy || !(previous.IsMsi || previous.IsExecutable) || target.Manifest.NativeMigration is not { } migration)
             throw new InvalidOperationException("Changing installation backend requires an exact signed native migration or uninstalling the existing product first.");
+        if (previous.UseOriginalInstallDirectory)
+            throw new InvalidOperationException("Native migration requires an explicitly recorded installation directory; an unknown original destination cannot become native file ownership.");
         if (options.Isolated && backend is WindowsNativeMigrationBackend)
             throw new InvalidOperationException("Isolated validation may install a fresh native payload but cannot retire a real legacy backend.");
         if (plan.Scope != previous.Scope || previous.Isolated != options.Isolated ||

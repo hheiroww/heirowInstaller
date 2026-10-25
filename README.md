@@ -57,6 +57,8 @@ heirowInstaller.Cli uninstall heirowinstaller.hello
 
 `bundle` combines a package with the published Project-Z launcher to produce one setup EXE. `import-msi` and `import-exe` preserve an existing installer's backend. `compile` builds existing `.wxs` and `.wixproj` sources through an explicitly selected official WiX compiler or SDK, including extensions, custom actions, merge modules, patches, and Burn chains. WiX is an optional build-time dependency; its selected version retains its own license and acceptance requirements. See [compatibility](docs/compatibility.md), [desktop UI](docs/ui.md), and each executable's `--help` for the complete command contract.
 
+MSI repair and uninstall reuse the recorded directory when it was explicitly selected. Repair uses verified cached MSI media; uninstall targets the original ProductCode. Installations that kept the MSI's authored destination retain that behavior during maintenance. Native migration requires a recorded explicit destination and an exact signed baseline, so fallback paths are never adopted.
+
 For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. Keep the private key outside the payload directory. The desktop builder also accepts its path through `HEIROWINSTALLER_SIGNING_KEY_PATH`; the path is never saved in project or desktop settings. SocketJack.com publication requires an approved publisher signature and an authorized account.
 
 ## Application updates

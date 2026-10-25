@@ -178,7 +178,8 @@ internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
     }
 
     private static InstallPlan OriginalPlan(NativeMigrationBaseline baseline) => new() { Manifest = baseline.Manifest,
-        InstallDirectory = baseline.Product.InstallDirectory, Scope = baseline.Product.Scope, Features = baseline.Product.Features };
+        InstallDirectory = baseline.Product.InstallDirectory, Scope = baseline.Product.Scope, Features = baseline.Product.Features,
+        UseOriginalInstallDirectory = baseline.Product.UseOriginalInstallDirectory };
     private static InstallOptions BackendOptions(NativeMigrationBaseline baseline, InstallOptions caller) => new()
     {
         Scope = baseline.Product.Scope, TargetDirectory = baseline.Product.InstallDirectory, Silent = caller.Silent,
