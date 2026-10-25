@@ -103,6 +103,13 @@ internal static class CliIncrementalPublishingChecks
         var full = await Run(packages[target]);
         check(full.ExitCode == 0 && server.ExpectedRemaining == 0, "Signed full-package CLI publication retains its existing validation and upload flow");
 
+        await RejectedBeforeHttp(packages[target], "Actual CLI refuses browser-cookie authentication for sealed delivery before HTTP", ["--sealed-delivery"]);
+        var beforeSealed = server.Requests.Count;
+        var missingBearer = await Run(packages[target], ["--sealed-delivery"], cookie: false);
+        check(missingBearer.ExitCode != 0 && !missingBearer.Error.Contains("Unknown option", StringComparison.Ordinal)
+            && missingBearer.Error.Contains("in-memory bearer session", StringComparison.Ordinal) && server.Requests.Count == beforeSealed,
+            "Actual CLI parses sealed delivery and refuses a missing native bearer session without HTTP");
+
         var beforeFlags = server.Requests.Count;
         var flags = await Run(delta, ["--github-oidc", "--wait-for-activation", "--resume-upload", Guid.NewGuid().ToString("N")], cookie: false);
         check(flags.ExitCode == 1 && flags.Error.Contains("GitHub Actions OIDC requires", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,

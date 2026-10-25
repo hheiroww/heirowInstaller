@@ -260,7 +260,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         public List<string> LocalizationFiles { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation", "sealed-delivery"], StringComparer.OrdinalIgnoreCase);
             var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base", "resume-upload"], StringComparer.OrdinalIgnoreCase);
             var repeated = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) { ["compiler-arg"] = CompilerArguments, ["extension"] = Extensions,
                 ["define"] = Defines, ["source-file"] = SourceFiles, ["bind-path"] = BindPaths, ["include"] = IncludeDirectories, ["localization"] = LocalizationFiles };
