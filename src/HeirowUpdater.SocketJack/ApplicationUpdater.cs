@@ -17,6 +17,9 @@ public sealed class ApplicationLifecycleOptions
     public string? ApplicationHost { get; set; }
     public Func<UpdateCompanionConfiguration, CancellationToken, Task<string?>>? AuthenticateAsync { get; set; }
     public Action<ApplicationLifecycleResult>? StatusChanged { get; set; }
+    /// <summary>Visible feedback for an explicit check, including a check relayed to an existing watcher. Checking feedback must return promptly.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<ApplicationLifecycleResult, CancellationToken, Task>? ManualStatusChangedAsync { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? RunningApplicationsPrompt { get; set; }
 }
@@ -29,6 +32,9 @@ public sealed class ApplicationLifecycleResult : IDisposable
     public string? LatestVersion { get; set; }
     public bool Available { get; set; }
     public bool DeferredUntilExit { get; set; }
+    public bool ManualCheck { get; set; }
+    public string? ManualRequestId { get; set; }
+    public string? Message { get; set; }
     public DateTimeOffset? PostponeUntil { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public ProcessStartInfo? Handoff { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public string? LifecycleStatePath { get; set; }
@@ -133,16 +139,24 @@ public static class ApplicationUpdater
         Task WaitForApps() => ApplicationProcesses.WaitForExitAsync(executable, cancellationToken, options.ApplicationHost, () => ApplicationHostRegistry.Paths(configuration));
         var statePath = Path.Combine(directory, "state.json");
         var state = ReadState(statePath);
+        var requestPath = Path.Combine(directory, "manual-request.json");
+        var activePath = Path.Combine(directory, "manual-active.json");
+        var manualRequestId = manual ? Guid.NewGuid().ToString("N") : null;
+        var manualErrorReported = false;
         ApplicationLifecycleResult Result(string status, UpdateCheckResult? update = null) => new()
         {
             Status = status, ProductId = configuration.ProductId, Name = configuration.Name, CurrentVersion = configuration.CurrentVersion,
             LatestVersion = update?.Feed.Version, Available = update?.Available ?? false, DeferredUntilExit = AppRunning(),
-            PostponeUntil = state.PostponeUntil, LifecycleStatePath = statePath
+            PostponeUntil = state.PostponeUntil, LifecycleStatePath = statePath,
+            ManualCheck = manual, ManualRequestId = manual ? manualRequestId : null,
+            Message = status == "error" ? "The update check could not finish. Check your connection and try again." : null
         };
         async Task<ApplicationLifecycleResult> Status(string status, UpdateCheckResult? update = null)
         {
             var result = Result(status, update); options.StatusChanged?.Invoke(result);
             await WriteJsonAsync(options.StatusPath ?? Path.Combine(directory, "status.json"), result, cancellationToken);
+            if (manual && !options.NoPrompt && options.ManualStatusChangedAsync is { } feedback)
+                await feedback(result, cancellationToken);
             return result;
         }
         bool StillInstalled() => File.Exists(executable) && InstallerEngine.ListInstalled(configuration.StateRoot).Any(x =>
@@ -179,60 +193,114 @@ public static class ApplicationUpdater
             var check = await Authorized(client => client.CheckAsync(target, cancellationToken));
             return await Status(check.Available ? "available" : "current", check);
         }
-        if (PendingIsAlive(state)) return await Status("update-staged");
         FileStream? ownership;
         try { ownership = new FileStream(Path.Combine(directory, "lifecycle.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException)
         {
-            if (manual) await WriteJsonAsync(Path.Combine(directory, "manual-request.json"), new { requestedAt = DateTimeOffset.UtcNow, nonce = Guid.NewGuid().ToString("N") }, cancellationToken);
-            return await Status(manual ? "manual-requested" : "already-watching");
+            if (!manual) return Result("already-watching");
+            var active = ReadControl<ManualActivity>(activePath);
+            if (active is not null && Guid.TryParseExact(active.RequestId, "N", out _) && ProcessIsAlive(active.ProcessId, active.StartTicks))
+                manualRequestId = active.RequestId;
+            else if (ReadManualRequest(requestPath) is { } pending && pending.Nonce != ReadState(statePath).LastManualRequestId)
+                manualRequestId = pending.Nonce;
+            else
+                await WriteJsonAsync(requestPath, new ManualRequest { FormatVersion = 1, RequestedAt = DateTimeOffset.UtcNow, Nonce = manualRequestId! }, cancellationToken);
+            // Only the owner publishes shared status and opens feedback. A relay must not overwrite its current dialog/progress.
+            var relayed = Result("manual-requested"); options.StatusChanged?.Invoke(relayed); return relayed;
         }
         var transferOwnership = false;
         var originalCancellation = cancellationToken;
         ApplicationStopMonitor? stopMonitor = null;
+        using var ownerProcess = Process.GetCurrentProcess();
+        async Task BeginManualFeedback()
+        {
+            manualRequestId ??= Guid.NewGuid().ToString("N");
+            manualErrorReported = false;
+            await WriteJsonAsync(activePath, new ManualActivity { RequestId = manualRequestId, ProcessId = ownerProcess.Id,
+                StartTicks = ownerProcess.StartTime.ToUniversalTime().Ticks }, cancellationToken);
+        }
+        void EndManualFeedback()
+        {
+            if (File.Exists(activePath)) { PackageSafety.EnsureNoReparsePoints(activePath); File.Delete(activePath); }
+            manual = false; manualRequestId = null;
+        }
+        bool TakeManualRequest()
+        {
+            var request = ReadManualRequest(requestPath);
+            if (request is null || request.Nonce == state.LastManualRequestId) return false;
+            manualRequestId = request.Nonce; manual = true; return true;
+        }
         try
         {
             state = ReadState(statePath);
-            if (PendingIsAlive(state)) return await Status("update-staged");
+            if (ReadManualRequest(requestPath) is { } queued && queued.Nonce != state.LastManualRequestId)
+            { manualRequestId = queued.Nonce; manual = true; }
+            if (PendingIsAlive(state))
+            {
+                if (manual) await BeginManualFeedback();
+                var pendingResult = await Status("update-staged");
+                if (manual) { state.LastManualRequestId = manualRequestId; await WriteJsonAsync(statePath, state, cancellationToken); }
+                return pendingResult;
+            }
             stopMonitor = new ApplicationStopMonitor(configuration.InstallDirectory, resetForOwner: true, cancellationToken);
             cancellationToken = stopMonitor.Token;
-            var requestPath = Path.Combine(directory, "manual-request.json");
-            var lastRequest = File.Exists(requestPath) ? File.GetLastWriteTimeUtc(requestPath) : DateTime.MinValue;
+            if (manual && ReadManualRequest(requestPath) is { } pending && pending.Nonce != state.LastManualRequestId)
+                manualRequestId = pending.Nonce;
             while (true)
             {
+                if (!manual) TakeManualRequest();
                 if (!StillInstalled()) return await Status("application-removed");
                 if (!manual)
                 {
                     await Status("waiting-for-exit");
                     while (AppRunning())
                     {
-                        if (File.Exists(requestPath) && File.GetLastWriteTimeUtc(requestPath) > lastRequest) { lastRequest = File.GetLastWriteTimeUtc(requestPath); manual = true; break; }
+                        if (TakeManualRequest()) break;
                         await Task.Delay(200, cancellationToken);
                     }
                     if (!manual) await WaitForApps();
                 }
                 if (!manual && state.PostponeUntil > DateTimeOffset.UtcNow) return await Status("postponed");
                 if (!StillInstalled()) return await Status("application-removed");
-                await Status("checking");
-                var check = await Authorized(client => client.CheckAsync(target, cancellationToken));
+                UpdateCheckResult check;
+                try
+                {
+                    if (manual) await BeginManualFeedback();
+                    await Status("checking");
+                    if (manual)
+                    {
+                        // Acknowledge only after the host has opened feedback. Active metadata coalesces clicks during initialization.
+                        state.LastManualRequestId = manualRequestId;
+                        await WriteJsonAsync(statePath, state, cancellationToken);
+                    }
+                    check = await Authorized(client => client.CheckAsync(target, cancellationToken));
+                }
+                catch (Exception error) when (error is not OperationCanceledException && manual)
+                {
+                    try { await Status("error"); manualErrorReported = true; } catch { } // Feedback failure must not replace the original check error.
+                    if (manualErrorReported && AppRunning()) { EndManualFeedback(); continue; }
+                    throw;
+                }
                 state.LastCheckedAt = DateTimeOffset.UtcNow; state.LatestVersion = check.Feed.Version;
                 await WriteJsonAsync(statePath, state, cancellationToken);
                 if (!manual && AppRunning()) { manual = false; continue; }
                 if (!check.Available)
                 {
                     var currentResult = await Status("current", check);
-                    if (manual && AppRunning()) { manual = false; continue; }
+                    if (manual && AppRunning()) { EndManualFeedback(); continue; }
+                    if (!manual && TakeManualRequest()) continue;
                     return currentResult;
                 }
                 await Status("available", check);
                 var choice = await prompt(new(configuration, check, AppRunning(), options.ApplicationHost), cancellationToken);
-                if (choice == ApplicationUpdateChoice.ApplicationReopened) { manual = false; continue; }
+                if (choice == ApplicationUpdateChoice.ApplicationReopened) { EndManualFeedback(); continue; }
                 if (choice == ApplicationUpdateChoice.Postpone)
                 {
                     state.PostponeUntil = DateTimeOffset.UtcNow.AddHours(24);
                     await WriteJsonAsync(statePath, state, cancellationToken);
                     var postponed = await Status("postponed", check);
-                    if (manual && AppRunning()) { manual = false; continue; }
+                    if (manual && AppRunning()) { EndManualFeedback(); continue; }
+                    if (!manual && TakeManualRequest()) continue;
                     return postponed;
                 }
                 if (!StillInstalled()) return await Status("application-removed");
@@ -266,7 +334,16 @@ public static class ApplicationUpdater
             cancellationToken = originalCancellation;
             return await Status("stopped");
         }
-        finally { if (!transferOwnership) { stopMonitor?.Dispose(); ownership.Dispose(); } }
+        catch (Exception error) when (error is not OperationCanceledException && manual && !manualErrorReported)
+        {
+            try { await Status("error"); } catch { } // Preserve the underlying failure if the feedback host also fails.
+            throw;
+        }
+        finally
+        {
+            try { if (File.Exists(activePath)) { PackageSafety.EnsureNoReparsePoints(activePath); File.Delete(activePath); } } catch (IOException) { }
+            if (!transferOwnership) { stopMonitor?.Dispose(); ownership.Dispose(); }
+        }
     }
 
     public static async Task MarkHandoffAsync(string statePath, Process helper, CancellationToken cancellationToken = default)
@@ -288,7 +365,9 @@ public static class ApplicationUpdater
     private static LifecycleState ReadState(string path)
     {
         PackageSafety.EnsureNoReparsePoints(path);
-        return File.Exists(path) ? JsonSerializer.Deserialize<LifecycleState>(File.ReadAllText(path), InstallerJson.Options) ?? new() : new();
+        if (!File.Exists(path)) return new();
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return JsonSerializer.Deserialize<LifecycleState>(stream, InstallerJson.Options) ?? new();
     }
     internal static async Task WriteJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
@@ -304,5 +383,43 @@ public static class ApplicationUpdater
         public string? LatestVersion { get; set; }
         public int? PendingProcessId { get; set; }
         public long? PendingStartTicks { get; set; }
+        public string? LastManualRequestId { get; set; }
+    }
+
+    private static T? ReadControl<T>(string path) where T : class
+    {
+        PackageSafety.EnsureNoReparsePoints(path);
+        try
+        {
+            if (!File.Exists(path)) return null;
+            if (new FileInfo(path).Length > 8192) throw new InvalidDataException("Application update control metadata is too large.");
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return JsonSerializer.Deserialize<T>(stream, InstallerJson.Options);
+        }
+        catch (Exception error) when (error is JsonException or IOException) { return null; }
+    }
+    private static ManualRequest? ReadManualRequest(string path)
+    {
+        var request = ReadControl<ManualRequest>(path);
+        return request is { FormatVersion: 1 } && Guid.TryParseExact(request.Nonce, "N", out _) &&
+            request.RequestedAt >= DateTimeOffset.UtcNow.AddMinutes(-10) && request.RequestedAt <= DateTimeOffset.UtcNow.AddMinutes(1) ? request : null;
+    }
+    private static bool ProcessIsAlive(int processId, long startTicks)
+    {
+        if (processId <= 0 || startTicks <= 0) return false;
+        try { using var process = Process.GetProcessById(processId); return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == startTicks; }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+    }
+    private sealed class ManualRequest
+    {
+        public int FormatVersion { get; set; }
+        public DateTimeOffset RequestedAt { get; set; }
+        public string Nonce { get; set; } = "";
+    }
+    private sealed class ManualActivity
+    {
+        public string RequestId { get; set; } = "";
+        public int ProcessId { get; set; }
+        public long StartTicks { get; set; }
     }
 }

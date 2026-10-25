@@ -47,6 +47,8 @@ Credentials remain in environment variables and are sent only to their exact con
             var command = parsed.Positionals.FirstOrDefault()?.ToLowerInvariant();
             if (command is null || command == "help" || parsed.Has("help")) { Console.WriteLine(Help); return 0; }
             if (command == "show-prompt") return await NativeUpdatePrompt.RunChildAsync(parsed, cancellation.Token);
+            if (command == "show-manual-feedback") return await NativeManualUpdateFeedback.RunChildAsync(parsed, cancellation.Token);
+            if (command == "show-startup-error") return await NativeManualUpdateFeedback.RunStartupErrorAsync(parsed, cancellation.Token);
             if (command == "apply-bundle") { helperStatusPath = parsed.Get("status-file"); helperLifecycleStatePath = parsed.Get("lifecycle-state"); return await ApplyBundleAsync(parsed, cancellation.Token); }
             if (command is "launch" or "after-exit" or "check-for-updates" or "repair" or "uninstall" or "stop")
                 return await ApplicationCommands.RunAsync(command, parsed, cancellation.Token);

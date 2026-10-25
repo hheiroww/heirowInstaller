@@ -59,7 +59,7 @@ For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. 
 
 ## Application updates
 
-Selecting an application's optional updates feature places `heirowUpdater.exe` and `heirowUpdater.json` in that application's root directory. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. A manual `CheckForUpdates()` call uses the same prompt and waits for the app or plugin host to close before replacing files. Leaving the feature off installs neither companion file.
+Selecting an application's optional updates feature places `heirowUpdater.exe` and `heirowUpdater.json` in that application's root directory. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. Manual `CheckForUpdates()` calls show progress and a visible result, including when the app is already up to date. Choosing **Update now** asks before closing any running app or plugin host and allows cancellation before replacing its files. Leaving the feature off installs neither companion file.
 
 ```csharp
 SocketJack.HeirowUpdaterBootstrap.StartAfterExit();

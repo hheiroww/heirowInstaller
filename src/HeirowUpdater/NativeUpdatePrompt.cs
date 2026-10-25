@@ -19,7 +19,7 @@ namespace HeirowUpdater;
 
 internal static class NativeUpdatePrompt
 {
-    private static bool TryLoadLogo(ImageElement image)
+    internal static bool TryLoadLogo(ImageElement image)
     {
         try
         {

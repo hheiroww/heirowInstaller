@@ -77,10 +77,17 @@ trusted update helper include that host and all its instances in their waits.
 
 ## Manual checks
 
-`CheckForUpdates()` starts a check immediately and opens the same native prompt.
-When the app is still running, choosing Update now prepares the update and waits
-for the app or plugin host to close. An existing watcher accepts the request so
-there is one long-running companion per app root.
+`CheckForUpdates()` starts a check immediately with native progress and a visible
+result. A current application reports that it is up to date; a newer release
+offers **Update now** and **Postpone 24 hours**. Check failures remain visible so
+the user can retry. An existing watcher accepts the request so there is one
+long-running companion per app root.
+
+When the app is still running, choosing **Update now** prepares the update, then
+offers **Close apps and continue** or **Cancel update** before replacing files.
+Normal close requests preserve an application's own save prompts. A kept-open
+app returns to retry/cancel. Dismissing a current-version result keeps the
+application running and preserves its later automatic check after exit.
 
 For an app-owned status label, use the read-only JSON command:
 

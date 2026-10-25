@@ -44,8 +44,9 @@ function Wait-For([scriptblock]$Condition, [string]$Description, [int]$Seconds =
     while (-not (& $Condition)) { if ([DateTime]::UtcNow -ge $until) { throw "Timed out: $Description" }; Start-Sleep -Milliseconds 100 }
 }
 function Read-Json([string]$Path) { if (Test-Path -LiteralPath $Path) { try { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { return $null } }; return $null }
+function Manual-Renderers([object]$Session) { return @((Get-Content -LiteralPath $Session.manualEvents -ErrorAction SilentlyContinue)|ForEach-Object{$_|ConvertFrom-Json}|Where-Object{$_.kind -eq 'renderer-start'}).Count }
 function Requests([string]$Path) { @((Get-Content -LiteralPath (Join-Path $run 'requests.jsonl') -ErrorAction SilentlyContinue) | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.path -eq $Path }) }
-function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpone', [bool]$Hosted = $false) {
+function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpone', [bool]$Hosted = $false, [bool]$WithoutWatcher = $false, [bool]$FaultedFeedback = $false) {
     $ready = Join-Path $run "$Session.ready.json"; $gate = Join-Path $run "$Session.exit.flag"; $manual = Join-Path $run "$Session.manual.flag"
     $status = Join-Path $run "$Session.status.json"; $capture = Join-Path $run "$Session.prompt.png"; $promptReport = Join-Path $run "$Session.prompt.json"
     $choiceFile=Join-Path $run "$Session.choice.txt";[IO.File]::WriteAllText($choiceFile,$Choice)
@@ -61,10 +62,16 @@ function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpo
     $start.Environment['HEIROWUPDATER_TEST_CLOSE_APPS_CHOICE'] = 'close'
     $start.Environment['HEIROWUPDATER_TEST_CLOSE_APPS_CAPTURE'] = Join-Path $run "$Session.close-apps.png"
     $start.Environment['HEIROWUPDATER_TEST_CLOSE_APPS_REPORT'] = Join-Path $run "$Session.close-apps.json"
+    $start.Environment['HEIROWUPDATER_TEST_MANUAL_CHOICE'] = 'close'
+    $start.Environment['HEIROWUPDATER_TEST_MANUAL_CAPTURE'] = Join-Path $run "$Session.manual.png"
+    $start.Environment['HEIROWUPDATER_TEST_MANUAL_REPORT'] = Join-Path $run "$Session.manual.json"
+    $start.Environment['HEIROWUPDATER_TEST_MANUAL_EVENTS'] = Join-Path $run "$Session.manual-events.jsonl"
+    if($WithoutWatcher){$start.Environment['FIXTURE_DISABLE_UPDATER']='1'}
+    if($FaultedFeedback){$start.Environment['HEIROWUPDATER_TEST_MANUAL_FAIL_CHILD']='1'}
     $start.Environment['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = Join-Path $run 'bundle-extraction'
     $process = [Diagnostics.Process]::Start($start); $apps.Add($process)
     Wait-For { Test-Path -LiteralPath $ready } "the direct $Session application bootstrap" 30
-    return [pscustomobject]@{process=$process;ready=$ready;gate=$gate;manual=$manual;status=$status;capture=$capture;promptReport=$promptReport;choiceFile=$choiceFile}
+    return [pscustomobject]@{process=$process;ready=$ready;gate=$gate;manual=$manual;status=$status;capture=$capture;promptReport=$promptReport;choiceFile=$choiceFile;manualReport=(Join-Path $run "$Session.manual.json");manualEvents=(Join-Path $run "$Session.manual-events.jsonl")}
 }
 function Close-App([object]$Session) { [IO.File]::WriteAllText($Session.gate, 'exit'); Wait-For { $Session.process.HasExited } 'the exact fixture application to exit' 15 }
 function Wait-CompanionExit([object]$Fixture) {
@@ -75,14 +82,15 @@ try {
     [IO.File]::WriteAllText($serverScript, @'
 param([string]$Root,[string]$Ready,[string]$Stop,[string]$Log)
 $ErrorActionPreference='Stop';$listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$listener.Start()
-[IO.File]::WriteAllText($Ready,(@{port=$listener.LocalEndpoint.Port}|ConvertTo-Json -Compress));$deadline=[DateTime]::UtcNow.AddMinutes(8)
+[IO.File]::WriteAllText($Ready,(@{port=$listener.LocalEndpoint.Port}|ConvertTo-Json -Compress));$deadline=[DateTime]::UtcNow.AddMinutes(12)
 try { while(-not [IO.File]::Exists($Stop) -and [DateTime]::UtcNow -lt $deadline) {
  if(-not $listener.Pending()){Start-Sleep -Milliseconds 25;continue};$client=$listener.AcceptTcpClient();$client.ReceiveTimeout=5000;$stream=$client.GetStream()
  try {
   $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::ASCII,$false,8192,$true);$request=$reader.ReadLine();$parts=@($request -split ' ');$auth='';$agent=''
   try {for($i=0;$i -lt 64;$i++){$line=$reader.ReadLine();if([string]::IsNullOrEmpty($line)){break};if($line.StartsWith('Authorization:',[StringComparison]::OrdinalIgnoreCase)){$auth=$line.Substring(14).Trim()};if($line.StartsWith('User-Agent:',[StringComparison]::OrdinalIgnoreCase)){$agent=$line.Substring(11).Trim()}}}finally{$reader.Dispose()}
   $name=if($parts.Count -gt 1 -and $parts[0] -eq 'GET'){switch($parts[1]){'/a.json'{'a.json'};'/b.json'{'b.json'};'/a-Setup.exe'{'a-Setup.exe'};'/b-Setup.exe'{'b-Setup.exe'};default{$null}}}else{$null}
-  $authenticated=$auth -ceq ('Bearer '+$env:FIXTURE_AUTH);$code=if(-not $name){404}elseif(-not $authenticated){401}else{200}
+  $authenticated=$auth -ceq ('Bearer '+$env:FIXTURE_AUTH);$code=if(-not $name){404}elseif(-not $authenticated){401}elseif($name -eq 'a.json' -and [IO.File]::Exists([IO.Path]::Combine($Root,'feed-error.flag'))){503}else{200}
+  if($name -eq 'a.json' -and [IO.File]::Exists([IO.Path]::Combine($Root,'feed-delay.flag'))){Start-Sleep -Milliseconds 1800}
   [IO.File]::AppendAllText($Log,((@{path=$parts[1];authenticated=$authenticated;status=$code;userAgent=$agent;timestamp=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress)+[Environment]::NewLine))
   if($code -ne 200){$bytes=[Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $code Fixture`r`nContent-Length: 0`r`nConnection: close`r`n`r`n");$stream.Write($bytes,0,$bytes.Length);continue}
   $inputFile=[IO.File]::OpenRead([IO.Path]::Combine($Root,$name));try{$bytes=[Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/octet-stream`r`nContent-Length: $($inputFile.Length)`r`nConnection: close`r`n`r`n");$stream.Write($bytes,0,$bytes.Length);$inputFile.CopyTo($stream);$stream.Flush()}finally{$inputFile.Dispose()}
@@ -103,7 +111,7 @@ using SocketJack;
 if(args.Length==0){File.WriteAllText("__PREFIX__","Untrusted downloaded prefix ran.");return 41;}
 var root=Environment.GetEnvironmentVariable("FIXTURE_APP_ROOT")??Path.GetDirectoryName(Environment.ProcessPath!)!;
 var credential=Environment.GetEnvironmentVariable("FIXTURE_AUTH");
-var started=HeirowUpdaterBootstrap.StartAfterExit(bearerToken:credential,appRoot:root);
+var started=Environment.GetEnvironmentVariable("FIXTURE_DISABLE_UPDATER")!="1"&&HeirowUpdaterBootstrap.StartAfterExit(bearerToken:credential,appRoot:root);
 File.WriteAllText(args[1],JsonSerializer.Serialize(new {updaterStarted=started,generation=File.ReadAllText(Path.Combine(root,"generation.txt"))}));
 var deadline=DateTime.UtcNow.AddMinutes(8);var requested=DateTime.MinValue;
 while(!File.Exists(args[2])&&DateTime.UtcNow<deadline){if(File.Exists(args[3])&&File.GetLastWriteTimeUtc(args[3])>requested){requested=File.GetLastWriteTimeUtc(args[3]);HeirowUpdaterBootstrap.CheckForUpdates(bearerToken:credential,appRoot:root);}await Task.Delay(50);}
@@ -182,10 +190,42 @@ return 0;
     Wait-For {(Read-Json $manualCurrent.status).status -eq 'waiting-for-exit'} 'the watcher before a manual current-version check'
     [IO.File]::WriteAllText($manualCurrent.manual,'manual current check')
     Wait-For {(Requests '/a.json').Count -eq $beforeManualCurrent+1 -and (Read-Json $manualCurrent.status).status -eq 'waiting-for-exit'} 'manual current check returning to app-exit monitoring'
+    $currentUi=Read-Json $manualCurrent.manualReport
+    Assert-Check ($currentUi.status -eq 'current' -and $currentUi.visibleTitle -eq "You're up to date." -and $currentUi.closeButtonText -eq 'Close' -and $currentUi.pointerEventsInjected -and $currentUi.renderedFrames -gt 0) 'A relayed manual-current check renders the real native up-to-date label and usable Close action'
+    $currentUiHash=(Get-FileHash -LiteralPath $manualCurrent.manualReport).Hash
+    $currentRendererCount=Manual-Renderers $manualCurrent
     Assert-Check (-not $manualCurrent.process.HasExited) 'A manual current-version check leaves the application running and its after-exit watcher active'
     Close-App $manualCurrent;Wait-For {(Read-Json $manualCurrent.status).status -eq 'current'} 'the automatic check after the manually checked app exits'
     Assert-Check ((Requests '/a.json').Count -eq $beforeManualCurrent+2) 'Manual checking does not disable the later after-exit check'
     Wait-CompanionExit $a
+    Assert-Check ((Get-FileHash -LiteralPath $manualCurrent.manualReport).Hash -eq $currentUiHash -and (Manual-Renderers $manualCurrent) -eq $currentRendererCount) 'Automatic current after app exit does not open another manual feedback renderer'
+
+    $delayFlag=Join-Path $public 'feed-delay.flag';[IO.File]::WriteAllText($delayFlag,'bounded fixture response delay')
+    $direct=Start-App $a 'manual-direct-current' 'postpone' $false $true
+    Assert-Check (-not(Read-Json $direct.ready).updaterStarted) 'The direct manual-current fixture has no existing watcher'
+    [IO.File]::WriteAllText($direct.manual,'direct check')
+    Wait-For {(Read-Json $direct.manualReport).status -eq 'current' -and (Read-Json $direct.status).status -eq 'waiting-for-exit'} 'the direct native current result and retained watcher'
+    $directUi=Read-Json $direct.manualReport
+    Assert-Check ($directUi.visibleTitle -eq "You're up to date." -and $directUi.closeButtonText -eq 'Close' -and $directUi.pointerEventsInjected -and $directUi.statusesRendered -contains 'checking' -and -not $direct.process.HasExited) 'A direct manual check renders progress and up-to-date result, and Close preserves the application and watcher'
+    [IO.File]::Delete($delayFlag);$directUiHash=(Get-FileHash -LiteralPath $direct.manualReport).Hash;$directRendererCount=Manual-Renderers $direct
+    Close-App $direct;Wait-For {(Read-Json $direct.status).status -eq 'current'} 'direct manual owner automatic exit check';Wait-CompanionExit $a
+    Assert-Check ((Get-FileHash -LiteralPath $direct.manualReport).Hash -eq $directUiHash -and (Manual-Renderers $direct) -eq $directRendererCount) 'A direct manual owner returns to quiet automatic-current monitoring'
+
+    $errorFlag=Join-Path $public 'feed-error.flag';[IO.File]::WriteAllText($errorFlag,'one isolated service error')
+    $manualError=Start-App $a 'manual-network-error';Wait-For {(Read-Json $manualError.status).status -eq 'waiting-for-exit'} 'the watcher before a manual error'
+    [IO.File]::WriteAllText($manualError.manual,'check unavailable feed')
+    Wait-For {(Read-Json $manualError.manualReport).status -eq 'error' -and (Read-Json $manualError.status).status -eq 'waiting-for-exit'} 'the visible error result followed by watcher retention'
+    $errorUi=Read-Json $manualError.manualReport
+    Assert-Check ($errorUi.visibleTitle -eq 'Updates need your attention.' -and $errorUi.closeButtonText -eq 'Close' -and $errorUi.pointerEventsInjected -and -not $manualError.process.HasExited -and -not([IO.File]::ReadAllText($manualError.manualReport).Contains($secret))) 'A manual network error visibly renders a safe native result and Close preserves the application and watcher'
+    [IO.File]::Delete($errorFlag);Close-App $manualError;Wait-For {(Read-Json $manualError.status).status -eq 'current'} 'the error owner quiet automatic retry';Wait-CompanionExit $a
+
+    $cold=Start-App $a 'manual-cold-child-error' 'postpone' $false $true $true
+    [IO.File]::WriteAllText($cold.manual,'check with isolated child fault')
+    Wait-For {(Read-Json $cold.manualReport).status -eq 'error' -and (Read-Json $cold.status).status -eq 'error'} 'a visible startup result after the feedback child cannot initialize'
+    Wait-CompanionExit $a;$coldUi=Read-Json $cold.manualReport
+    $coldEvents=@(Get-Content -LiteralPath $cold.manualEvents|ForEach-Object{$_|ConvertFrom-Json})
+    Assert-Check ($coldUi.visibleTitle -eq 'Updates need your attention.' -and $coldUi.closeButtonText -eq 'Close' -and $coldUi.pointerEventsInjected -and @($coldEvents|Where-Object{$_.kind -eq 'child-start'}).Count -eq 1 -and @($coldEvents|Where-Object{$_.kind -eq 'renderer-start'}).Count -eq 1 -and -not $cold.process.HasExited) 'A cold child failure opens one usable generic native result without repeatedly relaunching the failing child'
+    Close-App $cold
     $beforeHostChecks=(Requests '/a.json').Count
     $mixedApp=Start-App $a 'mixed-standalone-owner'
     Wait-For {(Read-Json $mixedApp.status).status -eq 'waiting-for-exit'} 'the standalone owner before a plugin host joins'
@@ -229,7 +269,7 @@ return 0;
     Close-App $b1;Wait-For {(Read-Json $b1.status).status -eq 'postponed'} 'the separate app B Postpone choice'
     Wait-CompanionExit $a;Wait-CompanionExit $b
     $requests=@(Get-Content -LiteralPath (Join-Path $run 'requests.jsonl') | ForEach-Object {$_|ConvertFrom-Json})
-    Assert-Check (@($requests|Where-Object {$_.status -ne 200 -or -not $_.authenticated -or $_.userAgent -notlike '*SocketJack*'}).Count -eq 0) 'The actual bootstrap forwards protected-feed authorization through child-only environment and SocketJack transport'
+    Assert-Check (@($requests|Where-Object {$_.status -notin @(200,503) -or -not $_.authenticated -or $_.userAgent -notlike '*SocketJack*'}).Count -eq 0 -and @($requests|Where-Object{$_.status -eq 503}).Count -eq 1) 'The actual bootstrap forwards protected-feed authorization through SocketJack, including the one intended isolated error response'
     foreach($fixture in $fixtures){if(-not $uninstalled.Contains($fixture.id) -or $fixture.tag -eq 'off'){$null=Invoke-LifecycleCli @('uninstall',$fixture.id,'--silent','--state-root',$fixture.state,'--scope','user') "uninstall-$($fixture.tag)"}}
     Wait-For {@(Get-CimInstance Win32_Process -Filter "Name='heirowUpdater.exe' OR Name='FixtureApp.exe' OR Name='FixtureHost.exe'" | Where-Object {$_.ExecutablePath -and $_.ExecutablePath.StartsWith($run+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)}).Count -eq 0} 'all owned fixture processes to exit' 30
     Assert-Check (@($fixtures|Where-Object {(Test-Path -LiteralPath (Join-Path $_.state "$($_.id)/receipt.json")) -or (Test-Path -LiteralPath (Join-Path $_.target 'FixtureApp.exe'))}).Count -eq 0) 'All unique fixtures uninstall without active receipts or target executables'

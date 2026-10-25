@@ -20,13 +20,13 @@ if (args.FirstOrDefault() == "uninstall")
     return 0;
 }
 var suite = new AcceptanceSuite();
-return await suite.RunAsync();
+return await suite.RunAsync(args is ["--filter", var filter] ? filter : null);
 
 internal sealed class AcceptanceSuite
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "heirowInstaller-tests-" + Guid.NewGuid().ToString("N"));
     private int passed;
-    public async Task<int> RunAsync()
+    public async Task<int> RunAsync(string? filter = null)
     {
         Directory.CreateDirectory(root);
         var cases = new (string Name, Func<Task> Test)[]
@@ -55,7 +55,13 @@ internal sealed class AcceptanceSuite
             ,("optional app-local updater profiles pin verified identity and participate in repair and uninstall", AppUpdateCompanion)
             ,("maintenance politely stops only the app-local updater before replacing or removing its files", CompanionMaintenance)
             ,("exact backend registrations route Windows Settings maintenance and reject stale staged updates", BackendRegistrations)
+            ,("manual update feedback correlates direct, relayed, busy, coalesced and failed checks while automatic and headless checks stay quiet", ManualUpdateFeedback)
         };
+        if (filter is not null)
+        {
+            cases = cases.Where(x => x.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (cases.Length == 0) throw new ArgumentException("No integration test matches the filter.");
+        }
         try
         {
             foreach (var test in cases)
@@ -919,6 +925,179 @@ internal sealed class AcceptanceSuite
                 if (InstallerEngine.ListInstalled(options.StateRoot).Any(x => x.Id == productId)) try { await engine.UninstallAsync(productId, options); } catch { }
                 using var leftover = hive.OpenSubKey(registration);
                 if (leftover?.GetValue("HeirowInstallerAcceptanceFixture") as string == identity) hive.DeleteSubKeyTree(registration, false);
+            }
+        }
+    }
+
+    private async Task ManualUpdateFeedback()
+    {
+        var area = Area("manual-feedback");
+        var mode = 0; var requests = 0; var blockNext = 0;
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously), release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var feed = new UpdateFeed { ProductId = "test.manual-feedback", Name = "Manual feedback fixture", Version = "1", PackageType = "hinst", Size = 1, Sha256 = new string('a', 64) };
+        await using var server = new LoopbackServer((NetworkRequest _) =>
+        {
+            Interlocked.Increment(ref requests);
+            if (Interlocked.CompareExchange(ref blockNext, 0, 1) == 1) { entered.TrySetResult(); release.Task.GetAwaiter().GetResult(); }
+            if (Volatile.Read(ref mode) == 2) return new(500, Encoding.UTF8.GetBytes("fixture response details must not enter feedback"));
+            feed.Version = Volatile.Read(ref mode) == 1 ? "2" : "1";
+            return new(200, JsonSerializer.SerializeToUtf8Bytes(feed, InstallerJson.Options));
+        });
+        feed.InstallerUrl = server.Origin + "setup.hinst";
+#if DEBUG
+        const string configuration = "Debug";
+#else
+        const string configuration = "Release";
+#endif
+        var probeDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Fixtures", "ManualCheckApplicationProbe", "bin", configuration, "net10.0"));
+        var source = Path.Combine(area, "source"); Directory.CreateDirectory(source);
+        foreach (var name in new[] { "ManualCheckApplicationProbe.exe", "ManualCheckApplicationProbe.dll", "ManualCheckApplicationProbe.deps.json", "ManualCheckApplicationProbe.runtimeconfig.json" })
+            File.Copy(Path.Combine(probeDirectory, name), Path.Combine(source, name));
+        File.WriteAllText(Path.Combine(source, "heirowUpdater.exe"), "non-executed SDK fixture updater");
+        using var key = RSA.Create(2048); var keyPath = Path.Combine(area, "fixture-signing.pem"); File.WriteAllText(keyPath, key.ExportPkcs8PrivateKeyPem());
+        var manifest = Manifest(feed.ProductId, "1"); manifest.EntryPoint = "ManualCheckApplicationProbe.exe";
+        manifest.UpdateUrl = server.Origin + "feed.json"; manifest.Features = [new() { Id = "updates", Default = true }];
+        manifest.UpdateCompanion = new() { CredentialOrigin = server.Origin };
+        manifest.Payload = Directory.EnumerateFiles(source).Select(path => new PayloadFile
+        { Path = Path.GetFileName(path), Feature = Path.GetFileName(path) == "heirowUpdater.exe" ? "updates" : null }).ToList();
+        var manifestPath = Path.Combine(area, "manifest.json"); File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
+        var packagePath = Path.Combine(area, "app.hinst"); PackageBuilder.Build(manifestPath, source, packagePath, new() { SigningKeyPath = keyPath });
+        var target = Path.Combine(area, "app"); var install = Options(area, target);
+        using (var package = PackageReader.Open(packagePath)) await new InstallerEngine().InstallAsync(package, install);
+        var profile = Path.Combine(target, "heirowUpdater.json");
+        var stateDirectory = ApplicationUpdater.StateDirectory(ApplicationUpdater.ReadConfiguration(profile, true));
+        var feedback = new System.Collections.Concurrent.ConcurrentQueue<ApplicationLifecycleResult>();
+        Task<ApplicationUpdateChoice> NoUpdatePrompt(ApplicationUpdatePrompt _, CancellationToken __) => throw new InvalidOperationException("A current feed cannot open an update prompt.");
+        ApplicationLifecycleOptions Settings(Func<ApplicationLifecycleResult, CancellationToken, Task>? callback = null) => new()
+        { AllowLoopback = true, StatusPath = Path.Combine(area, "owner-status.json"), ManualStatusChangedAsync = callback ?? ((status, _) => { feedback.Enqueue(status); return Task.CompletedTask; }) };
+        async Task Wait(Func<bool> condition)
+        {
+            var watch = Stopwatch.StartNew();
+            while (!condition()) { if (watch.Elapsed > TimeSpan.FromSeconds(15)) throw new TimeoutException("Manual feedback fixture timed out."); await Task.Delay(30); }
+        }
+        async Task<ApplicationLifecycleResult> Relay()
+        {
+            return await ApplicationUpdater.RunAsync(profile, null, null, true,
+                Settings((_, _) => throw new InvalidOperationException("The relay must never create a duplicate feedback window.")), NoUpdatePrompt);
+        }
+        using (var current = await ApplicationUpdater.RunAsync(profile, null, null, true, Settings(), NoUpdatePrompt))
+        {
+            Equal("current", current.Status); True(current.ManualCheck); True(Guid.TryParseExact(current.ManualRequestId, "N", out _));
+            Equal("checking,current", string.Join(',', feedback.Select(x => x.Status)));
+            True(feedback.All(x => x.ManualCheck && x.ManualRequestId == current.ManualRequestId));
+        }
+        var quietCallbacks = 0; var quiet = Settings((_, _) => { quietCallbacks++; return Task.CompletedTask; }); quiet.NoPrompt = true;
+        using (var headless = await ApplicationUpdater.RunAsync(profile, null, null, true, quiet, NoUpdatePrompt)) Equal("current", headless.Status);
+        Equal(0, quietCallbacks);
+
+        var run = Path.Combine(area, "running-app"); Directory.CreateDirectory(run);
+        File.WriteAllText(Path.Combine(run, ".manual-check-probe"), "heirowInstaller manual feedback acceptance\n");
+        var start = new ProcessStartInfo(Path.Combine(target, manifest.EntryPoint)) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = target, WindowStyle = ProcessWindowStyle.Hidden };
+        start.ArgumentList.Add("--run-directory"); start.ArgumentList.Add(run);
+        using var application = Process.Start(start) ?? throw new InvalidOperationException("Could not start owned console fixture.");
+        using var ownerCancellation = new CancellationTokenSource();
+        CancellationTokenSource? queuedCancellation = null;
+        Task<ApplicationLifecycleResult>? owner = null;
+        var dismiss = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var shown = new TaskCompletionSource<ApplicationLifecycleResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ownerStatus = ""; var updatePrompts = 0;
+        try
+        {
+            await Wait(() => File.Exists(Path.Combine(run, "ready.json")));
+            var ticks = application.StartTime.ToUniversalTime().Ticks;
+            // Pending updates also own one correlated manual information window, rather than silently returning or spawning duplicates.
+            await ApplicationUpdater.MarkHandoffAsync(Path.Combine(stateDirectory, "state.json"), application);
+            owner = ApplicationUpdater.RunAsync(profile, null, null, true, Settings(async (status, token) =>
+            { feedback.Enqueue(status); shown.TrySetResult(status); await dismiss.Task.WaitAsync(token); }), NoUpdatePrompt, ownerCancellation.Token);
+            var pendingVisible = await shown.Task.WaitAsync(TimeSpan.FromSeconds(15)); Equal("update-staged", pendingVisible.Status);
+            using (var pendingRelay = await Relay()) Equal(pendingVisible.ManualRequestId, pendingRelay.ManualRequestId);
+            dismiss.TrySetResult(); using (var pendingResult = await owner) Equal("update-staged", pendingResult.Status); owner = null;
+            await ApplicationUpdater.CompleteHandoffAsync(Path.Combine(stateDirectory, "state.json"));
+            dismiss = new(TaskCreationOptions.RunContinuationsAsynchronously); shown = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            var ownerOptions = Settings(async (status, token) =>
+            {
+                feedback.Enqueue(status);
+                if (status.Status is "current" or "error") { shown.TrySetResult(status); await dismiss.Task.WaitAsync(token); }
+            });
+            ownerOptions.StatusChanged = status => Volatile.Write(ref ownerStatus, status.Status);
+            Task<ApplicationUpdateChoice> AvailablePrompt(ApplicationUpdatePrompt context, CancellationToken _)
+            { True(context.Update.Available); Interlocked.Increment(ref updatePrompts); return Task.FromResult(ApplicationUpdateChoice.Postpone); }
+            owner = ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, ownerOptions, AvailablePrompt, ownerCancellation.Token);
+            await Wait(() => Volatile.Read(ref ownerStatus) == "waiting-for-exit");
+            var before = Volatile.Read(ref requests);
+            using var relayed = await Relay();
+            var visible = await shown.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            Equal("current", visible.Status); Equal(relayed.ManualRequestId, visible.ManualRequestId); Equal(before + 1, Volatile.Read(ref requests));
+            using (var repeated = await Relay()) Equal(relayed.ManualRequestId, repeated.ManualRequestId);
+            Equal(before + 1, Volatile.Read(ref requests));
+            using (var headless = await ApplicationUpdater.RunAsync(profile, null, null, true, quiet, NoUpdatePrompt)) Equal("current", headless.Status);
+            Equal(0, quietCallbacks);
+            using (var repeated = await Relay()) Equal(relayed.ManualRequestId, repeated.ManualRequestId);
+            dismiss.TrySetResult(); await Wait(() => Volatile.Read(ref ownerStatus) == "waiting-for-exit"); True(!owner.IsCompleted && !application.HasExited);
+
+            // A failed manual check leaves the owner available for a fresh retry after its error dialog is dismissed.
+            shown = new(TaskCreationOptions.RunContinuationsAsynchronously); dismiss = new(TaskCreationOptions.RunContinuationsAsynchronously); Volatile.Write(ref mode, 2);
+            using var failedRelay = await Relay();
+            var error = await shown.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            Equal("error", error.Status); Equal(failedRelay.ManualRequestId, error.ManualRequestId);
+            True(error.Message is not null && !error.Message.Contains("fixture response details", StringComparison.Ordinal));
+            using (var coalesced = await Relay()) Equal(failedRelay.ManualRequestId, coalesced.ManualRequestId);
+            dismiss.TrySetResult(); await Wait(() => Volatile.Read(ref ownerStatus) == "waiting-for-exit"); True(!owner.IsCompleted);
+            shown = new(TaskCreationOptions.RunContinuationsAsynchronously); dismiss = new(TaskCreationOptions.RunContinuationsAsynchronously); Volatile.Write(ref mode, 0);
+            using var retry = await Relay();
+            var retried = await shown.Task.WaitAsync(TimeSpan.FromSeconds(15)); Equal("current", retried.Status); Equal(retry.ManualRequestId, retried.ManualRequestId);
+            True(retry.ManualRequestId != failedRelay.ManualRequestId); dismiss.TrySetResult(); await Wait(() => Volatile.Read(ref ownerStatus) == "waiting-for-exit");
+            Volatile.Write(ref mode, 1);
+            using var available = await Relay(); await Wait(() => Volatile.Read(ref updatePrompts) == 1 && Volatile.Read(ref ownerStatus) == "waiting-for-exit");
+            True(feedback.Any(x => x.Status == "available" && x.ManualRequestId == available.ManualRequestId));
+            ownerCancellation.Cancel(); await Throws<OperationCanceledException>(async () => { using var ignored = await owner; }); owner = null;
+
+            // A request already queued while ownership initializes must not be discarded as an initial timestamp.
+            using (var initializing = new FileStream(Path.Combine(stateDirectory, "lifecycle.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+            { using var pending = await Relay(); True(pending.ManualRequestId is not null); }
+            Volatile.Write(ref mode, 0); feedback.Clear();
+            queuedCancellation = new CancellationTokenSource();
+            owner = ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, Settings(), NoUpdatePrompt, queuedCancellation.Token);
+            await Wait(() => feedback.Any(x => x.Status == "current")); True(!owner.IsCompleted);
+            queuedCancellation.Cancel(); await Throws<OperationCanceledException>(async () => { using var ignored = await owner; }); owner = null;
+            await ApplicationUpdater.CompleteHandoffAsync(Path.Combine(stateDirectory, "state.json")); // Reset only the isolated fixture's earlier Postpone choice.
+            File.WriteAllText(Path.Combine(run, "exit.flag"), "owned fixture release"); await application.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            feedback.Clear();
+            using (var automatic = await ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, Settings(), NoUpdatePrompt)) { Equal("current", automatic.Status); True(!automatic.ManualCheck); }
+            True(feedback.IsEmpty);
+
+            // A newer manual request arriving during a busy automatic HTTP check must get its own visible check before the owner exits.
+            entered = new(TaskCreationOptions.RunContinuationsAsynchronously); release = new(TaskCreationOptions.RunContinuationsAsynchronously); Volatile.Write(ref blockNext, 1);
+            var busy = ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, Settings(), NoUpdatePrompt);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            using var busyRelay = await Relay(); release.TrySetResult();
+            using var busyResult = await busy.WaitAsync(TimeSpan.FromSeconds(15));
+            Equal("current", busyResult.Status); True(busyResult.ManualCheck); Equal(busyRelay.ManualRequestId, busyResult.ManualRequestId);
+            True(feedback.Any(x => x.Status == "checking" && x.ManualRequestId == busyRelay.ManualRequestId));
+            // A manual request arriving while an automatic update prompt is open survives its Postpone result.
+            feedback.Clear(); Volatile.Write(ref mode, 1);
+            var automaticPrompt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var closeAutomaticPrompt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var busyPrompt = ApplicationUpdater.RunAsync(profile, application.Id, ticks, false, Settings(), async (_, token) =>
+            { automaticPrompt.TrySetResult(); await closeAutomaticPrompt.Task.WaitAsync(token); return ApplicationUpdateChoice.Postpone; });
+            await automaticPrompt.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            using var promptRelay = await Relay(); Volatile.Write(ref mode, 0); closeAutomaticPrompt.TrySetResult();
+            using (var promptResult = await busyPrompt.WaitAsync(TimeSpan.FromSeconds(15)))
+            { Equal("current", promptResult.Status); True(promptResult.ManualCheck); Equal(promptRelay.ManualRequestId, promptResult.ManualRequestId); }
+            feedback.Clear(); Volatile.Write(ref mode, 2);
+            await Throws<HttpRequestException>(async () => { using var ignored = await ApplicationUpdater.RunAsync(profile, null, null, true, Settings(), NoUpdatePrompt); });
+            Equal("checking,error", string.Join(',', feedback.Select(x => x.Status)));
+            await Throws<HttpRequestException>(async () => { using var ignored = await ApplicationUpdater.RunAsync(profile, null, null, true,
+                Settings((status, _) => status.Status == "error" ? throw new InvalidOperationException("fixture feedback failure") : Task.CompletedTask), NoUpdatePrompt); });
+        }
+        finally
+        {
+            release.TrySetResult(); dismiss.TrySetResult(); ownerCancellation.Cancel(); queuedCancellation?.Cancel();
+            try { if (owner is not null) try { using var ignored = await owner.WaitAsync(TimeSpan.FromSeconds(10)); } catch (OperationCanceledException) { } }
+            finally
+            {
+                queuedCancellation?.Dispose();
+                if (!application.HasExited) { File.WriteAllText(Path.Combine(run, "exit.flag"), "owned fixture cleanup"); await application.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10)); }
             }
         }
     }

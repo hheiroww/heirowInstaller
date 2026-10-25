@@ -11,8 +11,18 @@ internal static class ApplicationCommands
     internal static async Task<int> RunAsync(string command, UpdaterProgram.Arguments args, CancellationToken token)
     {
         if (command is "repair" or "uninstall") return await MaintainAsync(command, args, token);
-        var configurationPath = Path.GetFullPath(args.Require("config"));
-        var configuration = ApplicationUpdater.ReadConfiguration(configurationPath, args.Has("allow-loopback"), requireEntryPoint: command is not ("after-exit" or "stop"));
+        string configurationPath;
+        UpdateCompanionConfiguration configuration;
+        try
+        {
+            configurationPath = Path.GetFullPath(args.Require("config"));
+            configuration = ApplicationUpdater.ReadConfiguration(configurationPath, args.Has("allow-loopback"), requireEntryPoint: command is not ("after-exit" or "stop"));
+        }
+        catch (Exception error) when (error is not OperationCanceledException && command == "check-for-updates" && !args.Has("no-prompt"))
+        {
+            await NativeManualUpdateFeedback.ShowStartupFailureAsync(token);
+            throw;
+        }
         if (command == "stop")
         {
             var found = EventWaitHandle.TryOpenExisting(UpdateCompanionControl.GetStopEventName(configuration.InstallDirectory), out var signal);
@@ -49,21 +59,26 @@ internal static class ApplicationCommands
         }
         int? pid = args.Get("application-pid") is { } pidText ? int.Parse(pidText, System.Globalization.CultureInfo.InvariantCulture) : null;
         long? ticks = args.Get("application-start") is { } ticksText ? long.Parse(ticksText, System.Globalization.CultureInfo.InvariantCulture) : null;
+        await using var manualFeedback = new NativeManualUpdateFeedback(configuration, configurationPath);
         var options = new ApplicationLifecycleOptions { AllowLoopback = args.Has("allow-loopback"), NoPrompt = args.Has("no-prompt"),
             ApplicationHost = args.Get("application-host"), StatusPath = Acceptance("status-file", "HEIROWUPDATER_TEST_STATUS_FILE"), DownloadDirectory = args.Get("download-directory"),
+            StatusChanged = manualFeedback.ObserveStatus, ManualStatusChangedAsync = manualFeedback.StatusChangedAsync,
             RunningApplicationsPrompt = (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, configuration, configurationPath, cancellation),
             AuthenticateAsync = async (profile, cancellation) =>
             {
+                await manualFeedback.SuspendAsync();
                 if (!await NativeUpdatePrompt.SignInAsync(profile, configurationPath, cancellation)) return null;
                 using var approval = await PublisherSignInClient.BeginAsync(new Uri(profile.CredentialOrigin), cancellation, profile.Isolated, profile.AuthApplication!);
                 Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
                 using var session = await approval.CompleteAsync(cancellation);
+                await manualFeedback.ResumeCheckingAsync(cancellation);
                 return session.AccessToken;
             } };
         try
         {
             using var result = await ApplicationUpdater.RunAsync(configurationPath, pid, ticks, command == "check-for-updates", options,
                 (context, cancellation) => NativeUpdatePrompt.ShowAsync(context, PromptChoice(), capture, promptReport, cancellation, configurationPath), token);
+            if (result.Status == "manual-requested") NativeManualUpdateFeedback.TryActivateExisting(configuration, result.ManualRequestId);
             if (result.Handoff is not null)
             {
                 using var helper = Process.Start(result.Handoff) ?? throw new InvalidOperationException("Windows did not start the trusted application update helper.");
@@ -94,7 +109,11 @@ internal static class ApplicationCommands
         {
             if (options.StatusPath is { } statusPath)
                 await UpdaterSchedule.WriteJsonAsync(statusPath, new { status = "error", productId = configuration.ProductId, error = error.Message }, CancellationToken.None);
-            if (!options.NoPrompt && !configuration.Isolated) await NativeUpdatePrompt.ShowFailureAsync(configuration, configurationPath, error, token);
+            if (!options.NoPrompt && !manualFeedback.HasShownError)
+            {
+                if (manualFeedback.WindowFailed) await NativeManualUpdateFeedback.ShowStartupFailureAsync(token, configuration);
+                else if (!configuration.Isolated) await NativeUpdatePrompt.ShowFailureAsync(configuration, configurationPath, error, token);
+            }
             throw;
         }
     }

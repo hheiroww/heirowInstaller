@@ -222,7 +222,7 @@ sealed class Probe : IAsyncDisposable
                 catch (Exception ex) when (ex is IOException or JsonException) { return false; }
                 using (identity)
                 {
-                    // Identity validation stays outside the retry catch: InvalidDataException is itself an IOException.
+                    // Identity validation stays outside the transient read/parse retry catch.
                     if (identity.RootElement.GetProperty("processId").GetInt32() != process.Id ||
                         identity.RootElement.GetProperty("startTimeUtcTicks").GetInt64() != probe.StartTicks ||
                         !string.Equals(identity.RootElement.GetProperty("executablePath").GetString(), probe.Executable, StringComparison.OrdinalIgnoreCase))
