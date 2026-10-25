@@ -42,8 +42,16 @@ public sealed class SecurityLoaderManifest
         }
         var operations = new HashSet<string>(StringComparer.Ordinal);
         foreach (var operation in result.Operations)
+        {
             if (!Identifier(operation.Id) || !operations.Add(operation.Id) || !ids.Contains(operation.ComponentId))
                 throw new InvalidDataException("A protected operation has an invalid or duplicate identity or component.");
+            var remote = result.Components.Single(c => c.Id == operation.ComponentId).ExecutionMode == "remote";
+            if (remote && (operation.ArgumentsSchema is null || operation.ResultSchema is null))
+                throw new InvalidDataException("Remote operations must declare argument and result schemas.");
+            foreach (var schema in new[] { operation.ArgumentsSchema, operation.ResultSchema })
+                if (schema is { } value && (value.ValueKind != JsonValueKind.Object || System.Text.Encoding.UTF8.GetByteCount(value.GetRawText()) > 8192))
+                    throw new InvalidDataException("Operation schemas must be bounded JSON objects.");
+        }
         var publicPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in result.PublicPayload)
         {
@@ -86,4 +94,6 @@ public sealed class SecurityLoaderOperation
 {
     public string Id { get; set; } = "";
     public string ComponentId { get; set; } = "";
+    public JsonElement? ArgumentsSchema { get; set; }
+    public JsonElement? ResultSchema { get; set; }
 }
