@@ -67,8 +67,7 @@ public sealed class InstallerEngine
             var trustedKey = options.TrustedPublisherKeySha256 ?? previous?.PublisherKeySha256;
             if (trustedKey == null) throw new CryptographicException("Protected components require the registered publisher key pin from a trusted installation or --trust-key.");
             package.VerifySignature(trustedKey, requireSignature: true);
-            if (!protectedDelivery.TryGetProperty("publisherKeySha256", out var declaredKey) || !PackageSafety.HashEquals(declaredKey.GetString() ?? "", trustedKey))
-                throw new CryptographicException("Protected delivery metadata must match the trusted installer publisher.");
+            SecurityLoaderInstallerModule.ValidatePublisherTrust(protectedDelivery, trustedKey);
         }
         if (previous?.PublisherKeySha256 is { } pinnedKey && !PackageSafety.HashEquals(pinnedKey, package.PublisherKeySha256 ?? ""))
             throw new CryptographicException("This update does not match the installed product's pinned publisher key.");
