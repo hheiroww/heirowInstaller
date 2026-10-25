@@ -14,7 +14,7 @@ internal static class TrustedPublishingChecks
         {
             formatVersion = 1, hostedSigning = true,
             components = new[] { new { id = "worker", sourcePath = "private/worker.dll", executionMode = "remote", entryType = "Private.Worker", runtime = "net10.0", dependencies = Array.Empty<string>() } },
-            operations = new[] { new { id = "calculate", componentId = "worker" } },
+            operations = new[] { new { id = "calculate", componentId = "worker", argumentsSchema = new { type = "object" }, resultSchema = new { type = "object" } } },
             publicPayload = new[] { "bootstrap.dll" }, bootstrapPath = "bootstrap.dll", bootstrapSha256 = new string('a', 64)
         });
         var payload = new Dictionary<string, string> { ["private/worker.dll"] = new string('b', 64), ["bootstrap.dll"] = new string('a', 64) };
@@ -23,7 +23,9 @@ internal static class TrustedPublishingChecks
         {
             descriptor.GetRawText().Replace("\"publicPayload\":[\"bootstrap.dll\"]", "\"publicPayload\":[\"private/worker.dll\"]", StringComparison.Ordinal),
             descriptor.GetRawText().Replace("\"sourcePath\":\"private/worker.dll\"", "\"sourcePath\":\"../private/worker.dll\"", StringComparison.Ordinal),
-            descriptor.GetRawText().Replace("\"formatVersion\":1", "\"formatVersion\":1,\"credential\":\"never-allowed\"", StringComparison.Ordinal)
+            descriptor.GetRawText().Replace("\"formatVersion\":1", "\"formatVersion\":1,\"credential\":\"never-allowed\"", StringComparison.Ordinal),
+            descriptor.GetRawText().Replace("\"argumentsSchema\":{\"type\":\"object\"}", "\"argumentsSchema\":null", StringComparison.Ordinal),
+            descriptor.GetRawText().Replace("\"resultSchema\":{\"type\":\"object\"}", "\"resultSchema\":[]", StringComparison.Ordinal)
         })
         {
             try { using var json = JsonDocument.Parse(invalidDescriptor); SecurityLoaderManifest.Validate(json.RootElement, payload); throw new Exception("Unsafe descriptor accepted."); }
