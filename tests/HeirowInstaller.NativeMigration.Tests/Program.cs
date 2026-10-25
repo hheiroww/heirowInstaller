@@ -16,9 +16,9 @@ if (args is ["--probe-msi-context", var reviewedCode])
 
 if (args is ["--probe-boot"])
 {
-    var identity = await new WindowsNativeMigrationBackend().BootIdentityAsync(CancellationToken.None);
-    if (!long.TryParse(identity, out var ticks) || ticks <= 0) throw new InvalidDataException("The read-only Windows boot probe did not return UTC ticks.");
-    Console.WriteLine("PASS read-only Windows boot identity uses normalized UTC ticks."); return 0;
+    if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("The read-only boot probe requires Windows.");
+    try { await RepeatedLiveBootIdentity(); Console.WriteLine("PASS read-only Windows boot identity is stable across three same-process queries and uses normalized UTC ticks."); return 0; }
+    catch (Exception failure) { Console.Error.WriteLine(failure); return 1; }
 }
 
 var tests = new (string Name, Func<Task> Run)[]
@@ -30,6 +30,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("recorded machine Burn retires without deleting installer registrations manually", () => Success("burn", "machine")),
     ("one immutable native target accepts two separately signed published baselines", MultipleBaselines),
     ("Burn child ownership must agree with bundle removal and boot identity ignores timezone formatting", BurnChildrenAndBoot),
+    ("real Windows boot identity stays stable across three same-process queries", RepeatedLiveBootIdentity),
     ("wrong signed baseline, backend, publisher, scope and root reject before mutation", RejectBindings),
     ("unknown legacy installations are never discovered or adopted", UnknownInstallation),
     ("default discovery follows one recorded scope, rejects ambiguity and fresh isolation never inspects a real backend", DiscoveryAndIsolation),
@@ -274,6 +275,30 @@ static async Task UnknownOriginalDirectory()
         True(fixture.Backend.Observations == 0 && fixture.Backend.Uninstalls == 0 && fixture.Backend.Restores == 0);
         True(before.SequenceEqual(StateInventory()), "A rejected fallback must leave the exact receipt/cache inventory unchanged.");
         True(!Directory.Exists(Path.Combine(fixture.StateRoot, ".transactions")) && !Directory.Exists(Path.Combine(fixture.StateRoot, ".native-migrations")));
+    }
+}
+static async Task RepeatedLiveBootIdentity()
+{
+    if (!OperatingSystem.IsWindows()) { Console.WriteLine("SKIP live Windows boot query on this platform."); return; }
+    var backend = new WindowsNativeMigrationBackend();
+    string? first = null;
+    for (var index = 0; index < 3; index++)
+    {
+        try
+        {
+            var identity = await backend.BootIdentityAsync(CancellationToken.None);
+            if (!long.TryParse(identity, out var ticks) || ticks <= 0)
+                throw new InvalidDataException("The Windows boot query did not return normalized UTC ticks.");
+            if (first is not null && identity != first)
+                throw new InvalidDataException("The Windows boot identity changed between same-process queries.");
+            first = identity;
+        }
+        catch (Exception failure)
+        {
+            var cause = failure.GetBaseException();
+            // Only type, HRESULT and stack are diagnostic output; never print OS identity or arbitrary COM error data.
+            throw new InvalidOperationException($"Read-only Windows boot query {index + 1} failed: {cause.GetType().FullName}, HRESULT 0x{cause.HResult:X8}.{Environment.NewLine}{cause.StackTrace}");
+        }
     }
 }
 static async Task Restart(int code)

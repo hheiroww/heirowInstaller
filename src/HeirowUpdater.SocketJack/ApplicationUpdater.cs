@@ -214,7 +214,9 @@ public static class ApplicationUpdater
             using var sourceProcess = Process.GetCurrentProcess();
             sourcePid = applicationPid ?? sourceProcess.Id; sourceStart = applicationStart ?? sourceProcess.StartTime.ToUniversalTime().Ticks; sourceSequence = 1;
         }
-        var snapshot = options.SessionSnapshot ?? new ApplicationSessionSnapshot(cookie, bearer, supplied ? capturedAt : 0, snapshotId!, sourcePid, sourceStart, sourceSequence);
+        // Unknown startup state must sort before the application's first real
+        // capture; only supplied snapshots own a positive source sequence.
+        var snapshot = options.SessionSnapshot ?? new ApplicationSessionSnapshot(cookie, bearer, supplied ? capturedAt : 0, snapshotId!, sourcePid, sourceStart, supplied ? sourceSequence : 0);
         var sessions = new ApplicationSessionStore(snapshot);
         var trustedImage = ResolveExecutable(configuration);
         var installedHost = System.Environment.ProcessPath is { } currentImage && Path.GetFullPath(currentImage).Equals(trustedImage, StringComparison.OrdinalIgnoreCase);

@@ -1,6 +1,32 @@
 using System.Text.Json;
 using SocketJack;
 
+if (args.Length == 2 && args[0] == "--first-session-root")
+{
+    var root = Guard(args[1]);
+    if (!HeirowUpdaterBootstrap.StartAfterExit(appRoot: root)) return 6;
+    var deadline = DateTime.UtcNow.AddSeconds(40);
+    while (!File.Exists(Path.Combine(root, "capture.flag")) && !File.Exists(Path.Combine(root, "exit.flag")) && DateTime.UtcNow < deadline) await Task.Delay(20);
+    if (File.Exists(Path.Combine(root, "exit.flag"))) return 0;
+    if (!File.Exists(Path.Combine(root, "capture.flag"))) return 7;
+    // This fresh process has made no earlier capture. Exercise the actual BCL
+    // helper once, after its credential-free watcher is already waiting.
+    var first = HeirowUpdaterBootstrap.CaptureSession(bearerToken: "fixture-first-bootstrap-native");
+    var metadata = new System.Diagnostics.ProcessStartInfo("fixture-never-executed"); first.Apply(metadata);
+    var receipt = Path.Combine(root, "capture.json");
+    File.WriteAllText(receipt + ".tmp", JsonSerializer.Serialize(new
+    {
+        sequence = long.Parse(metadata.Environment["HEIROWUPDATER_SESSION_SEQUENCE"]!),
+        sourcePid = int.Parse(metadata.Environment["HEIROWUPDATER_SESSION_SOURCE_PID"]!),
+        sourceStart = long.Parse(metadata.Environment["HEIROWUPDATER_SESSION_SOURCE_START"]!),
+        capturedAt = long.Parse(metadata.Environment["HEIROWUPDATER_SESSION_CAPTURED_AT"]!),
+        snapshotId = metadata.Environment["HEIROWUPDATER_SESSION_ID"],
+        fixtureBearerApplied = metadata.Environment["HEIROWUPDATER_TOKEN"] == "fixture-first-bootstrap-native"
+    }));
+    File.Move(receipt + ".tmp", receipt);
+    while (!File.Exists(Path.Combine(root, "exit.flag")) && DateTime.UtcNow < deadline) await Task.Delay(20);
+    return File.Exists(Path.Combine(root, "exit.flag")) ? 0 : 9;
+}
 if (args.Length == 2 && args[0] == "--capture-root")
 {
     var root = Guard(args[1]);

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
@@ -202,10 +203,13 @@ internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
         try
         {
             locator = Activator.CreateInstance(Type.GetTypeFromProgID("WbemScripting.SWbemLocator", throwOnError: true)!);
-            service = ((dynamic)locator!).ConnectServer(".", @"root\cimv2");
+            const BindingFlags invoke = BindingFlags.InvokeMethod | BindingFlags.OptionalParamBinding;
+            service = locator!.GetType().InvokeMember("ConnectServer", invoke, null, locator, [".", @"root\cimv2"]);
             // Win32_OperatingSystem is a singleton; direct Get avoids forward-only COM enumeration differences between CLRs.
-            operatingSystem = ((dynamic)service).Get("Win32_OperatingSystem=@");
-            string value = ((dynamic)operatingSystem).LastBootUpTime;
+            // Avoid cached dynamic COM bindings that can outlive a final-released WMI object between queries.
+            operatingSystem = service!.GetType().InvokeMember("Get", invoke, null, service, ["Win32_OperatingSystem=@"]);
+            var value = operatingSystem!.GetType().InvokeMember("LastBootUpTime", BindingFlags.GetProperty, null, operatingSystem, null) as string
+                ?? throw new InvalidDataException("Windows did not provide a usable boot identity.");
             return NormalizeBootIdentity(value);
         }
         finally
