@@ -152,6 +152,22 @@ static async Task LifecycleAsync(string root, Action<bool, string> check)
         var descriptor = System.Text.Json.Nodes.JsonNode.Parse(Descriptor(componentDigest).GetRawText())!.AsObject(); change(descriptor);
         return JsonSerializer.SerializeToElement(descriptor);
     }
+    manifest.Modules["SocketJackSecurityLoader"] = Change(d => d["preparationOnly"] = true);
+    var preparationPackage = Build("signed-preparation-only.hinst");
+    try { using var package = PackageReader.Open(preparationPackage); await engine.InstallAsync(package, options); throw new Exception("Preparation package was installed as the canonical app."); }
+    catch (InvalidDataException error) when (error.Message.Contains("Preparation-only", StringComparison.Ordinal))
+    {
+        check(InstallerEngine.ListInstalled(options.StateRoot).Count == 0 && File.ReadAllBytes(installedCiphertext).SequenceEqual(previousFile), "An actual trusted signed preparation-only package cannot install files or create a canonical application receipt");
+    }
+    foreach (var malformed in new[] { "null", "1", "\"true\"" })
+    {
+        var descriptor = Change(d => d["preparationOnly"] = true).GetRawText().Replace("\"preparationOnly\":true", "\"preparationOnly\":" + malformed, StringComparison.Ordinal);
+        using var parsed = JsonDocument.Parse(descriptor);
+        RejectDescriptor("malformed-preparation-" + malformed.Length, parsed.RootElement.Clone(), "A non-boolean preparationOnly flag cannot bypass the installation guard");
+    }
+    manifest.Modules["SocketJackSecurityLoader"] = Change(d => d["preparationOnly"] = false);
+    using (var package = PackageReader.Open(Build("explicit-installable-release.hinst")))
+        check(engine.Plan(package, options).Operations.Any(x => x.Contains("encrypted SecurityLoader", StringComparison.Ordinal)), "An explicitly false preparationOnly flag allows the ordinary trusted full application delivery");
     RejectDescriptor("wrong-outer-pin", Descriptor(componentDigest, outerPin: childPin), "A child cannot self-delegate by putting its own key in outerPublisherPin");
     RejectDescriptor("malformed-outer-pin", Descriptor(componentDigest, outerPin: "not-a-key-pin"), "Malformed outer delegation fingerprints are rejected");
     RejectDescriptor("missing-component-version", Change(d => d.Remove("componentVersion")), "A delegated release without an explicit componentVersion is rejected");

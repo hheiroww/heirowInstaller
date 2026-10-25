@@ -20,6 +20,8 @@ Place the declarative descriptor under `Modules.SocketJackSecurityLoader` in the
 
 An unsigned protected input is accepted by the CLI only when this descriptor explicitly requests `hostedSigning: true`; the service must independently authorize the registered hosted signer for that product. This input is not an installable trusted release. The private service seals protected content and signs the final package; clients install only the validated signed result. Omitted/false hosted signing retains ordinary signature requirements. Do not upload application-private sources to this public repository.
 
+Set `preparationOnly: true` for a small component-sealing package that is not the complete application installer. Publishing accepts this boolean flag and the private builder preserves it. The installer rejects preparation-only packages, even with a valid trusted signature, before writing files or creating an application receipt. A non-boolean value is invalid. Embed the resulting sealed assets in the complete native application package, remove the preparation-only flag from its final descriptor, and sign that complete package through the existing trusted outer publisher; do not install the small preparation package as the canonical application.
+
 The C# and VB startup templates in `templates/bootstrap/SocketJackSecurityLoaderStartup.*` take the installed private bootstrap's asynchronous entrypoint as a delegate. Invoke and await them before enabling protected functionality. Initialization failures propagate; do not continue into protected features or add a plaintext DLL fallback. These templates carry no authentication or protected runtime implementation.
 
 ## Trusted outer installer delegation

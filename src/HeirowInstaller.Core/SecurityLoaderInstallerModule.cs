@@ -46,6 +46,11 @@ public sealed class SecurityLoaderInstallerModule : IInstallerModule
     static (string Publisher, string Version) ValidateHeader(JsonElement configuration)
     {
         NoDuplicateFields(configuration);
+        if (configuration.ValueKind == JsonValueKind.Object && configuration.TryGetProperty("preparationOnly", out var preparation))
+        {
+            if (preparation.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new InvalidDataException("The preparationOnly flag must be a boolean.");
+            if (preparation.ValueKind == JsonValueKind.True) throw new InvalidDataException("Preparation-only packages are sealing artifacts and are not installable applications.");
+        }
         if (configuration.ValueKind != JsonValueKind.Object || !configuration.TryGetProperty("formatVersion", out var format) || format.ValueKind != JsonValueKind.Number || !format.TryGetInt32(out var number) || number != 1
             || !configuration.TryGetProperty("components", out var components) || components.ValueKind != JsonValueKind.Array || components.GetArrayLength() is < 1 or > 128
             || !Text(configuration, "publisherKeySha256", out var publisher) || !Hash(publisher)
