@@ -13,9 +13,11 @@ internal static class Program
     {
         if (args.Length < 2 || args[0] != "--run-directory" || !Path.IsPathFullyQualified(args[1])) return 2;
         var keepOpen = false;
+        var nonactivating = false;
         string? module = null;
         for (var i = 2; i < args.Length; i++)
             if (args[i] == "--keep-open" && !keepOpen) keepOpen = true;
+            else if (args[i] == "--nonactivating" && !nonactivating) nonactivating = true;
             else if (args[i] == "--module" && module is null && ++i < args.Length) module = args[i];
             else return 2;
         var directory = Path.GetFullPath(args[1]);
@@ -37,7 +39,8 @@ internal static class Program
             moduleHandle = NativeLibrary.Load(module);
         }
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-        using var form = new Form { Text = "Desktop acceptance app", Width = 460, Height = 190, StartPosition = FormStartPosition.CenterScreen };
+        using var form = new ProbeForm(nonactivating) { Text = "Desktop acceptance app", Width = 460, Height = 190, StartPosition = nonactivating ? FormStartPosition.Manual : FormStartPosition.CenterScreen };
+        if (nonactivating) form.Location = new System.Drawing.Point(-20000, -20000);
         var label = new Label { Dock = DockStyle.Fill, Padding = new Padding(22), Text = keepOpen ? "This isolated app keeps its save dialog open until the test allows it to close." : "This isolated app accepts a normal close request.", AutoSize = false };
         form.Controls.Add(label);
         var requests = 0;
@@ -65,5 +68,14 @@ internal static class Program
         if (moduleHandle != IntPtr.Zero) NativeLibrary.Free(moduleHandle);
         Report("exited.json", new { processId = Environment.ProcessId, requests, at = DateTimeOffset.UtcNow });
         return 0;
+    }
+
+    private sealed class ProbeForm(bool nonactivating) : Form
+    {
+        protected override bool ShowWithoutActivation => nonactivating;
+        protected override CreateParams CreateParams
+        {
+            get { var parameters = base.CreateParams; if (nonactivating) parameters.ExStyle |= 0x08000000; return parameters; }
+        }
     }
 }

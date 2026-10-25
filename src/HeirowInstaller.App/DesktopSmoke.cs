@@ -49,6 +49,8 @@ internal static class DesktopSmoke
             var package = Path.Combine(directory, "desktop-fixture.hinst");
             await Task.Delay(500);
             await game.CaptureAsync(Path.Combine(directory, "01-welcome.png"));
+            if (Environment.GetEnvironmentVariable("HEIROWINSTALLER_SMOKE_MALFORMED_UPDATER_PROFILE") == "1")
+                Require(string.IsNullOrEmpty(game.MainScene.Controller.UpdaterPath), "Malformed own-root updater metadata disabled shared updater actions without selecting a fallback executable");
             var navigationFrames = new List<InstallerGame.NavigationFrame>();
             foreach (var fixedTimeStep in new[] { true, false })
             {
@@ -237,6 +239,7 @@ internal static class DesktopSmoke
             await File.WriteAllTextAsync(Path.Combine(run, ".running-application-probe"), "heirowInstaller running-application acceptance\n");
             var start = new ProcessStartInfo(Path.Combine(install, "application", "RunningApplicationProbe.exe")) { UseShellExecute = false, WorkingDirectory = install };
             start.ArgumentList.Add("--run-directory"); start.ArgumentList.Add(run);
+            start.ArgumentList.Add("--nonactivating");
             if (keepOpen) start.ArgumentList.Add("--keep-open");
             start.Environment.Remove("HEIROWUPDATER_TOKEN"); start.Environment.Remove("HEIROWUPDATER_COOKIE");
             start.Environment.Remove("SOCKETJACK_DOWNLOAD_TOKEN"); start.Environment.Remove("SOCKETJACK_DOWNLOAD_COOKIE");

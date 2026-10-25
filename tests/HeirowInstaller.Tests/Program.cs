@@ -22,7 +22,7 @@ if (args.FirstOrDefault() == "uninstall")
 var suite = new AcceptanceSuite();
 return await suite.RunAsync(args is ["--filter", var filter] ? filter : null);
 
-internal sealed class AcceptanceSuite
+internal sealed partial class AcceptanceSuite
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "heirowInstaller-tests-" + Guid.NewGuid().ToString("N"));
     private int passed;
@@ -56,6 +56,16 @@ internal sealed class AcceptanceSuite
             ,("maintenance politely stops only the app-local updater before replacing or removing its files", CompanionMaintenance)
             ,("exact backend registrations route Windows Settings maintenance and reject stale staged updates", BackendRegistrations)
             ,("manual update feedback correlates direct, relayed, busy, coalesced and failed checks while automatic and headless checks stay quiet", ManualUpdateFeedback)
+            ,("shared updater files are verified, reused across apps, scoped and removed only by their owning references", SharedUpdaterRuntimes)
+            ,("current application session snapshots replace stale credentials without leaking across origins or persisted state", SessionSnapshots)
+            ,("the bounded in-memory session relay mutually verifies peers and rejects stale, malformed and wrong-bound requests", SessionRelay)
+            ,("new native sessions supersede rejected requests and obsolete browser approval without postponing or canceling active work", SessionAuthorizationTransitions)
+            ,("both bootstrap languages launch the verified shared runtime with a pre-queued session capture and no inherited bearer", SharedBootstrapLanguages)
+            ,("an exact updater dependency waits for one PID and never other apps sharing its image", ExactUpdaterDependencies)
+            ,("the shared native updater applies signed file data and rejects wrong root, digest, base and tampering before mutation", NativeIncrementalHandoff)
+            ,("shared GUI maintenance pooling strips application overlays and reuses only verified immutable prefixes", SharedMaintenanceHosts)
+            ,("actual native watcher processes receive the current app cookie and explicit sign-out without a browser or credential persistence", NativeSessionRelay)
+            ,("generic CLI, check-all, apply and handoff enforce the installed signed file-update policy before any full-installer download", GenericFileUpdatePolicy)
         };
         if (filter is not null)
         {
@@ -397,7 +407,7 @@ internal sealed class AcceptanceSuite
         await using var destination = new LoopbackServer((NetworkRequest request) =>
         {
             receivedCredentials.Add(request.Headers.ContainsKey("Cookie") || request.Headers.ContainsKey("Authorization"));
-            return request.Path switch
+            return request.Path.Split('?', 2)[0] switch
             {
                 "/setup.hinst" => new(200, packageBytes),
                 "/oversized" => new(200, new byte[131073]),
@@ -410,7 +420,7 @@ internal sealed class AcceptanceSuite
         await using var source = new LoopbackServer((NetworkRequest request) =>
         {
             sourceCredentials.Add(request.Headers.ContainsKey("Cookie") && request.Headers.ContainsKey("Authorization"));
-            return request.Path == "/feed" ? new(302, [], new() { ["Location"] = "/cross" }) : new(307, [], new() { ["Location"] = destination.Origin + "feed" });
+            return request.Path.Split('?', 2)[0] == "/feed" ? new(302, [], new() { ["Location"] = "/cross" }) : new(307, [], new() { ["Location"] = destination.Origin + "feed" });
         });
         using var updater = new SocketJackUpdater(true, new Uri(source.Origin), "FixtureCookie=local-only", "local-fixture");
         var target = new UpdaterTarget { ProductId = feed.ProductId, Name = "SocketJack updater fixture", CurrentVersion = "1",
@@ -704,7 +714,7 @@ internal sealed class AcceptanceSuite
         var manifest = Manifest("test.app-companion", "1"); manifest.EntryPoint = "application.exe";
         manifest.UpdateUrl = "https://updates.example.invalid/application.json";
         manifest.Features = [new() { Id = "updates", Default = false }];
-        manifest.UpdateCompanion = new() { TokenEnvironmentVariable = "FIXTURE_UPDATE_TOKEN", AuthApplication = "example" };
+        manifest.UpdateCompanion = new() { RuntimeMode = "app-local", TokenEnvironmentVariable = "FIXTURE_UPDATE_TOKEN", AuthApplication = "example" };
         manifest.AffectedResources = [new() { Path = "{app}\\owned-plugin.vst3", Feature = "updates" }];
         manifest.Payload = [new() { Path = "application.exe" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
         var files = new Dictionary<string, string> { ["application.exe"] = "non-executed application fixture", ["heirowUpdater.exe"] = "non-executed updater fixture" };
@@ -725,6 +735,7 @@ internal sealed class AcceptanceSuite
         Equal("application.exe", config.EntryPoint); Equal("after-exit", config.Mode); True(config.Isolated);
         Equal("FIXTURE_UPDATE_TOKEN", config.TokenEnvironmentVariable); True(config.Features.Contains("updates"));
         Equal("example", config.AuthApplication);
+        True(UpdaterTarget.FromInstalled(InstallerEngine.ListInstalled(options.StateRoot).Single(), options.StateRoot).UpdateMode is null);
         Equal(Path.Combine(target, "owned-plugin.vst3"), config.AffectedResourceFiles.Single());
         config.AffectedResourceFiles = [Path.Combine(area, "unrelated.dll")];
         File.WriteAllText(configurationPath, JsonSerializer.Serialize(config, InstallerJson.Options));
@@ -763,7 +774,7 @@ internal sealed class AcceptanceSuite
         await Throws<InvalidDataException>(() => { PackageSafety.ValidateManifest(invalidConfiguration, true); return Task.CompletedTask; });
         await Throws<InvalidDataException>(() => { StandaloneRuntimeInspector.RequireEmbeddedRuntime(FindUpdaterCli()); return Task.CompletedTask; });
         var legacy = Manifest("test.legacy-companion", "1"); legacy.EntryPoint = "App/application.exe";
-        legacy.Features = [new() { Id = "updates", Default = false }]; legacy.UpdateCompanion = new(); legacy.UpdateUrl = manifest.UpdateUrl;
+        legacy.Features = [new() { Id = "updates", Default = false }]; legacy.UpdateCompanion = new() { RuntimeMode = "app-local" }; legacy.UpdateUrl = manifest.UpdateUrl;
         legacy.LegacyMsi = new() { PayloadPath = "fixture.msi", ProductCode = "{8F2FE249-C8CC-405B-A10B-FA9B789D334B}" };
         legacy.Payload = [new() { Path = "fixture.msi" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
         var legacyPath = Build(area, "legacy", legacy, new() { ["fixture.msi"] = "non-executed MSI fixture", ["heirowUpdater.exe"] = "non-executed updater" }, key);
@@ -782,7 +793,7 @@ internal sealed class AcceptanceSuite
         using var rsa = RSA.Create(2048); var key = Path.Combine(area, "publisher.pem"); File.WriteAllText(key, rsa.ExportPkcs8PrivateKeyPem());
         var manifest = Manifest("test.companion-maintenance", "1"); manifest.EntryPoint = "application.exe";
         manifest.UpdateUrl = "https://updates.example.invalid/feed.json"; manifest.Features = [new() { Id = "updates", Default = false }];
-        manifest.UpdateCompanion = new(); manifest.Payload = [new() { Path = "application.exe" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
+        manifest.UpdateCompanion = new() { RuntimeMode = "app-local" }; manifest.Payload = [new() { Path = "application.exe" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
         var path = Build(area, "fixture", manifest, new() { ["application.exe"] = "non-executed app", ["heirowUpdater.exe"] = "non-executed updater" }, key);
         using var package = PackageReader.Open(path); var options = Options(area, target); options.Features = ["updates"];
         var engine = new InstallerEngine(); await engine.InstallAsync(package, options);
@@ -860,7 +871,7 @@ internal sealed class AcceptanceSuite
             var backendArguments = new List<string> { "--report=" + report, "--fixture-arp-key=" + registration, "--fixture-target={InstallDir}" };
             if (burn) backendArguments.Add("--fixture-burn-upgrade=" + upgrade);
             var manifest = Manifest(productId, "1"); manifest.EntryPoint = "application.exe"; manifest.UpdateUrl = "https://updates.example.invalid/feed.json";
-            manifest.Features = [new() { Id = "updates", Default = false }]; manifest.UpdateCompanion = new();
+            manifest.Features = [new() { Id = "updates", Default = false }]; manifest.UpdateCompanion = new() { RuntimeMode = "app-local" };
             manifest.Payload = Directory.EnumerateFiles(source).Select(file => new PayloadFile { Source = Path.GetFileName(file), Path = Path.GetFileName(file), Feature = Path.GetFileName(file) == "heirowUpdater.exe" ? "updates" : null }).ToList();
             manifest.LegacyExecutable = new() { PayloadPath = "LegacyArgumentProbe.exe", InstallArguments = backendArguments, RepairArguments = backendArguments,
                 UninstallArguments = [.. backendArguments, "--fixture-uninstall"], InstallDirectoryArgument = "--fixture-override={InstallDir}" };
@@ -957,7 +968,7 @@ internal sealed class AcceptanceSuite
         using var key = RSA.Create(2048); var keyPath = Path.Combine(area, "fixture-signing.pem"); File.WriteAllText(keyPath, key.ExportPkcs8PrivateKeyPem());
         var manifest = Manifest(feed.ProductId, "1"); manifest.EntryPoint = "ManualCheckApplicationProbe.exe";
         manifest.UpdateUrl = server.Origin + "feed.json"; manifest.Features = [new() { Id = "updates", Default = true }];
-        manifest.UpdateCompanion = new() { CredentialOrigin = server.Origin };
+        manifest.UpdateCompanion = new() { RuntimeMode = "app-local", CredentialOrigin = server.Origin };
         manifest.Payload = Directory.EnumerateFiles(source).Select(path => new PayloadFile
         { Path = Path.GetFileName(path), Feature = Path.GetFileName(path) == "heirowUpdater.exe" ? "updates" : null }).ToList();
         var manifestPath = Path.Combine(area, "manifest.json"); File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
@@ -1168,7 +1179,7 @@ internal sealed class AcceptanceSuite
         var manifestPath = Path.Combine(area, name + ".json"); File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
         var output = Path.Combine(area, name + ".hinst"); PackageBuilder.Build(manifestPath, source, output, new() { SigningKeyPath = signingKey }); return output;
     }
-    private static void True(bool condition) { if (!condition) throw new Exception("Assertion failed."); }
+    private static void True(bool condition, string? message = null) { if (!condition) throw new Exception("Assertion failed." + (message is null ? "" : " " + message)); }
     private static void Equal<T>(T expected, T actual) { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new Exception($"Expected {expected}, got {actual}."); }
     private static async Task Throws<T>(Func<Task> action) where T : Exception
     { try { await action(); } catch (T) { return; } throw new Exception("Expected exception " + typeof(T).Name); }

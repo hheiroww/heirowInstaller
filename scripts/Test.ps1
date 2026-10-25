@@ -3,7 +3,7 @@
 param([ValidateSet('Debug','Release')][string]$Configuration = 'Release', [string]$PackageCache)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
-foreach ($project in @('tests/HeirowInstaller.Tests/HeirowInstaller.Tests.csproj','tests/HeirowInstaller.Publishing.Tests/HeirowInstaller.Publishing.Tests.csproj')) {
+foreach ($project in @('tests/HeirowInstaller.Tests/HeirowInstaller.Tests.csproj','tests/HeirowInstaller.Incremental.Tests/HeirowInstaller.Incremental.Tests.csproj','tests/HeirowInstaller.Publishing.Tests/HeirowInstaller.Publishing.Tests.csproj')) {
     $arguments = @('run','--project',(Join-Path $projectRoot $project),'-c',$Configuration)
     if ($PackageCache) { $arguments += "-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
     & dotnet @arguments

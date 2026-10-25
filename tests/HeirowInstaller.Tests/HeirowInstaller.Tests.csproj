@@ -12,5 +12,7 @@
     <ProjectReference Include="Fixtures/LegacyArgumentProbe/LegacyArgumentProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="Fixtures/RawMsiUpdateProbe/RawMsiUpdateProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="Fixtures/ManualCheckApplicationProbe/ManualCheckApplicationProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="Fixtures/BootstrapCSharpProbe/BootstrapCSharpProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="Fixtures/BootstrapVisualBasicProbe/BootstrapVisualBasicProbe.vbproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

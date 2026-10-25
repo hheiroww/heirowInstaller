@@ -7,6 +7,45 @@ namespace HeirowInstaller.Core;
 /// <summary>Requests that an application's own updater stop before installer maintenance.</summary>
 public static class UpdateCompanionControl
 {
+    public static async Task<bool> StopAsync(UpdateCompanionConfiguration configuration, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!OperatingSystem.IsWindows()) return false;
+        EventWaitHandle? signal = null;
+        var directory = SharedUpdaterRuntime.ApplicationStateDirectory(configuration);
+        var timeout = Stopwatch.StartNew();
+        try
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (signal is null) EventWaitHandle.TryOpenExisting(GetStopEventName(configuration.InstallDirectory), out signal);
+                signal?.Set();
+                try
+                {
+                    var paths = new List<string> { Path.Combine(directory, "lifecycle.lock") };
+                    var observers = Path.Combine(directory, "observers");
+                    PackageSafety.EnsureNoReparsePoints(observers);
+                    if (Directory.Exists(observers)) paths.AddRange(Directory.EnumerateFiles(observers, "*.lock", SearchOption.TopDirectoryOnly));
+                    foreach (var path in paths)
+                    {
+                        PackageSafety.EnsureNoReparsePoints(path);
+                        if (File.Exists(path)) using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+                    }
+                    if (configuration.SharedRuntime is null)
+                    {
+                        var legacy = PackageSafety.UnderRoot(configuration.InstallDirectory, "heirowUpdater.exe");
+                        if (File.Exists(legacy)) using (new FileStream(legacy, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+                    }
+                    return signal is not null; // Other apps may still execute the same immutable shared runtime.
+                }
+                catch (IOException) when (timeout.Elapsed < TimeSpan.FromSeconds(10)) { await Task.Delay(100, cancellationToken); }
+                catch (IOException error) { throw new IOException("This application's updater did not stop in time. Close its update window and retry.", error); }
+            }
+        }
+        finally { signal?.Dispose(); }
+    }
+
     public static string GetStopEventName(string installDirectory)
     {
         var root = Path.GetFullPath(installDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);

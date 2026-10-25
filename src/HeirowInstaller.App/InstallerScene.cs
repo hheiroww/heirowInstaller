@@ -23,7 +23,8 @@ internal sealed partial class InstallerScene : Scene
     private int activityPage;
     private bool confirmUninstall;
     private bool showLicense;
-    private const int RailWidth = 222;
+    private bool showWizardDetails;
+    private int RailWidth => Controller.IsWizard ? 248 : 222;
     private int Width => game.GraphicsDevice.Viewport.Width;
     private int Height => game.GraphicsDevice.Viewport.Height;
     private int Left => RailWidth + 34;
@@ -37,12 +38,13 @@ internal sealed partial class InstallerScene : Scene
         EnableDesignTimeControls = false;
         isCursorVisible = false;
         Controller = new AppController(game, arguments);
-        confirmUninstall = arguments.MaintenanceOperation == "uninstall" && !arguments.MaintenanceConfirmed;
+        confirmUninstall = !Controller.IsMaintenanceWizard && arguments.MaintenanceOperation == "uninstall" && !arguments.MaintenanceConfirmed;
         Controller.Changed += () => dirty = true;
         ViewportResized += (_, _) => dirty = true;
     }
 
     internal SceneElement Control(string id) => controls.TryGetValue(id, out var control) ? control : throw new InvalidOperationException($"Control '{id}' is not visible.");
+    internal bool HasControl(string id) => controls.ContainsKey(id);
     internal Task OpenPackageAsync(string path) => Controller.OpenPackageAsync(path);
 
     internal void RefreshLayoutIfNeeded()
@@ -67,20 +69,24 @@ internal sealed partial class InstallerScene : Scene
         root = new RectangleElement(this) { Position = Vector2.Zero, Size = new Vector2(Width, Height), BackgroundColor = Theme.Background, Padding = new Thickness(0) };
         try
         {
-            BuildRail();
-            BuildHeader();
-            switch (Controller.Page)
+            if (Controller.IsWizard) { BuildWizardRail(); BuildWizardHeader(); if (Controller.IsMaintenanceWizard) BuildMaintenanceWizard(); else BuildInstall(); }
+            else
             {
-                case DesktopPage.Install: BuildInstall(); break;
-                case DesktopPage.Installed: BuildInstalled(); break;
-                case DesktopPage.Workspace: BuildWorkspace(); break;
-                case DesktopPage.Updates: BuildUpdates(); break;
-                case DesktopPage.Activity: BuildActivity(); break;
-                case DesktopPage.Settings: BuildSettings(); break;
+                BuildRail(); BuildHeader();
+                switch (Controller.Page)
+                {
+                    case DesktopPage.Install: BuildInstall(); break;
+                    case DesktopPage.Installed: BuildInstalled(); break;
+                    case DesktopPage.Workspace: BuildWorkspace(); break;
+                    case DesktopPage.Updates: BuildUpdates(); break;
+                    case DesktopPage.Activity: BuildActivity(); break;
+                    case DesktopPage.Settings: BuildSettings(); break;
+                }
             }
             BuildStatus();
             if (confirmUninstall) BuildUninstallConfirmation();
             if (showLicense) BuildLicense();
+            if (showWizardDetails) BuildWizardDetails();
             if (Controller.RunningApplicationsDialog is not null) BuildRunningApplicationsDialog();
             AddElement(root);
             previousRoot?.Dispose();
@@ -147,8 +153,8 @@ internal sealed partial class InstallerScene : Scene
 
     private void Logo(float x, float y, int size)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "heirowInstaller.png");
-        if (File.Exists(path))
+        var path = Controller.IsWizard ? Controller.WizardArtworkPath : Path.Combine(AppContext.BaseDirectory, "Assets", "heirowInstaller.png");
+        if (path is not null && File.Exists(path))
         {
             var image = Add(new ImageElement(this) { Position = new(x, y), Size = new(size, size), isMouseBypassEnabled = true });
             image.Load(path);
@@ -156,7 +162,9 @@ internal sealed partial class InstallerScene : Scene
         else
         {
             Box(x, y, size, size, Theme.GreenSurface, 10, Color.Transparent);
-            Text("h", x + size * 0.22f, y + size * 0.01f, size, size, size * 0.5f, Theme.Lime, true);
+            var letter = Controller.Manifest?.Name.FirstOrDefault(char.IsLetterOrDigit) ?? '\0';
+            var initial = Controller.IsWizard ? letter == '\0' ? "↓" : letter.ToString().ToUpperInvariant() : "h";
+            Text(initial, x + size * 0.22f, y + size * 0.01f, size, size, size * 0.5f, Theme.Lime, true);
         }
     }
 

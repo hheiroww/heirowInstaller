@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using HeirowInstaller.Core;
 
@@ -31,37 +30,11 @@ internal static class DesktopElevatedUpdate
         // The signed suffix never authorizes execution of a downloaded EXE prefix.
         // The current trusted host rechecks this identity, digest and publisher pin
         // before it plans or applies any change with administrator access.
-        var start = CreateStartInfo(download, feed, product, options);
-        using var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the administrator update.");
-        // A native MSI/EXE transaction must finish before the parent refreshes.
-        // Cancellation is observed after the child exits; it never kills an installer.
-        await child.WaitForExitAsync(CancellationToken.None);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (child.ExitCode == 1602) throw new OperationCanceledException("The update was canceled. The installed application is unchanged.");
-        if (child.ExitCode is not (0 or 3010)) throw new InvalidOperationException($"The administrator update returned exit code {child.ExitCode}.");
-        return new() { ProductId = product.Id, Version = feed.Version, InstallDirectory = product.InstallDirectory, RebootRequired = child.ExitCode == 3010 };
-    }
-
-    internal static ProcessStartInfo CreateStartInfo(string download, UpdateFeed feed, InstalledProduct product, InstallOptions options)
-    {
-        var host = Environment.ProcessPath ?? throw new InvalidOperationException("The trusted desktop installer host is unavailable.");
-        var start = new ProcessStartInfo(host) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(host)! };
-        void Value(string key, string value) { start.ArgumentList.Add(key); start.ArgumentList.Add(value); }
-        start.ArgumentList.Add("--close-on-complete");
-        Value("--install", Path.GetFullPath(download));
-        Value("--expected-product-id", product.Id);
-        Value("--expected-version", feed.Version);
-        Value("--expected-sha256", feed.Sha256);
-        Value("--scope", product.Scope);
-        if (!product.UseOriginalInstallDirectory) Value("--target", product.InstallDirectory);
-        if (options.StateRoot is not null) Value("--state-root", options.StateRoot);
-        Value("--features", string.Join(',', product.Features));
-        if (product.PublisherKeySha256 is { } key) Value("--trust-key", key);
-        start.ArgumentList.Add("--require-signature");
-        if (!options.RegisterProduct) start.ArgumentList.Add("--no-register");
-        if (options.Isolated) start.ArgumentList.Add("--isolated");
-        if (options.LogPath is not null) Value("--log", options.LogPath);
-        foreach (var value in options.LegacyArguments) Value("--backend-arg", value);
-        return start;
+        options.Launch = false;
+        options.Silent = true;
+        var plan = new InstallerEngine().Plan(package, options);
+        return await ElevatedInstallWorker.InstallAsync(download, plan, options,
+            options.RunningApplicationsPrompt ?? ((request, _) => Task.FromException<RunningApplicationsChoice>(new RunningApplicationsException(request.Applications))),
+            progress, null, cancellationToken);
     }
 }

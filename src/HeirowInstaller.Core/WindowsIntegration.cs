@@ -11,7 +11,7 @@ namespace HeirowInstaller.Core;
 internal static class WindowsIntegration
 {
     public static async Task<List<ModuleSnapshot>> ApplyModulesAsync(PackageManifest manifest, InstallPlan plan,
-        InstallTransaction transaction, InstallOptions options, CancellationToken token)
+        InstallTransaction transaction, InstallOptions options, CancellationToken token, InstalledProduct? product = null)
     {
         var snapshots = new List<ModuleSnapshot>();
         if (options.Isolated) return snapshots;
@@ -70,9 +70,12 @@ internal static class WindowsIntegration
             if (plan.UpdateCompanionEnabled && definition.Target.Equals(manifest.EntryPoint, StringComparison.OrdinalIgnoreCase))
             {
                 var companion = manifest.UpdateCompanion!;
-                target = PackageSafety.UnderRoot(plan.InstallDirectory, companion.ExecutablePath);
+                target = companion.RuntimeMode == "shared"
+                    ? SharedUpdaterRuntime.Resolve(InstallerEngine.ReadBoundCompanionConfiguration(
+                        product ?? throw new InvalidDataException("Shared updater shortcuts require the validated installation identity."), manifest))
+                    : PackageSafety.UnderRoot(plan.InstallDirectory, companion.ExecutablePath);
                 var configuration = PackageSafety.UnderRoot(plan.InstallDirectory, companion.ConfigurationPath);
-                if (!File.Exists(target) || !File.Exists(configuration)) throw new FileNotFoundException("The selected app-local updater is not installed.");
+                if (!File.Exists(target) || !File.Exists(configuration)) throw new FileNotFoundException("The selected application updater is not installed.");
                 arguments = "launch --config " + Quote(configuration) + " --" + (arguments.Length > 0 ? " " + arguments : "");
             }
             var snapshot = new ModuleSnapshot { Kind = "shortcut", Key = path, Values = new() { ["data"] = File.Exists(path) ? Convert.ToBase64String(File.ReadAllBytes(path)) : null } };

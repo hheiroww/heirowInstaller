@@ -177,7 +177,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         if (choice is not null && choice != "close") throw new ArgumentException("Manual feedback acceptance choice must be close.");
         RecordFixtureEvent(Fixture("HEIROWUPDATER_TEST_MANUAL_EVENTS"), "child-start", first);
         if (Fixture("HEIROWUPDATER_TEST_MANUAL_FAIL_CHILD") == "1") throw new InvalidDataException("Isolated feedback child initialization failure.");
-        using var stop = new ApplicationStopMonitor(configuration.InstallDirectory, resetForOwner: false, token);
+        using var stop = new ApplicationStopMonitor(configuration, resetForOwner: false, token);
         FeedbackState Current()
         {
             try

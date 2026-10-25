@@ -18,6 +18,8 @@ heirowInstaller — modular Windows installation and publishing
   compile <source.wxs|project.wixproj> --output <package.msi|module.msm|patch.msp|bundle.exe>
     [--wix <wix.exe>] [--msbuild <MSBuild.exe>] [--extension <id-or-dll>] [--compiler-arg <argument>]
   inspect <package.hinst|setup.exe>
+  build-update <new-signed-package> --base <old-signed-package> --output <update.hupd> --sign-key <pem>
+  inspect-update|verify-update <update.hupd> [--trust-key <sha256>]
   verify <package> [--trust-key <public-key-sha256>] [--require-signature]
   extract <package> --output <directory>
   plan|install <package> [--target <directory>] [--features core,tools] [--scope user|machine]
@@ -95,6 +97,18 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                 }
                 case "inspect":
                     using (var package = PackageReader.Open(Subject())) Print(new { manifest = package.Manifest, signed = package.Signature is not null, publisherKeySha256 = package.PublisherKeySha256 }); break;
+                case "build-update":
+                    Print(await IncrementalUpdateBuilder.BuildAsync(parsed.Require("base"), Subject(), parsed.Require("output"),
+                        new() { SigningKeyPath = parsed.Require("sign-key") }, cancellation.Token)); break;
+                case "inspect-update":
+                case "verify-update":
+                    using (var update = IncrementalUpdateReader.Open(Subject()))
+                    {
+                        update.VerifySignature(options.TrustedPublisherKeySha256);
+                        await update.VerifyAsync(progress, cancellation.Token);
+                        Print(new { valid = true, transition = update.Transition, publisherKeySha256 = update.PublisherKeySha256 });
+                    }
+                    break;
                 case "verify":
                     using (var package = PackageReader.Open(Subject()))
                     {
@@ -136,7 +150,10 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                     var product = InstallerEngine.ListInstalled(options.StateRoot).SingleOrDefault(x => x.Id.Equals(id, StringComparison.OrdinalIgnoreCase))
                                   ?? throw new InvalidOperationException("Product is not installed: " + id);
                     var feed = parsed.Get("feed") ?? product.UpdateUrl ?? throw new InvalidOperationException("Installed product has no update feed.");
-                    using var client = new UpdateClient(parsed.Has("allow-loopback"), transport: UpdateTransport(parsed));
+                    using var installedPackage = PackageReader.Open(product.PackagePath);
+                    installedPackage.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
+                    using var client = new UpdateClient(parsed.Has("allow-loopback"), transport: UpdateTransport(parsed),
+                        requireIncrementalUpdates: installedPackage.Manifest.UpdateCompanion?.UpdateMode == "files");
                     var check = await client.CheckAsync(feed, product.Version, product.Id, cancellation.Token);
                     if (command == "check-update" || !check.Available) { Print(check); break; }
                     var download = await client.DownloadAsync(check.Feed, parsed.Get("download-directory") ?? Path.Combine(Path.GetTempPath(), "heirowInstaller", "updates"), progress, cancellation.Token);
@@ -246,7 +263,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         public Arguments(string[] args)
         {
             var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base"], StringComparer.OrdinalIgnoreCase);
             var repeated = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) { ["compiler-arg"] = CompilerArguments, ["extension"] = Extensions,
                 ["define"] = Defines, ["source-file"] = SourceFiles, ["bind-path"] = BindPaths, ["include"] = IncludeDirectories, ["localization"] = LocalizationFiles };
             for (var i = 0; i < args.Length; i++)

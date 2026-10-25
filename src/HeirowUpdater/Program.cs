@@ -6,7 +6,7 @@ using HeirowUpdater.SocketJack;
 
 return await UpdaterProgram.RunAsync(args);
 
-internal static class UpdaterProgram
+internal static partial class UpdaterProgram
 {
     private const string Help = """
 heirowUpdater — application updates over the SocketJack network library
@@ -50,6 +50,8 @@ Credentials remain in environment variables and are sent only to their exact con
             if (command == "show-manual-feedback") return await NativeManualUpdateFeedback.RunChildAsync(parsed, cancellation.Token);
             if (command == "show-startup-error") return await NativeManualUpdateFeedback.RunStartupErrorAsync(parsed, cancellation.Token);
             if (command == "apply-bundle") { helperStatusPath = parsed.Get("status-file"); helperLifecycleStatePath = parsed.Get("lifecycle-state"); return await ApplyBundleAsync(parsed, cancellation.Token); }
+            if (command == "apply-incremental") return await ApplyIncrementalAsync(parsed, cancellation.Token,
+                (status, state) => { helperStatusPath = status; helperLifecycleStatePath = state; });
             if (command is "launch" or "after-exit" or "check-for-updates" or "repair" or "uninstall" or "stop")
                 return await ApplicationCommands.RunAsync(command, parsed, cancellation.Token);
             var configuration = parsed.Get("config") is { } configPath
@@ -224,7 +226,7 @@ Credentials remain in environment variables and are sent only to their exact con
         var lifecycle = args.Get("lifecycle-config") is { } lifecyclePath
             ? ApplicationUpdater.ReadConfiguration(lifecyclePath, args.Has("allow-loopback")) : null;
         using var lifecycleCancellation = lifecycle is not null
-            ? new ApplicationStopMonitor(lifecycle.InstallDirectory, resetForOwner: false, token) : null;
+            ? new ApplicationStopMonitor(lifecycle, resetForOwner: false, token) : null;
         if (lifecycleCancellation is not null) token = lifecycleCancellation.Token;
         if (lifecycle is not null)
         {
@@ -235,7 +237,7 @@ Credentials remain in environment variables and are sent only to their exact con
             if (args.Get("lifecycle-ready") is { } readyPath)
                 await UpdaterSchedule.WriteJsonAsync(readyPath, new { status = "ready", helperProcessId = System.Environment.ProcessId }, CancellationToken.None);
         }
-        string? waitingDependency = null;
+        RunningApplication? waitingDependency = null;
         if (args.Get("wait-pid") is { } waiting)
         {
             var pid = int.Parse(waiting, System.Globalization.CultureInfo.InvariantCulture);
@@ -247,15 +249,16 @@ Credentials remain in environment variables and are sent only to their exact con
                 if (previous.StartTime.ToUniversalTime().Ticks == ticks)
                 {
                     var image = previous.MainModule?.FileName ?? throw new InvalidOperationException("The handoff process cannot be inspected. Close it and try updating again.");
+                    var dependency = new RunningApplication(pid, ticks, Path.GetFullPath(image), "Previous application updater", Path.GetFullPath(image), "manual", false);
                     var trustedUpdater = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The trusted updater image is missing.");
                     if (TrustedUpdaterImagesMatch(image, trustedUpdater))
                     {
                         using var ownerWait = CancellationTokenSource.CreateLinkedTokenSource(token);
                         ownerWait.CancelAfter(TimeSpan.FromSeconds(3));
                         try { await previous.WaitForExitAsync(ownerWait.Token); }
-                        catch (OperationCanceledException) when (!token.IsCancellationRequested) { waitingDependency = Path.GetFullPath(image); }
+                        catch (OperationCanceledException) when (!token.IsCancellationRequested) { waitingDependency = dependency; }
                     }
-                    else waitingDependency = Path.GetFullPath(image);
+                    else waitingDependency = dependency;
                 }
             }
             catch (ArgumentException) { }
@@ -287,7 +290,8 @@ Credentials remain in environment variables and are sent only to their exact con
                     StateRoot = args.Get("state-root"), Scope = args.Get("scope"), Features = prior?.Features,
                     TrustedPublisherKeySha256 = key, RequireSignature = key is not null || !args.Has("allow-unsigned"), Isolated = args.Has("isolated") }), "update");
             target = target.WithWaitOnlyExecutables((lifecycle is null ? [] : ApplicationHostRegistry.Paths(lifecycle))
-                .Concat(extraHost is null ? [] : new[] { extraHost }).Concat(waitingDependency is null ? [] : new[] { waitingDependency }));
+                .Concat(extraHost is null ? [] : new[] { extraHost }))
+                .WithWaitOnlyProcesses(waitingDependency is null ? [] : new[] { waitingDependency });
             await RunningApplications.EnsureClosedAsync(target, runningPrompt, token);
         }
         if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256")))
@@ -334,7 +338,7 @@ Credentials remain in environment variables and are sent only to their exact con
         public Arguments(string[] args)
         {
             var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report", "file-size", "base-version", "base-manifest-sha256", "target-manifest-sha256"], StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--") { ApplicationArguments.AddRange(args.Skip(i + 1)); break; }

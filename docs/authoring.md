@@ -61,9 +61,9 @@ dotnet tool install wix --tool-path .\tools\wix5 --version 5.0.2 --allow-roll-fo
 
 Do not commit signing keys, package caches, generated installers, or local compiler output. The builder rejects its explicitly supplied private signing-key path when source collection would include it. It does not guess which unrelated application data files are secrets.
 
-## Optional updater at the application root
+## Optional shared updater
 
-The optional companion is part of the application's own payload. A selected signed package generates `heirowUpdater.json` containing its verified product/version, absolute root and state directory, relative app entry point, selected features, publisher-key pin, and feed URL. Credential settings contain environment-variable names or a registered auth application ID; they contain no tokens or cookies.
+The signed installer carries the optional companion, then provisions it once in its scope's shared runtime directory. A selected package generates a small `heirowUpdater.json` at the application root containing its verified identity, absolute root/state directory, relative entry point, features, publisher pin, feed and shared runtime content binding. Credential settings contain environment-variable names or a registered auth application ID; they contain no tokens or cookies.
 
 ```json
 {
@@ -78,7 +78,9 @@ The optional companion is part of the application's own payload. A selected sign
     "feature": "updates",
     "executablePath": "heirowUpdater.exe",
     "configurationPath": "heirowUpdater.json",
-    "mode": "after-exit"
+    "mode": "after-exit",
+    "runtimeMode": "shared",
+    "updateMode": "files"
   },
   "payload": []
 }
@@ -92,7 +94,7 @@ heirowInstaller.Cli.exe build installer.json --source .\publish `
 
 `--updater` injects the published self-contained companion and assigns it to the optional feature. `--updater-default` selects it by default while preserving the user's ability to deselect it. Existing declared payloads must assign the updater executable to the same feature. Generated configuration is owned transactionally: repair regenerates it, feature removal/uninstall removes it, and an original pre-existing file is restored.
 
-Native-package main-application shortcuts and explicit post-install launch use `heirowUpdater.exe launch --config <app-root-config>`. The companion starts with the app and waits for its actual processes to exit before checking. Runtime prompts offer Update now or Postpone; the lifecycle SDK also supports direct integration for apps started outside those shortcuts. The installed application and updater use their own root; no global heirowInstaller CLI is required. Before maintenance changes the companion files, the engine signals its per-application stop event and waits for its executable lock to clear. This stops the watcher without terminating the application.
+Native-package main-application shortcuts and explicit post-install launch resolve the shared executable and pass `launch --config <app-root-config>`. The companion starts with the app and waits for its actual processes to exit before checking. Runtime prompts offer Update now or Postpone; the bootstrap also covers direct app launches. No global authoring tool is required. Before maintenance, the engine signals that application's stop event and waits for its own observer lease, preserving other applications using the same runtime. New builders select shared mode by default and file mode for native payloads; format 2 makes these semantics explicit. Opaque MSI/EXE backends must retain `updateMode: "legacy"` until their ownership is migrated.
 
 For MSI/EXE adapters, original application files and MSI features remain owned by their original installer. The outer updater feature must not be passed as a fabricated MSI `ADDLOCAL` feature. Author the exact install directory/property, or resolve an existing MSI's reported install location; an unknown backend destination is rejected before an updater can be copied. The relative entry point may name an application installed inside `App/` by that original backend.
 

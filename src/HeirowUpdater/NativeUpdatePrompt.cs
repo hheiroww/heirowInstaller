@@ -67,6 +67,9 @@ internal static class NativeUpdatePrompt
         var directory = ApplicationUpdater.StateDirectory(request.Context.Application);
         var requestPath = Path.Combine(directory, "prompt-" + Guid.NewGuid().ToString("N") + ".json");
         var resultPath = requestPath + ".result.json";
+        request.CancelEvent = PromptCancellationEvent(requestPath);
+        using var cancel = new EventWaitHandle(false, EventResetMode.ManualReset, request.CancelEvent);
+        using var cancelRegistration = token.Register(() => cancel.Set());
         try
         {
             await UpdaterSchedule.WriteJsonAsync(requestPath, request, token);
@@ -83,7 +86,13 @@ internal static class NativeUpdatePrompt
             start.ArgumentList.Add("--prompt-request"); start.ArgumentList.Add(requestPath);
             using var child = Process.Start(start) ?? throw new InvalidOperationException("The native update prompt did not start.");
             var output = child.StandardOutput.ReadToEndAsync(); var error = child.StandardError.ReadToEndAsync();
-            await child.WaitForExitAsync(token);
+            try { await child.WaitForExitAsync(token); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                cancel.Set();
+                try { await child.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)); } catch (TimeoutException) { }
+                throw;
+            }
             _ = await output;
             var errorText = await error;
             token.ThrowIfCancellationRequested();
@@ -117,7 +126,14 @@ internal static class NativeUpdatePrompt
             throw new InvalidDataException("Maintenance requests can only display the installed application's close-apps prompt.");
         if (!configuration.Isolated && (request.AcceptanceChoice is not null || request.CapturePath is not null || request.ReportPath is not null))
             throw new InvalidDataException("Automated native prompt controls require an isolated installation.");
-        using var maintenance = new ApplicationStopMonitor(configuration.InstallDirectory, resetForOwner: false, token);
+        if (request.CancelEvent != PromptCancellationEvent(requestPath) || !EventWaitHandle.TryOpenExisting(request.CancelEvent, out var promptCancel))
+            throw new InvalidDataException("The native prompt cancellation identity is invalid.");
+        using var promptSignal = promptCancel;
+        using var maintenance = new ApplicationStopMonitor(configuration, resetForOwner: false, token);
+        using var promptCancellation = CancellationTokenSource.CreateLinkedTokenSource(maintenance.Token);
+        var cancellationRegistration = ThreadPool.RegisterWaitForSingleObject(promptSignal, (_, _) =>
+        { try { promptCancellation.Cancel(); } catch (ObjectDisposedException) { } }, null, Timeout.Infinite, true);
+        using var cancellationCleanup = new RegisteredWaitCleanup(cancellationRegistration);
         var context = request.Context with { Application = configuration };
         PromptResult result;
         if (request.RunningApplications is { } running)
@@ -125,9 +141,9 @@ internal static class NativeUpdatePrompt
             if (!running.ProductId.Equals(configuration.ProductId, StringComparison.OrdinalIgnoreCase) || running.Applications.Count == 0)
                 throw new InvalidDataException("The close-apps request does not match this installed application.");
             result = new() { RunningChoice = await RunRunningApplicationsInProcessAsync(running with { ProductName = configuration.Name },
-                request.AcceptanceChoice, request.CapturePath, request.ReportPath, maintenance.Token) };
+                request.AcceptanceChoice, request.CapturePath, request.ReportPath, promptCancellation.Token) };
         }
-        else result = new() { Choice = await RunInProcessAsync(context, request.AcceptanceChoice, request.CapturePath, request.ReportPath, maintenance.Token, request.Authentication, request.Failure) };
+        else result = new() { Choice = await RunInProcessAsync(context, request.AcceptanceChoice, request.CapturePath, request.ReportPath, promptCancellation.Token, request.Authentication, request.Failure) };
         await UpdaterSchedule.WriteJsonAsync(requestPath + ".result.json", result, CancellationToken.None);
         return 0;
     }
@@ -200,7 +216,12 @@ internal static class NativeUpdatePrompt
         public string? ReportPath { get; set; }
         public bool Authentication { get; set; }
         public bool Failure { get; set; }
+        public string? CancelEvent { get; set; }
     }
+    private static string PromptCancellationEvent(string requestPath) => @"Local\heirowUpdater.prompt.cancel." +
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(requestPath).ToUpperInvariant()))).ToLowerInvariant();
+    private sealed class RegisteredWaitCleanup(RegisteredWaitHandle registration) : IDisposable
+    { public void Dispose() => registration.Unregister(null); }
     private sealed class PromptResult
     {
         public ApplicationUpdateChoice Choice { get; set; } = ApplicationUpdateChoice.Postpone;

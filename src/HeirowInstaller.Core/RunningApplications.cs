@@ -33,6 +33,7 @@ public sealed class RunningApplicationTarget
     public string? ExecutablePath { get; }
     public IReadOnlyList<string> AffectedResourceFiles { get; }
     public IReadOnlyList<string> WaitOnlyExecutables { get; } = [];
+    public IReadOnlyList<RunningApplication> WaitOnlyProcesses { get; private init; } = [];
     internal IReadOnlySet<string> ExcludedExecutables { get; }
 
     private RunningApplicationTarget(string id, string name, string operation, string directory, string entryPoint,
@@ -77,11 +78,26 @@ public sealed class RunningApplicationTarget
         InstallDirectory = source.InstallDirectory; ExecutablePath = source.ExecutablePath;
         AffectedResourceFiles = source.AffectedResourceFiles; ExcludedExecutables = source.ExcludedExecutables;
         WaitOnlyExecutables = waitOnly;
+        WaitOnlyProcesses = source.WaitOnlyProcesses;
     }
 
     /// <summary>Registered host paths can require manual closure, but never authorize sending a close request.</summary>
     public RunningApplicationTarget WithWaitOnlyExecutables(IEnumerable<string> executables) =>
         new(this, WaitOnlyExecutables.Concat(executables).Select(ValidateResourceFile).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+
+    /// <summary>A dependency on one exact process never grants closure authority to it or other users of its executable.</summary>
+    public RunningApplicationTarget WithWaitOnlyProcesses(IEnumerable<RunningApplication> processes)
+    {
+        var identities = WaitOnlyProcesses.Concat(processes).Select(identity =>
+        {
+            if (identity.ProcessId <= 0 || identity.StartTimeUtcTicks <= 0 || !Path.IsPathFullyQualified(identity.ExecutablePath))
+                throw new InvalidDataException("A wait-only dependency requires an exact process identity.");
+            var image = Path.GetFullPath(identity.ExecutablePath); PackageSafety.EnsureNoReparsePoints(image);
+            return identity with { ExecutablePath = image, Kind = "manual", CanRequestClose = false };
+        }).DistinctBy(x => (x.ProcessId, x.StartTimeUtcTicks)).ToArray();
+        if (identities.Length > 16) throw new InvalidDataException("Too many explicit updater process dependencies.");
+        return new(this, WaitOnlyExecutables) { WaitOnlyProcesses = identities };
+    }
 
     /// <summary>Only fixed Windows folders and the authored application root can be substituted.</summary>
     public static string ResolveResourceFile(string value, string installDirectory)
@@ -254,6 +270,21 @@ public static class RunningApplications
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { }
             catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException) { found.Add(Manual(candidate)); }
+        }
+        foreach (var dependency in target.WaitOnlyProcesses)
+        {
+            token.ThrowIfCancellationRequested();
+            if (dependency.ProcessId == Environment.ProcessId || found.Any(x => x.ProcessId == dependency.ProcessId)) continue;
+            try
+            {
+                using var process = Process.GetProcessById(dependency.ProcessId);
+                if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != dependency.StartTimeUtcTicks) continue;
+                if (process.MainModule?.FileName is { } image && Path.GetFullPath(image).Equals(dependency.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+                    found.Add(dependency with { CanRequestClose = false, Kind = "manual" });
+            }
+            catch (Exception error) when (error is ArgumentException or InvalidOperationException) { }
+            catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
+            { found.Add(dependency with { CanRequestClose = false, Kind = "manual" }); }
         }
         return found.OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.ProcessId).ToArray();
     }

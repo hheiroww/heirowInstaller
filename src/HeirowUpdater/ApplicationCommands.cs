@@ -46,7 +46,7 @@ internal static class ApplicationCommands
             var start = new ProcessStartInfo(PackageSafety.UnderRoot(root, configuration.EntryPoint)) { UseShellExecute = false, WorkingDirectory = root };
             foreach (var argument in args.ApplicationArguments) start.ArgumentList.Add(argument);
             using var application = Process.Start(start) ?? throw new InvalidOperationException("The application did not start.");
-            var watcher = new ProcessStartInfo(Path.Combine(root, "heirowUpdater.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };
+            var watcher = new ProcessStartInfo(ApplicationUpdater.ResolveExecutable(configuration)) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };
             watcher.ArgumentList.Add("after-exit");
             void Value(string name, string value) { watcher.ArgumentList.Add(name); watcher.ArgumentList.Add(value); }
             Value("--config", configurationPath); Value("--application-pid", application.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));

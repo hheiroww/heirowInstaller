@@ -16,6 +16,8 @@ public sealed class ApplicationLifecycleOptions
     public string? DownloadDirectory { get; set; }
     public string? ApplicationHost { get; set; }
     public Func<UpdateCompanionConfiguration, CancellationToken, Task<string?>>? AuthenticateAsync { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ApplicationSessionSnapshot? SessionSnapshot { get; set; }
     public Action<ApplicationLifecycleResult>? StatusChanged { get; set; }
     /// <summary>Visible feedback for an explicit check, including a check relayed to an existing watcher. Checking feedback must return promptly.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -47,24 +49,29 @@ public sealed class ApplicationLifecycleResult : IDisposable
 /// <summary>Optional app-local updates. Background checks begin only after every instance of the app exits.</summary>
 public static class ApplicationUpdater
 {
-    public static bool StartAfterExit(string configurationPath, string? bearerToken = null, string? sessionCookie = null) => StartCompanion(configurationPath, "after-exit", bearerToken, sessionCookie);
-    public static bool CheckForUpdates(string configurationPath, string? bearerToken = null, string? sessionCookie = null) => StartCompanion(configurationPath, "check-for-updates", bearerToken, sessionCookie);
+    public static bool StartAfterExit(string configurationPath, string? bearerToken = null, string? sessionCookie = null, bool replaceCredentials = false) => StartCompanion(configurationPath, "after-exit", bearerToken, sessionCookie, replaceCredentials);
+    public static bool CheckForUpdates(string configurationPath, string? bearerToken = null, string? sessionCookie = null, bool replaceCredentials = false) => StartCompanion(configurationPath, "check-for-updates", bearerToken, sessionCookie, replaceCredentials);
+    public static bool StartAfterExit(string configurationPath, ApplicationSessionSnapshot session) => StartCompanion(configurationPath, "after-exit", null, null, true, session);
+    public static bool CheckForUpdates(string configurationPath, ApplicationSessionSnapshot session) => StartCompanion(configurationPath, "check-for-updates", null, null, true, session);
 
-    private static bool StartCompanion(string configurationPath, string command, string? bearerToken, string? sessionCookie)
+    private static bool StartCompanion(string configurationPath, string command, string? bearerToken, string? sessionCookie, bool replaceCredentials, ApplicationSessionSnapshot? session = null)
     {
         try
         {
-            var executable = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configurationPath))!, "heirowUpdater.exe");
-            if (!File.Exists(executable) || !File.Exists(configurationPath)) return false;
+            session ??= replaceCredentials || bearerToken is not null || sessionCookie is not null ? new ApplicationSessionSnapshot(sessionCookie, bearerToken) : null;
+            if (!File.Exists(configurationPath)) return false;
+            var configuration = ReadConfiguration(configurationPath);
+            var executable = ResolveExecutable(configuration);
+            if (!File.Exists(executable)) return false;
             using var application = Process.GetCurrentProcess();
-            var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(executable)! };
+            var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = configuration.InstallDirectory };
             start.ArgumentList.Add(command); start.ArgumentList.Add("--config"); start.ArgumentList.Add(Path.GetFullPath(configurationPath));
             start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(application.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
             start.ArgumentList.Add("--application-start"); start.ArgumentList.Add(application.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
             if (System.Environment.ProcessPath is { } host && !Path.GetFullPath(host).StartsWith(Path.GetDirectoryName(Path.GetFullPath(configurationPath))! + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             { start.ArgumentList.Add("--application-host"); start.ArgumentList.Add(host); }
-            if (bearerToken is not null) start.Environment["HEIROWUPDATER_TOKEN"] = bearerToken;
-            if (sessionCookie is not null) start.Environment["HEIROWUPDATER_COOKIE"] = sessionCookie;
+            if (session is not null) SetSessionEnvironment(start, session);
+            else SetSessionEnvironment(start, bearerToken, sessionCookie, replaceCredentials);
             using var companion = Process.Start(start);
             return companion is not null;
         }
@@ -102,6 +109,7 @@ public static class ApplicationUpdater
         using (var package = PackageReader.Open(installed.PackagePath))
         {
             package.VerifySignature(installed.PublisherKeySha256, requireSignature: true);
+            SharedUpdaterRuntime.ValidateBinding(configuration, package.Manifest);
             if (!package.Manifest.EntryPoint.Equals(configuration.EntryPoint, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("The updater entry point does not match its signed installed package.");
             configuration.AffectedResourceFiles = RunningApplicationTarget.FromManifest(package.Manifest, installed.InstallDirectory,
@@ -112,15 +120,44 @@ public static class ApplicationUpdater
         return configuration;
     }
 
-    public static string StateDirectory(UpdateCompanionConfiguration configuration)
+    public static string ResolveExecutable(UpdateCompanionConfiguration configuration)
     {
-        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(configuration.ProductId.ToLowerInvariant() + "\n" + configuration.InstallDirectory.ToLowerInvariant()))).ToLowerInvariant()[..24];
-        var root = configuration.Isolated ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.StateRoot))!, "updater-lifecycle")
-            : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "applications");
-        var directory = Path.Combine(root, key);
-        PackageSafety.EnsureNoReparsePoints(directory); Directory.CreateDirectory(directory);
-        return directory;
+        var installed = InstallerEngine.ListInstalled(configuration.StateRoot).Single(x => x.Id.Equals(configuration.ProductId, StringComparison.OrdinalIgnoreCase) && x.Scope == configuration.Scope);
+        using var package = PackageReader.Open(installed.PackagePath);
+        package.VerifySignature(configuration.PublisherKeySha256, requireSignature: true);
+        SharedUpdaterRuntime.ValidateBinding(configuration, package.Manifest);
+        var executable = configuration.SharedRuntime is null
+            ? PackageSafety.UnderRoot(configuration.InstallDirectory, package.Manifest.UpdateCompanion!.ExecutablePath)
+            : SharedUpdaterRuntime.Resolve(configuration);
+        var payload = package.Manifest.Payload.Single(x => x.Path.Equals(package.Manifest.UpdateCompanion!.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+        if (!File.Exists(executable) || new FileInfo(executable).Length != payload.Size || !PackageSafety.HashEquals(PackageSafety.HashFile(executable), payload.Sha256))
+            throw new CryptographicException("The installed updater does not match its signed package.");
+        return executable;
     }
+
+    internal static void SetSessionEnvironment(ProcessStartInfo start, string? bearer, string? cookie, bool replace)
+    {
+        ApplicationSessionSnapshot.ValidateValue(bearer); ApplicationSessionSnapshot.ValidateValue(cookie);
+        foreach (var name in SessionEnvironmentNames) start.Environment.Remove(name);
+        if (!replace && bearer is null && cookie is null) return;
+        SetSessionEnvironment(start, new ApplicationSessionSnapshot(cookie, bearer));
+    }
+    internal static void SetSessionEnvironment(ProcessStartInfo start, ApplicationSessionSnapshot session)
+    {
+        foreach (var name in SessionEnvironmentNames) start.Environment.Remove(name);
+        start.Environment["HEIROWUPDATER_SESSION_SUPPLIED"] = "1";
+        start.Environment["HEIROWUPDATER_SESSION_CAPTURED_AT"] = session.CapturedAtUtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        start.Environment["HEIROWUPDATER_SESSION_ID"] = session.Id;
+        start.Environment["HEIROWUPDATER_SESSION_SOURCE_PID"] = session.SourceProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        start.Environment["HEIROWUPDATER_SESSION_SOURCE_START"] = session.SourceStartTicks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        start.Environment["HEIROWUPDATER_SESSION_SEQUENCE"] = session.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (session.BearerToken is not null) start.Environment["HEIROWUPDATER_TOKEN"] = session.BearerToken;
+        if (session.Cookie is not null) start.Environment["HEIROWUPDATER_COOKIE"] = session.Cookie;
+    }
+    private static readonly string[] SessionEnvironmentNames = ["HEIROWUPDATER_TOKEN", "HEIROWUPDATER_COOKIE", "HEIROWUPDATER_SESSION_SUPPLIED", "HEIROWUPDATER_SESSION_CAPTURED_AT", "HEIROWUPDATER_SESSION_ID", "HEIROWUPDATER_SESSION_SOURCE_PID", "HEIROWUPDATER_SESSION_SOURCE_START", "HEIROWUPDATER_SESSION_SEQUENCE"];
+
+    public static string StateDirectory(UpdateCompanionConfiguration configuration)
+        => SharedUpdaterRuntime.ApplicationStateDirectory(configuration, create: true);
 
     public static async Task<ApplicationLifecycleResult> RunAsync(string configurationPath, int? applicationPid, long? applicationStart,
         bool manual, ApplicationLifecycleOptions options, Func<ApplicationUpdatePrompt, CancellationToken, Task<ApplicationUpdateChoice>> prompt,
@@ -151,11 +188,11 @@ public static class ApplicationUpdater
             ManualCheck = manual, ManualRequestId = manual ? manualRequestId : null,
             Message = status == "error" ? "The update check could not finish. Check your connection and try again." : null
         };
-        async Task<ApplicationLifecycleResult> Status(string status, UpdateCheckResult? update = null)
+        async Task<ApplicationLifecycleResult> Status(string status, UpdateCheckResult? update = null, bool showManualFeedback = true)
         {
             var result = Result(status, update); options.StatusChanged?.Invoke(result);
             await WriteJsonAsync(options.StatusPath ?? Path.Combine(directory, "status.json"), result, cancellationToken);
-            if (manual && !options.NoPrompt && options.ManualStatusChangedAsync is { } feedback)
+            if (showManualFeedback && manual && !options.NoPrompt && options.ManualStatusChangedAsync is { } feedback)
                 await feedback(result, cancellationToken);
             return result;
         }
@@ -165,28 +202,38 @@ public static class ApplicationUpdater
             PackageSafety.HashEquals(x.PublisherKeySha256 ?? "", configuration.PublisherKeySha256));
         string? Secret(string? name) => name is null ? null : System.Environment.GetEnvironmentVariable(name);
         var cookie = Secret(configuration.CookieEnvironmentVariable); var bearer = Secret(configuration.TokenEnvironmentVariable);
-        async Task<T> Authorized<T>(Func<SocketJackUpdater, Task<T>> operation)
+        var supplied = options.SessionSnapshot is not null || Secret("HEIROWUPDATER_SESSION_SUPPLIED") == "1" || cookie is not null || bearer is not null;
+        var capturedAt = long.TryParse(Secret("HEIROWUPDATER_SESSION_CAPTURED_AT"), out var captured) && captured > 0 ? captured : DateTimeOffset.UtcNow.UtcTicks;
+        var snapshotId = Secret("HEIROWUPDATER_SESSION_ID");
+        if (!Guid.TryParseExact(snapshotId, "N", out _)) snapshotId = Guid.NewGuid().ToString("N");
+        _ = int.TryParse(Secret("HEIROWUPDATER_SESSION_SOURCE_PID"), out var sourcePid);
+        _ = long.TryParse(Secret("HEIROWUPDATER_SESSION_SOURCE_START"), out var sourceStart);
+        _ = long.TryParse(Secret("HEIROWUPDATER_SESSION_SEQUENCE"), out var sourceSequence);
+        if (sourcePid <= 0 || sourceStart <= 0 || sourceSequence <= 0)
         {
-            using var client = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), cookie, bearer);
-            try { return await operation(client); }
-            catch (HttpRequestException error) when (error.StatusCode == System.Net.HttpStatusCode.Unauthorized && !options.NoPrompt && options.AuthenticateAsync is not null && configuration.AuthApplication is not null)
-            {
-                await Status("sign-in-required");
-                bearer = await options.AuthenticateAsync(configuration, cancellationToken);
-                if (string.IsNullOrEmpty(bearer))
-                {
-                    state.PostponeUntil = DateTimeOffset.UtcNow.AddHours(24); await WriteJsonAsync(statePath, state, cancellationToken);
-                    await Status("postponed");
-                    throw new OperationCanceledException("Application update sign-in was postponed.", cancellationToken);
-                }
-                cookie = null;
-                using var authenticated = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), null, bearer);
-                return await operation(authenticated);
-            }
+            using var sourceProcess = Process.GetCurrentProcess();
+            sourcePid = applicationPid ?? sourceProcess.Id; sourceStart = applicationStart ?? sourceProcess.StartTime.ToUniversalTime().Ticks; sourceSequence = 1;
         }
+        var snapshot = options.SessionSnapshot ?? new ApplicationSessionSnapshot(cookie, bearer, supplied ? capturedAt : 0, snapshotId!, sourcePid, sourceStart, sourceSequence);
+        var sessions = new ApplicationSessionStore(snapshot);
+        var trustedImage = ResolveExecutable(configuration);
+        var installedHost = System.Environment.ProcessPath is { } currentImage && Path.GetFullPath(currentImage).Equals(trustedImage, StringComparison.OrdinalIgnoreCase);
+        if (installedHost)
+            foreach (var name in SessionEnvironmentNames.Concat(new[] { configuration.CookieEnvironmentVariable, configuration.TokenEnvironmentVariable }).OfType<string>().Distinct())
+                System.Environment.SetEnvironmentVariable(name, null); // Native UI children never inherit the application's credentials.
+        Task<T> Authorized<T>(Func<SocketJackUpdater, Task<T>> operation) => ApplicationAuthorization.RunAsync(sessions, async () =>
+        {
+            using var client = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), () => sessions.Read().Snapshot, requireIncrementalUpdates: configuration.UpdateMode == "files");
+            return await operation(client);
+        }, options.NoPrompt || options.AuthenticateAsync is null || configuration.AuthApplication is null ? null : token => options.AuthenticateAsync(configuration, token),
+            async status => { await Status(status); }, async () =>
+            {
+                state.PostponeUntil = DateTimeOffset.UtcNow.AddHours(24); await WriteJsonAsync(statePath, state, cancellationToken);
+                await Status("postponed");
+            }, cancellationToken);
         var target = new UpdaterTarget { ProductId = configuration.ProductId, Name = configuration.Name, CurrentVersion = configuration.CurrentVersion,
             FeedUrl = configuration.FeedUrl, InstallDirectory = configuration.InstallDirectory, StateRoot = configuration.StateRoot, Scope = configuration.Scope,
-            PublisherKeySha256 = configuration.PublisherKeySha256, Features = configuration.Features };
+            PublisherKeySha256 = configuration.PublisherKeySha256, Features = configuration.Features, UpdateMode = configuration.UpdateMode };
         if (options.NoPrompt)
         {
             if (!StillInstalled()) return await Status("application-removed");
@@ -197,6 +244,23 @@ public static class ApplicationUpdater
         try { ownership = new FileStream(Path.Combine(directory, "lifecycle.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException)
         {
+            if (supplied)
+            {
+                if (PendingIsAlive(ReadState(statePath))) return Result("update-staged");
+                if (!installedHost) throw new InvalidOperationException("Session delivery requires the verified installed updater process.");
+                ApplicationSessionRelay.Reply acknowledgement;
+                try
+                {
+                    acknowledgement = await ApplicationSessionRelay.SendAsync(ApplicationSessionRelay.Binding(configuration), trustedImage, snapshot, manual, cancellationToken);
+                }
+                catch (Exception error) when (error is IOException or TimeoutException or OperationCanceledException or System.ComponentModel.Win32Exception)
+                {
+                    throw new InvalidOperationException("The running updater could not accept the current application login. Close its update window and try again.", error);
+                }
+                if (!manual) return Result("already-watching");
+                manualRequestId = acknowledgement.ManualRequestId ?? throw new InvalidDataException("The updater did not acknowledge the manual check.");
+                var delivered = Result("manual-requested"); options.StatusChanged?.Invoke(delivered); return delivered;
+            }
             if (!manual) return Result("already-watching");
             var active = ReadControl<ManualActivity>(activePath);
             if (active is not null && Guid.TryParseExact(active.RequestId, "N", out _) && ProcessIsAlive(active.ProcessId, active.StartTicks))
@@ -211,6 +275,7 @@ public static class ApplicationUpdater
         var transferOwnership = false;
         var originalCancellation = cancellationToken;
         ApplicationStopMonitor? stopMonitor = null;
+        ApplicationSessionRelay? sessionRelay = null;
         using var ownerProcess = Process.GetCurrentProcess();
         async Task BeginManualFeedback()
         {
@@ -249,8 +314,27 @@ public static class ApplicationUpdater
                 if (manual) await AcknowledgeQueuedManualRequest();
                 return pendingResult;
             }
-            stopMonitor = new ApplicationStopMonitor(configuration.InstallDirectory, resetForOwner: true, cancellationToken);
+            stopMonitor = new ApplicationStopMonitor(configuration, resetForOwner: true, cancellationToken);
             cancellationToken = stopMonitor.Token;
+            if (installedHost)
+            {
+                sessionRelay = new(ApplicationSessionRelay.Binding(configuration), trustedImage, async (replacement, requestId, token) =>
+                {
+                    var accepted = sessions.Replace(replacement);
+                    string? requested = null;
+                    if (requestId is not null)
+                    {
+                        if (manual && manualRequestId is not null) requested = manualRequestId;
+                        else if (ReadManualRequest(requestPath) is { } queuedRequest && queuedRequest.Nonce != ReadState(statePath).LastManualRequestId) requested = queuedRequest.Nonce;
+                        else
+                        {
+                            requested = requestId;
+                            await WriteJsonAsync(requestPath, new ManualRequest { FormatVersion = 1, RequestedAt = DateTimeOffset.UtcNow, Nonce = requested }, token);
+                        }
+                    }
+                    return new(requestId ?? "", requested, accepted);
+                }, configuration.Isolated ? static code => Console.Error.WriteLine("Isolated session relay rejection: " + code) : null);
+            }
             if (manual && ReadManualRequest(requestPath) is { } pending && pending.Nonce != state.LastManualRequestId)
                 manualRequestId = pending.Nonce;
             while (true)
@@ -320,15 +404,20 @@ public static class ApplicationUpdater
                     ApplicationHostRegistry.Paths(configuration).Concat(options.ApplicationHost is { } host ? [host] : []));
                 await RunningApplications.EnsureClosedAsync(runningTarget,
                     options.NoPrompt ? null : options.RunningApplicationsPrompt, cancellationToken);
-                handoff.ArgumentList.Add("--lifecycle-config"); handoff.ArgumentList.Add(configurationPath);
-                handoff.ArgumentList.Add("--lifecycle-state"); handoff.ArgumentList.Add(statePath);
-                var readyPath = Path.Combine(Path.GetDirectoryName(handoff.FileName)!, "lifecycle-ready-" + Guid.NewGuid().ToString("N") + ".json");
-                handoff.ArgumentList.Add("--lifecycle-ready"); handoff.ArgumentList.Add(readyPath);
+                void HandoffValue(string name, string value) { if (!handoff.ArgumentList.Contains(name)) { handoff.ArgumentList.Add(name); handoff.ArgumentList.Add(value); } }
+                HandoffValue("--lifecycle-config", configurationPath); HandoffValue("--lifecycle-state", statePath);
+                var readyIndex = handoff.ArgumentList.IndexOf("--lifecycle-ready");
+                var readyPath = readyIndex >= 0 ? handoff.ArgumentList[readyIndex + 1] : null;
+                if (readyPath is null)
+                {
+                    var readyDirectory = PackageSafety.UnderRoot(directory, "handoffs/" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(readyDirectory);
+                    readyPath = Path.Combine(readyDirectory, "ready.json"); HandoffValue("--lifecycle-ready", readyPath);
+                }
                 if (options.ApplicationHost is not null) { handoff.ArgumentList.Add("--application-host"); handoff.ArgumentList.Add(options.ApplicationHost); }
                 if (options.AllowLoopback) handoff.ArgumentList.Add("--allow-loopback");
                 state.PostponeUntil = null;
                 await WriteJsonAsync(statePath, state, cancellationToken);
-                var staged = await Status("update-staged", check);
+                var staged = await Status("update-staged", check, showManualFeedback: false);
                 staged.Handoff = handoff;
                 staged.HandoffReadyPath = readyPath; staged.StopMonitor = stopMonitor;
                 staged.Ownership = ownership; transferOwnership = true;
@@ -347,6 +436,7 @@ public static class ApplicationUpdater
         }
         finally
         {
+            if (sessionRelay is not null) await sessionRelay.DisposeAsync();
             try { if (File.Exists(activePath)) { PackageSafety.EnsureNoReparsePoints(activePath); File.Delete(activePath); } } catch (IOException) { }
             if (!transferOwnership) { stopMonitor?.Dispose(); ownership.Dispose(); }
         }

@@ -8,6 +8,7 @@ param(
     [string]$SigningKey,
     [string]$CertificateThumbprint,
     [string]$PackageCache,
+    [string]$PreviousPackage,
     [switch]$SkipTests
 )
 $ErrorActionPreference = 'Stop'
@@ -75,13 +76,13 @@ foreach ($notice in @(@('projectz/2026.10.23.2/THIRD-PARTY-NOTICES.md','ProjectZ
     Copy-Item -LiteralPath $noticePath -Destination (Join-Path $noticesDirectory $notice[1])
 }
 $manifest = [ordered]@{
-    formatVersion=1; id='heirowinstaller'; name='heirowInstaller'; version=$Version; publisher='SocketJack'
+    formatVersion=2; id='heirowinstaller'; name='heirowInstaller'; version=$Version; publisher='SocketJack'
     description='Native Windows installers, updates, and publishing built with Project-Z.'
     entryPoint='heirowInstaller.exe'; installDirectory='{LocalAppData}/Programs/SocketJack/heirowInstaller'; scope='user'
     homepage='https://socketjack.com/heirowInstaller/'; licenseFile='LICENSE'
-    updateUrl='https://github.com/hheiroww/heirowInstaller/releases/latest/download/update.json'
+    updateUrl='https://socketjack.com/installers/heirowinstaller/update.json'
     features=@(@{id='updates';name='Application updates';description='Check for updates after heirowInstaller exits.';required=$false;default=[bool]$SigningKey})
-    updateCompanion=@{feature='updates';mode='after-exit';authApplication='heirowinstaller';credentialOrigin='https://socketjack.com';tokenEnvironmentVariable='HEIROWUPDATER_TOKEN';cookieEnvironmentVariable='HEIROWUPDATER_COOKIE'}
+    updateCompanion=@{feature='updates';mode='after-exit';runtimeMode='shared';updateMode='files';authApplication='heirowinstaller';credentialOrigin='https://socketjack.com';tokenEnvironmentVariable='HEIROWUPDATER_TOKEN';cookieEnvironmentVariable='HEIROWUPDATER_COOKIE'}
     shortcuts=@(@{name='heirowInstaller';location='startMenu';target='heirowInstaller.exe'})
     registry=@(
         @{hive='user';key='Software\Classes\.hinst';name='';type='string';value='SocketJack.heirowInstaller.Package'},
@@ -121,6 +122,15 @@ $feed = [ordered]@{productId='heirowinstaller';name='heirowInstaller';publisher=
     sha256=$hash;size=(Get-Item -LiteralPath $setup).Length;packageType='exe';releaseNotes="heirowInstaller $Version";arguments=@('--silent')}
 $feed | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'update.json') -Encoding utf8NoBOM
 $releaseFiles = @($setup,$package,(Join-Path $OutputDirectory 'update.json'))
+if ($PreviousPackage) {
+    if (!$SigningKey) { throw 'A file update requires the same publisher signing key as both full packages.' }
+    $incremental = Join-Path $OutputDirectory "heirowInstaller-$Version.hupd"
+    & $cli build-update $package --base ([IO.Path]::GetFullPath($PreviousPackage)) --output $incremental --sign-key ([IO.Path]::GetFullPath($SigningKey))
+    if ($LASTEXITCODE -ne 0) { throw 'Signed file-update build failed.' }
+    & $cli verify-update $incremental
+    if ($LASTEXITCODE -ne 0) { throw 'Signed file-update verification failed.' }
+    $releaseFiles += $incremental
+}
 $releaseFiles | ForEach-Object { "$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_))" } | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding utf8NoBOM
 $receipt = [ordered]@{version=$Version;sourceCommit=$sourceCommit;setup=$setup;package=$package;launcher=$launcher;cli=$cli;updater=$updater;sha256=$hash;bytes=(Get-Item -LiteralPath $setup).Length}
 $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'build.json') -Encoding utf8NoBOM

@@ -42,6 +42,14 @@ public sealed class PackageManifest
     public LegacyExecutableDefinition? LegacyExecutable { get; set; }
     public UpdateCompanionDefinition? UpdateCompanion { get; set; }
     public Dictionary<string, JsonElement> Modules { get; set; } = [];
+    public List<InstallationRootDefinition>? InstallationRoots { get; set; }
+}
+
+public sealed class InstallationRootDefinition
+{
+    public string Id { get; set; } = "";
+    public string KnownFolder { get; set; } = "";
+    public string RelativeDirectory { get; set; } = "";
 }
 
 public sealed class UpdateCompanionDefinition
@@ -54,6 +62,9 @@ public sealed class UpdateCompanionDefinition
     public string? AuthApplication { get; set; }
     public string? CookieEnvironmentVariable { get; set; }
     public string? TokenEnvironmentVariable { get; set; }
+    /// <summary>Omitted by legacy signed packages; new packages explicitly select the shared runtime.</summary>
+    public string? RuntimeMode { get; set; }
+    public string? UpdateMode { get; set; }
 }
 
 /// <summary>An exact installed file whose users must exit before application maintenance.</summary>
@@ -63,7 +74,7 @@ public sealed class AffectedResourceDefinition
     public string? Feature { get; set; }
 }
 
-/// <summary>Generated app-local updater configuration. Credential values are never stored here.</summary>
+/// <summary>Small per-application configuration. Credential values are never stored here.</summary>
 public sealed class UpdateCompanionConfiguration
 {
     public int FormatVersion { get; set; } = 1;
@@ -84,6 +95,8 @@ public sealed class UpdateCompanionConfiguration
     public string? CookieEnvironmentVariable { get; set; }
     public string? TokenEnvironmentVariable { get; set; }
     public List<string> AffectedResourceFiles { get; set; } = [];
+    public SharedUpdaterRuntimeReference? SharedRuntime { get; set; }
+    public string? UpdateMode { get; set; }
 }
 
 public sealed class PackageFeature
@@ -102,6 +115,7 @@ public sealed class PayloadFile
     public string Sha256 { get; set; } = "";
     public long Size { get; set; }
     public string? Feature { get; set; }
+    public string? TargetRoot { get; set; }
 }
 
 public sealed class RegistryDefinition
@@ -210,6 +224,8 @@ public sealed class InstallOptions
     /// <summary>Explicit interactive consent. Without a callback, running applications fail immediately and are never closed.</summary>
     [JsonIgnore]
     public Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? RunningApplicationsPrompt { get; set; }
+    [JsonIgnore]
+    public FileTransactionRecoveryContext? FileRecoveryContext { get; set; }
     /// <summary>Disables OS-wide integrations for isolated package validation. Never use for production installation.</summary>
     public bool Isolated { get; set; }
 }
@@ -278,6 +294,7 @@ public sealed class InstalledFile
     public string Path { get; set; } = "";
     public string Sha256 { get; set; } = "";
     public string? OriginalBackup { get; set; }
+    public string? TargetRoot { get; set; }
 }
 
 public sealed class ModuleSnapshot
@@ -299,6 +316,9 @@ public sealed class UpdateFeed
     public string PackageType { get; set; } = "hinst";
     public string ReleaseNotes { get; set; } = "";
     public List<string> Arguments { get; set; } = [];
+    public string? BaseVersion { get; set; }
+    public string? BaseManifestSha256 { get; set; }
+    public string? TargetManifestSha256 { get; set; }
 }
 
 public sealed class UpdateCheckResult

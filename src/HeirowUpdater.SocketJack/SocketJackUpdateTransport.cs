@@ -7,8 +7,7 @@ namespace HeirowUpdater.SocketJack;
 public sealed class SocketJackUpdateTransport : IUpdateTransport
 {
     private readonly Uri? credentialOrigin;
-    private readonly string? cookie;
-    private readonly string? bearerToken;
+    private readonly Func<ApplicationSessionSnapshot> session;
 
     public SocketJackUpdateTransport(Uri? credentialOrigin = null, string? cookie = null, string? bearerToken = null)
     {
@@ -18,11 +17,12 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
             (credentialOrigin.Scheme != "https" && !(credentialOrigin.Scheme == "http" && credentialOrigin.IsLoopback))))
             throw new ArgumentException("Credential origin must use HTTPS.", nameof(credentialOrigin));
         this.credentialOrigin = credentialOrigin;
-        this.cookie = cookie;
-        this.bearerToken = bearerToken;
-        if (cookie?.IndexOfAny(['\r', '\n']) >= 0 || bearerToken?.IndexOfAny(['\r', '\n']) >= 0)
-            throw new ArgumentException("Credentials contain invalid HTTP header characters.");
+        var snapshot = new ApplicationSessionSnapshot(cookie, bearerToken);
+        session = () => snapshot;
     }
+
+    internal SocketJackUpdateTransport(Uri credentialOrigin, Func<ApplicationSessionSnapshot> session)
+        : this(credentialOrigin) => this.session = session;
 
     public async Task<HttpResponseMessage> GetAsync(Uri uri, long maximumResponseBytes, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
@@ -38,8 +38,9 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (credentialOrigin is not null && SameOrigin(uri, credentialOrigin))
             {
-                if (!string.IsNullOrWhiteSpace(cookie)) headers["Cookie"] = cookie;
-                if (!string.IsNullOrWhiteSpace(bearerToken)) headers["Authorization"] = "Bearer " + bearerToken;
+                var current = session();
+                if (!string.IsNullOrWhiteSpace(current.Cookie)) headers["Cookie"] = current.Cookie;
+                if (!string.IsNullOrWhiteSpace(current.BearerToken)) headers["Authorization"] = "Bearer " + current.BearerToken;
             }
             using var limited = new LimitedDestination(file, Math.Max(maximumResponseBytes, 64 * 1024), progress, leaveOpen: true);
             var response = await client.SendOnceAsync("GET", uri.AbsoluteUri, headers, null, limited, null, cancellationToken)

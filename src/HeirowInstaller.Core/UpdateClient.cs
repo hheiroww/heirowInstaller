@@ -5,17 +5,19 @@ using System.Text.Json;
 
 namespace HeirowInstaller.Core;
 
-/// <summary>Downloads complete installers over HTTPS and verifies the feed's expected SHA256 before executing them.</summary>
+/// <summary>Downloads verified update data over HTTPS. Signed incremental packages are reconstructed and applied by the trusted engine.</summary>
 public sealed class UpdateClient : IDisposable
 {
     private readonly HttpClient client;
     private readonly bool ownsClient;
     private readonly bool allowLoopback;
     private readonly IUpdateTransport? transport;
-    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null)
+    private readonly bool requireIncrementalUpdates;
+    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false)
     {
         this.allowLoopback = allowLoopback;
         this.transport = transport;
+        this.requireIncrementalUpdates = requireIncrementalUpdates;
         ownsClient = httpClient is null;
         client = httpClient ?? new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
     }
@@ -24,7 +26,7 @@ public sealed class UpdateClient : IDisposable
     {
         PackageSafety.ValidateId(expectedProductId);
         _ = PackageVersion.Parse(currentVersion);
-        using var response = await GetAsync(ValidateUrl(feedUrl), 1024 * 1024, null, cancellationToken);
+        using var response = await GetAsync(SelectTransition(ValidateUrl(feedUrl), currentVersion), 1024 * 1024, null, cancellationToken);
         if (response.Content.Headers.ContentLength > 1024 * 1024) throw new InvalidDataException("Update feed is too large.");
         using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var buffer = new MemoryStream();
@@ -37,17 +39,24 @@ public sealed class UpdateClient : IDisposable
         var feed = JsonSerializer.Deserialize<UpdateFeed>(buffer.ToArray(), InstallerJson.Options) ?? throw new InvalidDataException("Update feed is empty.");
         ValidateFeed(feed);
         if (!feed.ProductId.Equals(expectedProductId, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Update feed belongs to a different product.");
-        return new() { Available = PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(currentVersion)) > 0, CurrentVersion = currentVersion, Feed = feed };
+        var available = PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(currentVersion)) > 0;
+        if (available && feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase) && feed.BaseVersion != currentVersion)
+            throw new InvalidDataException("No signed incremental transition was published for this installed base version.");
+        if (available && requireIncrementalUpdates && !feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("This application requires a signed file update; its publisher has not provided a matching incremental package.");
+        return new() { Available = available, CurrentVersion = currentVersion, Feed = feed };
     }
 
     public async Task<string> DownloadAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         ValidateFeed(feed);
-        var extension = feed.PackageType.ToLowerInvariant() switch { "hinst" => ".hinst", "exe" => ".exe", "msi" => ".msi", _ => throw new InvalidDataException("Unsupported update installer type.") };
+        RequireIncremental(feed);
+        var extension = feed.PackageType.ToLowerInvariant() switch { "hupd" => ".hupd", "hinst" => ".hinst", "exe" => ".exe", "msi" => ".msi", _ => throw new InvalidDataException("Unsupported update package type.") };
         destinationDirectory = Path.GetFullPath(destinationDirectory);
         PackageSafety.EnsureNoReparsePoints(destinationDirectory);
         Directory.CreateDirectory(destinationDirectory);
-        var destination = PackageSafety.UnderRoot(destinationDirectory, feed.ProductId + "-" + feed.Version.Replace('+', '_') + extension);
+        using var incrementalDownload = feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase) ? new IncrementalDownloadWorkspace(destinationDirectory, feed) : null;
+        var destination = incrementalDownload?.PackagePath ?? PackageSafety.UnderRoot(destinationDirectory, feed.ProductId + "-" + feed.Version.Replace('+', '_') + extension);
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".download";
         try
         {
@@ -73,6 +82,7 @@ public sealed class UpdateClient : IDisposable
             var actual = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
             if (!PackageSafety.HashEquals(actual, feed.Sha256)) throw new CryptographicException("Downloaded installer SHA256 does not match the publisher's update feed.");
             File.Move(temporary, destination, true);
+            incrementalDownload?.Complete();
             return destination;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -83,10 +93,17 @@ public sealed class UpdateClient : IDisposable
     {
         options ??= new();
         ValidateFeed(feed);
+        RequireIncremental(feed);
         if (!PackageSafety.HashEquals(PackageSafety.HashFile(downloadPath), feed.Sha256)) throw new CryptographicException("Downloaded installer was changed before execution.");
         var installed = InstallerEngine.ListInstalled(options.StateRoot).FirstOrDefault(x => x.Id.Equals(feed.ProductId, StringComparison.OrdinalIgnoreCase) && (options.Scope is null || x.Scope == options.Scope));
         options.TrustedPublisherKeySha256 ??= installed?.PublisherKeySha256;
         if (options.TrustedPublisherKeySha256 is not null) options.RequireSignature = true;
+        if (feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+        {
+            var result = await ApplyIncrementalAsync(downloadPath, feed, installed, options, progress, cancellationToken);
+            IncrementalDownloadWorkspace.RemoveApplied(downloadPath, feed);
+            return result;
+        }
         if (feed.PackageType.Equals("hinst", StringComparison.OrdinalIgnoreCase) ||
             (feed.PackageType.Equals("exe", StringComparison.OrdinalIgnoreCase) && PackageReader.HasEmbeddedPackage(downloadPath)))
         {
@@ -116,6 +133,73 @@ public sealed class UpdateClient : IDisposable
         return new() { ProductId = feed.ProductId, Version = feed.Version, InstallDirectory = options.TargetDirectory ?? "", RebootRequired = exit is 3010 or 1641 };
     }
 
+    private async Task<InstallResult> ApplyIncrementalAsync(string downloadPath, UpdateFeed feed, InstalledProduct? installed,
+        InstallOptions options, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+    {
+        if (installed is null) throw new InvalidOperationException("An incremental update requires an existing native installation; use its full signed installer for first installation.");
+        if (installed.IsMsi || installed.IsExecutable) throw new NotSupportedException("Opaque MSI/executable installation backends cannot receive file updates. Use an authored native ownership migration first.");
+        if (installed.PublisherKeySha256 is null) throw new CryptographicException("The installed application does not have a pinned incremental-update publisher.");
+        if (feed.Size > 0 && new FileInfo(downloadPath).Length != feed.Size) throw new InvalidDataException("Incremental package size differs from its feed.");
+        if (options.TargetDirectory is not null && !Path.GetFullPath(options.TargetDirectory).Equals(Path.GetFullPath(installed.InstallDirectory), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("An incremental update cannot move the installed application.");
+        var matches = InstallerEngine.ListInstalled(options.StateRoot).Count(product => product.Id.Equals(feed.ProductId, StringComparison.OrdinalIgnoreCase) && (options.Scope is null || product.Scope == options.Scope));
+        if (matches != 1) throw new InvalidDataException("Select the exact user or machine installation before applying an incremental update.");
+        options.Scope = installed.Scope;
+        options.StateRoot ??= Path.GetDirectoryName(Path.GetDirectoryName(installed.ReceiptPath))!;
+        options.TargetDirectory = installed.InstallDirectory;
+        options.Isolated = installed.Isolated;
+        options.RegisterProduct = installed.RegisteredProduct;
+        options.RequireSignature = true;
+        if (installed.Scope == "machine" && !installed.Isolated && !InstallerEngine.IsElevated) throw new UnauthorizedAccessException("Applying this machine-scoped file update requires administrator privileges.");
+        using var update = IncrementalUpdateReader.Open(downloadPath);
+        update.VerifySignature(options.TrustedPublisherKeySha256);
+        var transition = update.Transition;
+        if (transition.ProductId != feed.ProductId || transition.ToVersion != feed.Version || transition.FromVersion != feed.BaseVersion ||
+            !PackageSafety.HashEquals(transition.BaseManifestSha256, feed.BaseManifestSha256!) || !PackageSafety.HashEquals(transition.TargetManifestSha256, feed.TargetManifestSha256!))
+            throw new InvalidDataException("Signed incremental transition identity or manifest bindings differ from the update feed.");
+        options.Features ??= installed.Features.Where(id => update.TargetManifest.Features.Any(feature => feature.Id.Equals(id, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (installed.Version == feed.Version)
+        {
+            using var cached = PackageReader.Open(installed.PackagePath);
+            var plan = new InstallerEngine().Plan(cached, options);
+            var complete = FileTransactionRecoveryContext.ForInstall(cached, plan, installed, options);
+            if (!FileTransactionRecovery.TargetIsInstalled(complete) || !PackageSafety.HashEquals(complete.TargetManifestSha256, transition.TargetManifestSha256))
+                throw new CryptographicException("The target receipt exists but its signed installed files need trusted repair.");
+            await FileTransactionRecovery.RecoverAsync(complete, options.RunningApplicationsPrompt, cancellationToken: cancellationToken);
+            IncrementalUpdateWorkspace.CleanupAbandoned(complete);
+            return new() { ProductId = installed.Id, Version = installed.Version, InstallDirectory = installed.InstallDirectory, ReceiptPath = installed.ReceiptPath };
+        }
+        if (installed.Version != transition.FromVersion) throw new InvalidDataException("The incremental package is for a different installed base version.");
+        var recovery = FileTransactionRecoveryContext.ForIncrementalUpdate(update, installed, options);
+        await FileTransactionRecovery.RecoverAsync(recovery, options.RunningApplicationsPrompt, cancellationToken: cancellationToken);
+        IncrementalUpdateWorkspace.CleanupAbandoned(recovery);
+        installed = InstallerEngine.ListInstalled(options.StateRoot).Single(product => product.Id == installed.Id && product.Scope == installed.Scope);
+        recovery.ValidateInstalledBase(installed);
+        await update.VerifyAsync(progress, cancellationToken);
+        using var workspace = IncrementalUpdateWorkspace.Create(recovery);
+        try
+        {
+            await update.ReconstructAsync(installed, workspace.PackagePath, options.TrustedPublisherKeySha256, progress, cancellationToken);
+            using var package = PackageReader.Open(workspace.PackagePath);
+            options.FileRecoveryContext = recovery;
+            workspace.MarkApplying();
+            var result = await new InstallerEngine().InstallAsync(package, options, progress, cancellationToken);
+            workspace.Complete();
+            return result;
+        }
+        catch
+        {
+            workspace.AbortAfterRollback();
+            throw;
+        }
+    }
+
+    private void RequireIncremental(UpdateFeed feed)
+    {
+        if (requireIncrementalUpdates && !feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("This application requires signed incremental file updates; downloading an installer is not an update fallback.");
+    }
+
     private void ValidateFeed(UpdateFeed feed)
     {
         PackageSafety.ValidateId(feed.ProductId);
@@ -123,7 +207,31 @@ public sealed class UpdateClient : IDisposable
         _ = ValidateUrl(feed.InstallerUrl);
         if (!PackageSafety.HashPattern().IsMatch(feed.Sha256)) throw new InvalidDataException("Update feed requires a SHA256 digest.");
         if (feed.Size < 0) throw new InvalidDataException("Update size cannot be negative.");
-        if (feed.PackageType.ToLowerInvariant() is not ("hinst" or "msi" or "exe")) throw new InvalidDataException("Update package type must be hinst, msi, or exe.");
+        if (feed.PackageType.ToLowerInvariant() is not ("hupd" or "hinst" or "msi" or "exe")) throw new InvalidDataException("Update package type must be hupd, hinst, msi, or exe.");
+        if (feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+        {
+            if (feed.BaseVersion is null || feed.BaseManifestSha256 is null || feed.TargetManifestSha256 is null ||
+                !PackageSafety.HashPattern().IsMatch(feed.BaseManifestSha256) || !PackageSafety.HashPattern().IsMatch(feed.TargetManifestSha256) ||
+                PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(feed.BaseVersion)) <= 0)
+                throw new InvalidDataException("An incremental feed requires its exact base version and original base/target manifest SHA256 digests.");
+        }
+    }
+    private static Uri SelectTransition(Uri uri, string currentVersion)
+    {
+        var fields = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).ToList();
+        foreach (var (name, expected) in new[] { ("fromVersion", currentVersion), ("updateProtocol", "hupd1") })
+        {
+            var matching = fields.Where(field => Uri.UnescapeDataString(field.Split('=', 2)[0].Replace('+', ' ')).Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matching.Length > 1) throw new InvalidDataException("The update feed contains duplicate transition selectors.");
+            if (matching.Length == 1)
+            {
+                var pair = matching[0].Split('=', 2);
+                if (pair.Length != 2 || Uri.UnescapeDataString(pair[1].Replace('+', ' ')) != expected)
+                    throw new InvalidDataException("The update feed contains a conflicting transition selector.");
+            }
+            else fields.Add(name + "=" + Uri.EscapeDataString(expected));
+        }
+        return new UriBuilder(uri) { Query = string.Join('&', fields) }.Uri;
     }
     private Uri ValidateUrl(string value)
     {

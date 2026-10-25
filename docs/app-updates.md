@@ -1,15 +1,18 @@
 # Optional application updates
 
-Every app installer is standalone. Selecting its optional updates feature installs
-`heirowUpdater.exe` and the generated `heirowUpdater.json` in the app's root.
-The companion contains its own verification and installation engine; it does not
-require a globally installed heirowInstaller or CLI. Leaving the feature off
-installs neither file and does not change ordinary app startup.
+Every app installer is standalone. Selecting its optional updates feature creates
+a small `heirowUpdater.json` in the app's root and provisions the runtime once in
+a scope-wide, content-addressed `.updater-runtime` directory. Matching applications
+reuse the same immutable executable. The profile binds its version, SHA256 and
+size; the bootstrap derives its location and verifies its bytes. The installer
+provisions it automatically, without a separate authoring-tool installation.
+Leaving the feature off creates no application profile or reference. Existing
+signed profiles with no shared binding retain their legacy app-local behavior.
 
 At startup call `SocketJack.HeirowUpdaterBootstrap.StartAfterExit()` from the
 dependency-free C# or VB template in `templates/bootstrap`. The SDK equivalent is
 `ApplicationUpdater.StartAfterExit(configurationPath)`. Installer-authored main
-shortcuts also use `heirowUpdater.exe launch --config <profile> -- <app arguments>`.
+shortcuts use the resolved shared executable with `launch --config <profile> -- <app arguments>`.
 The launcher opens the app once; a direct bootstrap and launcher can coexist.
 Each native prompt runs as a short-lived trusted UI process; the single lifecycle
 owner remains active between manual checks.
@@ -22,12 +25,16 @@ prompt postpones. A postponed choice is stored per user and app root; it never
 permits automatic installation. Reopening an app during a prompt or download
 defers file replacement until all instances close again.
 
-The companion downloads the complete installer, verifies its feed digest,
-installed publisher pin, product, version and payload, then copies its currently
-trusted updater outside the app root. That helper waits for both the watcher and
-all app instances before applying the package as data. A downloaded EXE prefix
-is never executed. Machine updates request UAC only after the user chooses to
-update. Legacy scheduler `enable --apply` remains an explicit separate opt-in.
+New native packages select `updateMode: "files"`. The companion downloads a
+compressed `.hupd` transition containing changed files and signed old/new
+metadata. It verifies the installed base, publisher, versions, roots and payload,
+then runs the already trusted shared runtime as a helper. It waits for the exact
+watcher and all application dependencies before applying files. It reconstructs
+the full repair cache locally without downloading a Setup executable. Existing
+opaque MSI/executable adapters retain their legacy delivery protocol until
+migrated. Machine updates request UAC after the user chooses to update. Legacy
+scheduler `enable --apply` remains an explicit separate opt-in. See
+[incremental updates](incremental-updates.md) for format and crash recovery.
 
 Repair, uninstall, and updates-feature removal signal a root-specific maintenance
 event. The companion closes its prompt or cancels its wait without terminating
@@ -49,9 +56,17 @@ For a protected SocketJack feed, pass the active app session in memory:
 
 ```csharp
 SocketJack.HeirowUpdaterBootstrap.StartAfterExit(
-    bearerToken: currentSessionToken,
-    appRoot: applicationDirectory);
+    SocketJack.HeirowUpdaterBootstrap.CaptureSession(bearerToken: currentSessionToken),
+    applicationDirectory);
 ```
+
+Capture the immutable snapshot before queueing background work. Capture from the
+active in-memory account, then pass that snapshot to `StartAfterExit` or
+`CheckForUpdates`. On login changes, capture and submit a replacement; capture
+with both credentials empty to explicitly clear an old login. A stale queued
+snapshot cannot replace a newer account snapshot. The running owner accepts
+replacements through an authenticated same-user local pipe with exact process
+identity and replay checks; an obsolete authentication prompt is cancelled.
 
 The optional `sessionCookie` argument accepts a complete Cookie header value.
 Credentials are set only on the child process's `HEIROWUPDATER_TOKEN` or
@@ -105,7 +120,8 @@ The generated profile includes `formatVersion`, `productId`, `name`,
 `credentialOrigin` and optional cookie/token environment-variable names.
 Production feeds and credential origins use HTTPS. Explicit isolated validation
 can use loopback HTTP. An installed publisher pin is required for the optional
-lifecycle feature.
+lifecycle feature. Shared profiles also contain `sharedRuntime` and new native
+profiles select `updateMode: "files"`; neither field contains credentials.
 
 `scripts/Test-AppUpdateLifecycle.ps1` runs the supplied self-contained companion
 with generated signed fixtures. It compiles the public app bootstrap, protects

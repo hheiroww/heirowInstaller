@@ -2,7 +2,7 @@
 
 # heirowInstaller
 
-Native Windows installers, full-package updates, and publishing, built with [Project-Z](https://github.com/hheiroww/Project-Z).
+Native Windows installers, signed file updates, and publishing, built with [Project-Z](https://github.com/hheiroww/Project-Z).
 
 heirowInstaller combines a Project-Z desktop setup experience with a reusable .NET installation engine, command-line tooling, and a SocketJack.com publisher. The interface follows heirowSnap's desktop layout and SocketJack's charcoal, lime, and orange palette.
 
@@ -18,7 +18,7 @@ heirowInstaller combines a Project-Z desktop setup experience with a reusable .N
 | `HeirowInstaller.Core` | Package format, verification, installation, receipts, repair, removal, and updates |
 | `HeirowInstaller.Cli` | Automation and unattended installation |
 | `HeirowInstaller.Publishing` | HTTPS publisher client with credentials supplied at runtime |
-| `heirowUpdater` | Optional app-local updates with native Update now and Postpone prompts |
+| `heirowUpdater` | Shared optional updater with native Update now and Postpone prompts |
 | `HeirowUpdater.SocketJack` | Reusable updater SDK using the public SocketJack networking library |
 
 The public repository contains the installer tooling and public publisher identity. The SocketJack.com hosting application is maintained separately in its private repository.
@@ -26,6 +26,8 @@ The public repository contains the installer tooling and public publisher identi
 ## Build and package
 
 Windows x64 and the .NET 10 SDK are required to build the tooling. Each released application setup is a self-contained executable; its recipient does not need heirowInstaller, the SDK, or a WiX compiler installed.
+
+A compiled application setup opens that application's wizard, with feature selection, verified installation progress, and a final **Open application** choice. Its elevated worker has no second interface. The unbundled desktop tool provides the package-authoring workspace. See [the setup wizard](docs/app-setup-wizard.md).
 
 When an app uses files being installed, repaired, or removed, the native interface offers **Close apps and continue** or **Cancel installation**. Closing uses the application's normal window request, allowing it to ask about unsaved work. Apps that remain open return to a responsive retry/cancel prompt. [Running-app integration](docs/running-applications.md) includes signed plugin resources and the noninteractive command-line contract.
 
@@ -59,7 +61,7 @@ For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. 
 
 ## Application updates
 
-Selecting an application's optional updates feature places `heirowUpdater.exe` and `heirowUpdater.json` in that application's root directory. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. Manual `CheckForUpdates()` calls show progress and a visible result, including when the app is already up to date. Choosing **Update now** asks before closing any running app or plugin host and allows cancellation before replacing its files. Leaving the feature off installs neither companion file.
+Selecting an application's optional updates feature generates a small `heirowUpdater.json` at its root and provisions one immutable updater runtime in a shared directory for its installation scope. Applications using the same runtime reuse its bytes. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. Manual checks show progress and a visible result. Choosing **Update now** asks before closing a running app or plugin host and allows cancellation before replacing files. Leaving the feature off creates no application profile or runtime reference.
 
 ```csharp
 SocketJack.HeirowUpdaterBootstrap.StartAfterExit();
@@ -68,7 +70,9 @@ SocketJack.HeirowUpdaterBootstrap.CheckForUpdates();
 
 Dependency-free C# and VB bootstraps are included in `templates/bootstrap`. The reusable SDK exposes `ApplicationUpdater`; see [application integration](docs/app-updates.md) for plugin hosts, protected feeds, child-process credentials, and status queries.
 
-heirowUpdater uses **SocketJack.Net.HttpClient** from the published `SocketJack` 2026.10.24 package for release checks and downloads. It validates redirects, verifies the downloaded SHA-256, and pins the package publisher key recorded at installation. The currently trusted engine installs signed embedded packages as data. The app-local companion includes its own engine and does not require a global heirowInstaller installation.
+heirowUpdater uses **SocketJack.Net.HttpClient** from the published `SocketJack` 2026.10.24 package for release checks and downloads. It validates redirects, downloaded SHA-256, and the publisher pin recorded at installation. New native packages use compressed `.hupd` updates containing only changed files and signed old/new metadata. The trusted engine applies each owned file, preserves unchanged files, and reconstructs its repair package locally. It never downloads a Setup executable as a file-mode fallback. Existing MSI/executable adapters retain their original protocol until their ownership is migrated. See [signed file updates and interrupted-work cleanup](docs/incremental-updates.md).
+
+The setup provisions its updater automatically; users do not install the authoring tool. The common maintenance executable is also pooled without retaining a separate full Setup per application. Older app-local profiles remain readable for migration.
 
 Advanced command-line and explicitly scheduled checks remain available:
 
@@ -83,7 +87,7 @@ heirowUpdater disable
 
 `enable` schedules per-user checks at sign-in and periodically. `--apply` opts into installation of updates with a pinned publisher key. Machine-wide updates can require an administrator handoff; background checks report that required action. Applications can also supply a feed/profile directly without an installation receipt.
 
-The desktop Updates page exposes these companion operations. Account-protected publishers can supply credential environment-variable names; values stay outside manifests and source control and are sent only to the configured HTTPS origin. Registered SocketJack applications can request fresh browser approval when a session expires.
+The desktop Updates page exposes these companion operations. Apps pass their current login through an immutable in-memory snapshot captured before background work. Login changes replace the observer's credentials and sign-out clears them. Credentials stay outside manifests and source control and are sent only to the signed HTTPS origin. Registered SocketJack applications can request browser approval when their current session is rejected.
 
 The companion's published single-file host discovery is fixed in 2026.10.24.3. To upgrade heirowInstaller itself from .1 or .2, use **Installed apps → Update** in the desktop app or download the latest Setup once.
 

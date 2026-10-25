@@ -6,11 +6,11 @@ internal sealed partial class InstallerScene
 {
     private void BuildInstall()
     {
-        if (Controller.Manifest is null) { BuildWelcome(); return; }
+        if (Controller.Manifest is null) { if (Controller.IsWizard) BuildWizardPreparing(); else BuildWelcome(); return; }
         var stage = Controller.Stage;
         var stages = new[] { "Package", "Features", "Location", "Review" };
         var stepWidth = BodyWidth / 4f;
-        for (var i = 0; i < stages.Length; i++)
+        for (var i = 0; !Controller.IsWizard && i < stages.Length; i++)
         {
             var active = (int)stage == i;
             var done = (int)stage > i;
@@ -18,7 +18,7 @@ internal sealed partial class InstallerScene
             Text(done ? "✓" : (i + 1).ToString("00"), Left + 13 + i * stepWidth, 160, 30, 20, 9, active || done ? Theme.Lime : Theme.Muted, true);
             Text(stages[i], Left + 48 + i * stepWidth, 158, stepWidth - 62, 25, 10, active ? Theme.Lime : Theme.Muted, active);
         }
-        var y = 214;
+        var y = Controller.IsWizard ? 151 : 214;
         switch (stage)
         {
             case SetupStage.Package: BuildPackageSummary(y); break;
@@ -30,7 +30,8 @@ internal sealed partial class InstallerScene
         }
         if (stage < SetupStage.Progress)
         {
-            Action("setup.open", "Change package", Left, BodyBottom - 48, 152, BrowsePackage, enabled: !Controller.Busy);
+            if (Controller.IsWizard) Action("wizard.cancel", "Cancel", Left, BodyBottom - 48, 112, game.Exit, enabled: !Controller.Busy);
+            else Action("setup.open", "Change package", Left, BodyBottom - 48, 152, BrowsePackage, enabled: !Controller.Busy);
             if (stage != SetupStage.Package) Action("setup.back", "Back", Width - 300, BodyBottom - 48, 100, Controller.PreviousStage, enabled: !Controller.Busy);
             Action("setup.next", stage == SetupStage.Review ? "Install application  →" : "Continue  →", Width - 186, BodyBottom - 48, 152, () =>
             {
@@ -70,6 +71,7 @@ internal sealed partial class InstallerScene
 
     private void BuildPackageSummary(float y)
     {
+        if (Controller.IsWizard) { BuildWizardWelcome(y); return; }
         var package = Controller.Manifest!;
         Box(Left, y, BodyWidth, 182, Theme.Surface, 12);
         Logo(Left + 24, y + 30, 82);
@@ -191,18 +193,20 @@ internal sealed partial class InstallerScene
     private void BuildProgress(float y)
     {
         Logo(Left + BodyWidth / 2 - 48, y + 14, 96);
-        Text(Controller.Failed ? "Installation needs attention" : "Making everything ready.", Left + 24, y + 132, BodyWidth - 48, 48, 25, bold: true);
+        Text(Controller.Failed ? "Setup needs attention" : Controller.MaintenanceOperation == "uninstall" ? "Removing the application." : Controller.MaintenanceOperation == "repair" ? "Getting you ready again." : "Making everything ready.", Left + 24, y + 132, BodyWidth - 48, 48, 25, bold: true);
         Text(Controller.Manifest!.Name, Left + 24, y + 195, BodyWidth - 48, 31, 13, Theme.Muted);
         Box(Left + 24, y + 262, BodyWidth - 48, 8, Theme.SurfaceRaised, 4, Color.Transparent);
         Box(Left + 24, y + 262, Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8, Controller.Failed ? Theme.Danger : Theme.Lime, 4, Color.Transparent);
         Text($"{Controller.Progress:P0}", Left + 24, y + 294, BodyWidth - 48, 30, 14, Theme.Lime, true);
         Text(Controller.StatusDetail, Left + 24, y + 335, BodyWidth - 48, Math.Clamp(BodyBottom - 58 - y - 335, 40, 65), 11, Theme.Muted, wrap: true);
-        Action("setup.cancel", Controller.Busy ? "Cancel installation" : "Back to review", Left + 24, BodyBottom - 48, 184, () => { if (Controller.Busy) Controller.Cancel(); else { Controller.Stage = SetupStage.Review; Controller.Notify(); } });
-        Action("setup.logs", "View activity", Width - 181, BodyBottom - 48, 147, () => Controller.Navigate(DesktopPage.Activity));
+        var cancelLabel = Controller.MaintenanceOperation == "uninstall" ? "Cancel uninstall" : Controller.MaintenanceOperation == "repair" ? "Cancel repair" : "Cancel installation";
+        Action("setup.cancel", Controller.Busy ? cancelLabel : "Back to review", Left + 24, BodyBottom - 48, 184, () => { if (Controller.Busy) Controller.Cancel(); else { Controller.Stage = SetupStage.Review; Controller.Notify(); } });
+        Action("setup.logs", Controller.IsWizard ? "Details" : "View activity", Width - 181, BodyBottom - 48, 147, () => { if (Controller.IsWizard) { showWizardDetails = true; Controller.Notify(); } else Controller.Navigate(DesktopPage.Activity); });
     }
 
     private void BuildComplete(float y)
     {
+        if (Controller.IsWizard) { BuildWizardComplete(y); return; }
         Box(Left, y, BodyWidth, 327, Theme.Surface, 14);
         Pill("✓  INSTALLATION COMPLETE", Left + 26, y + 28, 226);
         Text("You're all set.", Left + 26, y + 94, BodyWidth - 52, 59, 31, bold: true);

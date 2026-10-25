@@ -54,7 +54,7 @@ public static partial class PackageSafety
     public static void ValidateManifest(PackageManifest manifest, bool requireHashes)
     {
         ValidateId(manifest.Id);
-        if (manifest.FormatVersion != 1) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
+        if (manifest.FormatVersion is not (1 or 2)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
         if (string.IsNullOrWhiteSpace(manifest.Name) || string.IsNullOrWhiteSpace(manifest.Publisher))
             throw new InvalidDataException("Package name and publisher are required.");
         _ = PackageVersion.Parse(manifest.Version);
@@ -95,8 +95,16 @@ public static partial class PackageSafety
         }
         if (manifest.EntryPoint.Length > 0 && !paths.Contains(NormalizeRelativePath(manifest.EntryPoint)) && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             throw new InvalidDataException("Entry point must be included in the payload.");
+        PayloadDestinations.ValidateDefinitions(manifest);
+        if (manifest.FormatVersion == 1 && (manifest.InstallationRoots?.Count > 0 || manifest.UpdateCompanion is { RuntimeMode: "shared" } or { UpdateMode: "files" }))
+            throw new InvalidDataException("Shared runtimes, component roots and file updates require package format 2.");
         if (manifest.UpdateCompanion is { } companion)
         {
+            if (companion.RuntimeMode is not (null or "shared" or "app-local"))
+                throw new InvalidDataException("The updater runtime must be shared or explicitly app-local for a legacy package.");
+            if (companion.UpdateMode is not (null or "files" or "legacy")) throw new InvalidDataException("Unknown application update mode.");
+            if (companion.UpdateMode == "files" && (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null))
+                throw new InvalidDataException("File updates require native managed file ownership; migrate the legacy installation backend first.");
             if (manifest.EntryPoint.Length == 0 || string.IsNullOrWhiteSpace(manifest.UpdateUrl))
                 throw new InvalidDataException("The update companion requires an application entry point and update feed.");
             var feature = manifest.Features.SingleOrDefault(x => x.Id.Equals(companion.Feature, StringComparison.OrdinalIgnoreCase));
@@ -111,7 +119,7 @@ public static partial class PackageSafety
             if (paths.Any(x => x.Equals(companion.ConfigurationPath, StringComparison.OrdinalIgnoreCase) ||
                 x.StartsWith(companion.ConfigurationPath + "/", StringComparison.OrdinalIgnoreCase) || companion.ConfigurationPath.StartsWith(x + "/", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidDataException("The generated updater configuration must not overlap a payload file.");
-            if (companion.Mode != "after-exit") throw new InvalidDataException("The supported app-local updater mode is after-exit.");
+            if (companion.Mode != "after-exit") throw new InvalidDataException("The supported application updater mode is after-exit.");
             if (companion.AuthApplication is not null) ValidateId(companion.AuthApplication);
             if (!Uri.TryCreate(manifest.UpdateUrl, UriKind.Absolute, out var feed) || feed.UserInfo.Length > 0 ||
                 (feed.Scheme != "https" && !(feed.Scheme == "http" && feed.IsLoopback)))

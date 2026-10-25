@@ -10,12 +10,12 @@ WiX is an authoring toolchain for several package types and extensions. Its scop
 | Install, repair, uninstall, major version upgrade | Receipt-based operations | Windows Installer operations |
 | Registry, shortcuts, environment, Windows services | Declarative modules | Existing MSI tables and custom actions |
 | Runtime prerequisites | Hash-verified prerequisites | Existing authored MSI behavior |
-| Full-package update download and rerun | Update feed and SHA-256 verification | Same installer delivery, MSI applies its upgrade rules |
+| Signed compressed file updates | Exact-base `.hupd` file transactions and local repair-cache reconstruction | Requires migration to native file ownership; legacy adapters preserve MSI delivery |
 | Existing custom actions, IIS/SQL/firewall extensions | Explicit trusted modules | Compile through the matching official WiX extension; authored actions stay in the MSI |
 | `.wxs`/`.wixproj` compilation | Separate build-time compiler backend | Original WiX compiler / project SDK, with additional compiler/MSBuild arguments |
 | `.msp` patch and `.msm` merge-module generation | Separate build-time compiler backend | WiX authoring produces real MSP/MSM; merge modules are merged into an MSI rather than installed alone |
 | Complete setup without installed heirowInstaller | Self-contained launcher, verified package, complete application payload | Generated MSI uses Windows Installer; an optional outer setup embeds it |
-| Optional app-local updater | Root-contained companion and pinned generated configuration | Outer companion feature stays separate from original MSI features |
+| Optional updater | Shared immutable runtime and small pinned per-app profile | Outer companion feature stays separate from original MSI features |
 | VSIX installation | Keep the Visual Studio extension package contract | VSIX stays a VSIX |
 
 Replacing current public download buttons with a heirowInstaller executable can preserve the original payload inside it. That changes the setup and delivery experience; it does not turn an embedded MSI into a native package. Older updater endpoints remain available where installed clients require MSI filenames or invoke `msiexec` directly.

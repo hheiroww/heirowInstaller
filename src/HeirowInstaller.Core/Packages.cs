@@ -17,6 +17,10 @@ public static class PackageBuilder
         PackageSafety.EnsureNoReparsePoints(sourceDirectory);
         var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath), InstallerJson.Options)
                        ?? throw new InvalidDataException("Manifest is empty.");
+        if (manifest.UpdateCompanion is { RuntimeMode: null } companion) companion.RuntimeMode = "shared";
+        if (manifest.UpdateCompanion is { RuntimeMode: "shared", UpdateMode: null } fileUpdater && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
+            fileUpdater.UpdateMode = "files";
+        if (manifest.InstallationRoots?.Count > 0 || manifest.UpdateCompanion is { RuntimeMode: "shared" } or { UpdateMode: "files" }) manifest.FormatVersion = 2;
         if (manifest.Payload.Count == 0)
         {
             foreach (var path in EnumerateSafeFiles(sourceDirectory).Order(StringComparer.OrdinalIgnoreCase))
@@ -217,6 +221,12 @@ public static class BundleBuilder
     private const int FooterSize = 64;
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("HINSTEND");
     private static readonly byte[] Header = Encoding.ASCII.GetBytes("HINST01\0");
+
+    internal static long LauncherLength(string path)
+    {
+        using var file = File.OpenRead(path);
+        return TryReadFooter(file, out var offset, out _, out _) ? offset : file.Length;
+    }
 
     public static void Build(string launcherExePath, string packagePath, string outputExePath)
     {

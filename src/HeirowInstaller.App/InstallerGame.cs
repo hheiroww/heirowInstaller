@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using ProjectZ.Shared.Content;
@@ -22,7 +23,7 @@ internal sealed class InstallerGame : Game
     public InstallerGame(AppArguments arguments)
     {
         this.arguments = arguments;
-        Window.Title = "heirowInstaller | SocketJack";
+        Window.Title = arguments.PackagePath is not null || arguments.MaintenanceProductId is not null ? "Application setup" : "heirowInstaller | SocketJack";
         Window.AllowUserResizing = true;
         IsMouseVisible = true;
         IsFixedTimeStep = true;
@@ -31,12 +32,21 @@ internal sealed class InstallerGame : Game
         Content.RootDirectory = "Content";
         graphics = new GraphicsDeviceManager(this)
         {
-            PreferredBackBufferWidth = 1180,
+            PreferredBackBufferWidth = arguments.PackagePath is not null || arguments.MaintenanceProductId is not null ? 1060 : 1180,
             PreferredBackBufferHeight = 800,
             PreferMultiSampling = true,
             SynchronizeWithVerticalRetrace = true,
             GraphicsProfile = GraphicsProfile.HiDef
         };
+        if ((arguments.WizardSmokeDirectory is not null || arguments.SmokeDirectory is not null) && arguments.Isolated)
+        {
+            // Owned test rendering uses internal scene input, never the user's foreground window.
+            var handle = Window.Handle;
+            var style = GetWindowLongPtr(handle, -20).ToInt64();
+            SetWindowLongPtr(handle, -20, new IntPtr(style | 0x08000000)); // WS_EX_NOACTIVATE
+            Window.Position = new Point(-20000, -20000);
+            SetWindowPos(handle, new IntPtr(1), -20000, -20000, 0, 0, 0x0001 | 0x0010); // bottom, no resize/activation
+        }
     }
 
     protected override void LoadContent()
@@ -56,14 +66,12 @@ internal sealed class InstallerGame : Game
         manager.AddScene("installer", MainScene);
         manager.ActiveScene = MainScene;
         MainScene.Rebuild();
-        if (arguments.MaintenanceOperation == "repair")
-            _ = MainScene.Controller.RepairAsync();
-        else if (arguments.MaintenanceOperation == "uninstall")
-        {
-            if (arguments.MaintenanceConfirmed) _ = MainScene.Controller.UninstallAsync();
-        }
+        if (arguments.MaintenanceOperation is not null && arguments.WizardSmokeDirectory is null)
+            _ = MainScene.Controller.InitializeMaintenanceWizardAsync();
         else if (arguments.SelfUpdateSmokeFeed is not null)
             _ = MainScene.Controller.RunSelfUpdateAcceptanceAsync();
+        else if (arguments.WizardSmokeDirectory is not null)
+            _ = WizardSmoke.RunAsync(this, arguments);
         else if (arguments.SmokeDirectory is not null)
             _ = DesktopSmoke.RunAsync(this, arguments.SmokeDirectory);
         else if (arguments.PackagePath is not null)
@@ -206,4 +214,8 @@ internal sealed class InstallerGame : Game
         spriteBatch?.Dispose();
         base.UnloadContent();
     }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
 }

@@ -6,8 +6,17 @@ public static class UpdaterHostResolver
     public static string? FindExecutable() => FindExecutable(System.Environment.ProcessPath, AppContext.BaseDirectory);
 
     /// <summary>Resolves an updater from a trusted host context; the base directory is the fallback for framework-dependent consumers.</summary>
-    public static string? FindExecutable(string? processPath, string baseDirectory) =>
-        HostDirectories(processPath, baseDirectory).Select(directory => Path.Combine(directory, "heirowUpdater.exe")).FirstOrDefault(File.Exists);
+    public static string? FindExecutable(string? processPath, string baseDirectory)
+    {
+        foreach (var directory in HostDirectories(processPath, baseDirectory))
+        {
+            var profile = Path.Combine(directory, "heirowUpdater.json");
+            if (File.Exists(profile)) return ApplicationUpdater.ResolveExecutable(ApplicationUpdater.ReadConfiguration(profile, requireEntryPoint: false));
+            var local = Path.Combine(directory, "heirowUpdater.exe");
+            if (File.Exists(local)) return local;
+        }
+        return null;
+    }
 
     public static bool IsProcessInsideDirectory(string installDirectory) =>
         IsProcessInsideDirectory(installDirectory, System.Environment.ProcessPath);

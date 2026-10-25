@@ -24,12 +24,15 @@ internal sealed partial class AppController : IDisposable
     internal DesktopSettings Settings { get; }
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
+    internal bool IsMaintenanceWizard => arguments.MaintenanceProductId is not null;
+    internal bool IsWizard => arguments.PackagePath is not null || IsMaintenanceWizard;
+    internal string? MaintenanceOperation => arguments.MaintenanceOperation;
     internal PackageManifest? Manifest { get; private set; }
     internal InstallPlan? Plan { get; private set; }
     internal string PackagePath { get; private set; } = "";
     internal string TargetDirectory { get; set; } = "";
     internal bool OriginalInstallerDestination => Manifest is { } manifest && (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null) && string.IsNullOrWhiteSpace(manifest.InstallDirectory) && arguments.TargetDirectory is null;
-    internal string DisplayInstallDirectory => OriginalInstallerDestination ? "Original installer default" : TargetDirectory;
+    internal string DisplayInstallDirectory => !IsMaintenanceWizard && OriginalInstallerDestination ? "Original installer default" : TargetDirectory;
     internal string Scope { get; set; } = "user";
     internal HashSet<string> Features { get; } = new(StringComparer.OrdinalIgnoreCase);
     internal IReadOnlyList<InstalledProduct> Installed { get; private set; } = [];
@@ -54,8 +57,12 @@ internal sealed partial class AppController : IDisposable
     {
         get
         {
-            var installed = Path.Combine(Path.GetDirectoryName(Environment.ProcessPath)!, "heirowUpdater.exe");
-            return File.Exists(installed) ? installed : Path.Combine(AppContext.BaseDirectory, "heirowUpdater.exe");
+            try { return UpdaterHostResolver.FindExecutable() ?? ""; }
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or CryptographicException or JsonException or ArgumentException or FormatException or InvalidOperationException or NotSupportedException)
+            {
+                // Invalid shared profiles fail closed; never pick an unverified sibling after a resolver failure.
+                return "";
+            }
         }
     }
     internal CancellationTokenSource? Cancellation { get; private set; }
@@ -67,12 +74,12 @@ internal sealed partial class AppController : IDisposable
         this.arguments = arguments;
         Settings = DesktopSettings.Load();
         OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe");
-        RefreshInstalled();
+        if (!IsWizard || IsMaintenanceWizard) RefreshInstalled();
         if (arguments.MaintenanceProductId is { } maintenanceId)
         {
             SelectedProduct = Installed.SingleOrDefault(product => product.Id.Equals(maintenanceId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException("The application is not installed.");
-            Page = DesktopPage.Installed;
+            Page = DesktopPage.Install;
         }
         AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
     }
@@ -85,6 +92,7 @@ internal sealed partial class AppController : IDisposable
 
     internal void Navigate(DesktopPage page)
     {
+        if (IsWizard && page != DesktopPage.Install) return;
         if (RunningApplicationsDialog is not null) return;
         if (Busy && page == DesktopPage.Install && Stage == SetupStage.Progress) { Page = page; Notify(); return; }
         Page = page;
@@ -103,6 +111,8 @@ internal sealed partial class AppController : IDisposable
                 using var package = PackageReader.Open(path);
                 arguments.ValidatePackageIdentity(package);
                 await package.VerifyAsync(cancellationToken: Cancellation!.Token);
+                if (IsWizard && package.Manifest.LegacyExecutable is { SilentInstallArguments: null })
+                    throw new NotSupportedException("This application's publisher has not configured unattended setup. Ask the publisher for a package with silent installation support.");
                 string? license = null;
                 if (!string.IsNullOrWhiteSpace(package.Manifest.LicenseFile))
                 {
@@ -115,13 +125,16 @@ internal sealed partial class AppController : IDisposable
                     license = await File.ReadAllTextAsync(licensePath, Cancellation.Token);
                     File.Delete(licensePath);
                 }
-                return (Manifest: package.Manifest, License: license);
+                var artwork = IsWizard ? await ReadWizardArtworkAsync(package, Cancellation!.Token) : null;
+                return (Manifest: package.Manifest, License: license, Artwork: artwork);
             });
             await game.OnUiAsync(() =>
             {
                 var metadata = loaded.Manifest;
                 PackagePath = Path.GetFullPath(path);
                 Manifest = metadata;
+                WizardArtworkPath = loaded.Artwork;
+                if (IsWizard) game.Window.Title = metadata.Name + " Setup";
                 LicenseText = loaded.License;
                 LicenseAccepted = arguments.AcceptLicense;
                 Features.Clear();
@@ -136,7 +149,7 @@ internal sealed partial class AppController : IDisposable
                 Replan();
                 Stage = SetupStage.Package;
                 Page = DesktopPage.Install;
-                End("Package verified", $"{metadata.Name} {metadata.Version} · {metadata.Payload.Count} files");
+                End(IsWizard ? "Ready to install" : "Package verified", IsWizard ? $"{metadata.Name} {metadata.Version} · {metadata.Publisher}" : $"{metadata.Name} {metadata.Version} · {metadata.Payload.Count} files");
             });
             if (arguments.Install && (LicenseText is null || LicenseAccepted)) await InstallAsync();
         }
@@ -174,10 +187,10 @@ internal sealed partial class AppController : IDisposable
         StateRoot = arguments.StateRoot,
         Scope = Scope,
         Features = Features.ToList(),
-        RegisterProduct = !arguments.Isolated && !arguments.NoRegister && Settings.RegisterProducts,
+        RegisterProduct = !arguments.Isolated && !arguments.NoRegister && (IsWizard || Settings.RegisterProducts),
         Isolated = arguments.Isolated,
-        Silent = arguments.Silent,
-        Launch = arguments.SmokeDirectory is null && (arguments.Launch || Settings.LaunchAfterInstall),
+        Silent = IsWizard || arguments.Silent,
+        Launch = !IsWizard && arguments.SmokeDirectory is null && (arguments.Launch || Settings.LaunchAfterInstall),
         InstallerPath = Environment.ProcessPath,
         TrustedPublisherKeySha256 = arguments.TrustedPublisherKeySha256,
         RequireSignature = arguments.RequireSignature,
@@ -192,40 +205,13 @@ internal sealed partial class AppController : IDisposable
         if (LicenseText is not null && !LicenseAccepted) { Stage = SetupStage.Package; Notify(); return; }
         try { Replan(); }
         catch (Exception error) { await ErrorAsync("Installation needs attention", error); return; }
-        if (Plan!.RequiresElevation && !InstallerEngine.IsElevated && !arguments.Isolated)
-        {
-            try
-            {
-                var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
-                start.ArgumentList.Add("--install"); start.ArgumentList.Add(PackagePath);
-                if (LicenseAccepted) start.ArgumentList.Add("--accept-license");
-                if (!OriginalInstallerDestination) { start.ArgumentList.Add("--target"); start.ArgumentList.Add(TargetDirectory); }
-                start.ArgumentList.Add("--scope"); start.ArgumentList.Add(Scope);
-                start.ArgumentList.Add("--features"); start.ArgumentList.Add(string.Join(',', Features));
-                if (arguments.StateRoot is not null) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(arguments.StateRoot); }
-                if (arguments.WaitForPid is { } pid) { start.ArgumentList.Add("--wait-pid"); start.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-                if (arguments.WaitForStartTicks is { } ticks) { start.ArgumentList.Add("--wait-start"); start.ArgumentList.Add(ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-                if (arguments.TrustedPublisherKeySha256 is { } key) { start.ArgumentList.Add("--trust-key"); start.ArgumentList.Add(key); }
-                if (arguments.RequireSignature) start.ArgumentList.Add("--require-signature");
-                if (arguments.ExpectedProductId is { } productId) { start.ArgumentList.Add("--expected-product-id"); start.ArgumentList.Add(productId); }
-                if (arguments.ExpectedVersion is { } version) { start.ArgumentList.Add("--expected-version"); start.ArgumentList.Add(version); }
-                if (arguments.ExpectedSha256 is { } sha256) { start.ArgumentList.Add("--expected-sha256"); start.ArgumentList.Add(sha256); }
-                if (arguments.NoRegister || !Settings.RegisterProducts) start.ArgumentList.Add("--no-register");
-                if (arguments.CloseOnComplete) start.ArgumentList.Add("--close-on-complete");
-                if (arguments.LogPath is { } logPath) { start.ArgumentList.Add("--log"); start.ArgumentList.Add(logPath); }
-                foreach (var value in arguments.LegacyArguments) { start.ArgumentList.Add("--backend-arg"); start.ArgumentList.Add(value); }
-                Process.Start(start);
-                Status = "Installation opened with administrator access";
-                StatusDetail = "Complete installation in the elevated heirowInstaller window.";
-                Notify();
-            }
-            catch (Exception error) { await ErrorAsync("Administrator access was not granted", error); }
-            return;
-        }
+        var useWorker = Plan!.RequiresElevation && !InstallerEngine.IsElevated && !arguments.Isolated || arguments.WizardSmokeDirectory is not null;
         Stage = SetupStage.Progress;
         Page = DesktopPage.Install;
         Begin("Preparing installation", Manifest.Name);
         var options = Options();
+        var launchAfterWorker = useWorker && options.Launch;
+        if (useWorker) options.Launch = false;
         var packagePath = PackagePath;
         try
         {
@@ -234,24 +220,33 @@ internal sealed partial class AppController : IDisposable
                 using var reader = PackageReader.Open(packagePath);
                 arguments.ValidatePackageIdentity(reader);
                 await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(engine.Plan(reader, options), "install"), Cancellation!.Token);
+                if (useWorker)
+                    return await ElevatedInstallWorker.InstallAsync(packagePath, engine.Plan(reader, options), options,
+                        PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token);
                 return await engine.InstallAsync(reader, options, Reporter(), Cancellation!.Token);
             });
             await game.OnUiAsync(() =>
             {
                 LastReceiptPath = result.ReceiptPath;
+                LastInstallation = result;
                 Stage = SetupStage.Complete;
                 Progress = 1;
                 RefreshInstalled();
                 End(result.RebootRequired ? "Installed · restart required" : "Installation complete", $"{Manifest!.Name} {result.Version} is ready to use.");
                 CloseCompletedChild(result.RebootRequired);
             });
+            if (launchAfterWorker) await LaunchInstalledApplicationAsync();
         }
+        catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 1223) { await ErrorAsync("Installation canceled", new OperationCanceledException("Administrator approval was canceled. You can try again when you are ready.", error)); }
         catch (Exception error) { await ErrorAsync("Installation stopped", error); }
     }
 
     internal void RefreshInstalled()
     {
+        if (IsWizard && !IsMaintenanceWizard && Manifest is null) { Installed = []; SelectedProduct = null; return; }
         Installed = InstallerEngine.ListInstalled(arguments.StateRoot);
+        if (IsWizard) Installed = Installed.Where(product => product.Id.Equals(arguments.MaintenanceProductId ?? Manifest!.Id, StringComparison.OrdinalIgnoreCase) &&
+            (arguments.Scope is null || product.Scope == arguments.Scope)).ToArray();
         SelectedProduct = Installed.FirstOrDefault(p => p.Id == SelectedProduct?.Id) ?? Installed.FirstOrDefault();
     }
 
@@ -259,16 +254,21 @@ internal sealed partial class AppController : IDisposable
     {
         var product = SelectedProduct;
         if (product is null || Busy) return;
-        if (NeedsMaintenanceElevation(product)) { await ElevatedMaintenanceAsync(product, "repair"); return; }
+        if (IsMaintenanceWizard)
+        {
+            try { product = ValidateMaintenanceIdentity(); Stage = SetupStage.Progress; Page = DesktopPage.Install; }
+            catch (Exception error) { await ErrorAsync("The application changed", error); return; }
+        }
+        if (NeedsMaintenanceElevation(product) || arguments.WizardSmokeDirectory is not null) { await ElevatedMaintenanceAsync(product, "repair"); return; }
         Begin("Repairing application", product.Name);
         try
         {
             var result = await Task.Run(async () =>
             {
                 await WaitForProductDependencyAsync(product, "repair", Cancellation!.Token);
-                return await engine.RepairAsync(product.Id, OptionsFor(product), Reporter(), Cancellation.Token);
+                return await engine.RepairAsync(product.Id, OptionsFor(product, "repair"), Reporter(), Cancellation.Token);
             });
-            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; RefreshInstalled(); End("Repair complete", $"Verified and restored {product.Name}."); CloseCompletedChild(result.RebootRequired); });
+            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } RefreshInstalled(); End("Repair complete", $"Verified and restored {product.Name}."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Repair stopped", error); }
     }
@@ -277,21 +277,26 @@ internal sealed partial class AppController : IDisposable
     {
         var product = SelectedProduct;
         if (product is null || Busy) return;
-        if (NeedsMaintenanceElevation(product)) { await ElevatedMaintenanceAsync(product, "uninstall"); return; }
+        if (IsMaintenanceWizard)
+        {
+            try { product = ValidateMaintenanceIdentity(); Stage = SetupStage.Progress; Page = DesktopPage.Install; }
+            catch (Exception error) { await ErrorAsync("The application changed", error); return; }
+        }
+        if (NeedsMaintenanceElevation(product) || arguments.WizardSmokeDirectory is not null) { await ElevatedMaintenanceAsync(product, "uninstall"); return; }
         Begin("Uninstalling application", product.Name);
         try
         {
             var result = await Task.Run(async () =>
             {
                 await WaitForProductDependencyAsync(product, "uninstall", Cancellation!.Token);
-                return await engine.UninstallAsync(product.Id, OptionsFor(product), Reporter(), Cancellation.Token);
+                return await engine.UninstallAsync(product.Id, OptionsFor(product, "uninstall"), Reporter(), Cancellation.Token);
             });
-            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End("Uninstall complete", $"Removed {product.Name} and its recorded installation changes."); CloseCompletedChild(result.RebootRequired); });
+            await game.OnUiAsync(() => { Update = null; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } RefreshInstalled(); End("Uninstall complete", $"Removed {product.Name} and its recorded installation changes."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Uninstall stopped", error); }
     }
 
-    private InstallOptions OptionsFor(InstalledProduct product) => new()
+    private InstallOptions OptionsFor(InstalledProduct product, string? operation = null) => new()
     {
         StateRoot = arguments.StateRoot,
         TargetDirectory = product.UseOriginalInstallDirectory ? null : product.InstallDirectory,
@@ -300,12 +305,12 @@ internal sealed partial class AppController : IDisposable
         RegisterProduct = product.RegisteredProduct,
         Isolated = product.Isolated,
         InstallerPath = Environment.ProcessPath,
-        Silent = arguments.Silent,
+        Silent = IsWizard || arguments.Silent,
         TrustedPublisherKeySha256 = product.PublisherKeySha256,
         RequireSignature = product.PublisherKeySha256 is not null,
         LogPath = arguments.LogPath,
         LegacyArguments = arguments.LegacyArguments,
-        RunningApplicationsPrompt = PromptRunningApplicationsAsync
+        RunningApplicationsPrompt = (request, token) => PromptRunningApplicationsAsync(operation is null ? request : request with { Operation = operation }, token)
     };
 
     internal static bool NeedsMaintenanceElevation(InstalledProduct product) => !product.Isolated && !InstallerEngine.IsElevated &&
@@ -316,22 +321,19 @@ internal sealed partial class AppController : IDisposable
         Begin(operation == "repair" ? "Repairing application" : "Uninstalling application", "Windows will request administrator access.");
         try
         {
-            var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
-            start.ArgumentList.Add(operation); start.ArgumentList.Add(product.Id);
-            start.ArgumentList.Add("--close-on-complete");
-            if (operation == "uninstall") start.ArgumentList.Add("--maintenance-confirmed");
-            start.ArgumentList.Add("--scope"); start.ArgumentList.Add(product.Scope);
-            if (arguments.WaitForPid is { } pid) { start.ArgumentList.Add("--wait-pid"); start.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-            if (arguments.WaitForStartTicks is { } ticks) { start.ArgumentList.Add("--wait-start"); start.ArgumentList.Add(ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-            if (arguments.LogPath is not null) { start.ArgumentList.Add("--log"); start.ArgumentList.Add(arguments.LogPath); }
-            foreach (var value in arguments.LegacyArguments) { start.ArgumentList.Add("--backend-arg"); start.ArgumentList.Add(value); }
-            if (arguments.StateRoot is not null) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(arguments.StateRoot); }
-            using var process = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the maintenance operation.");
-            await process.WaitForExitAsync();
-            if (process.ExitCode == 1602) throw new OperationCanceledException("Maintenance was canceled. The application is unchanged.");
-            if (process.ExitCode is not (0 or 3010)) throw new InvalidOperationException($"The maintenance operation returned exit code {process.ExitCode}.");
-            await game.OnUiAsync(() => { RefreshInstalled(); End(operation == "repair" ? "Repair complete" : "Uninstall complete", product.Name); });
+            var result = await Task.Run(async () =>
+            {
+                await WaitForProductDependencyAsync(product, operation, Cancellation!.Token);
+                using var package = PackageReader.Open(product.PackagePath);
+                package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
+                var options = OptionsFor(product);
+                options.Silent = true;
+                return await ElevatedInstallWorker.InstallAsync(product.PackagePath, engine.Plan(package, options), options,
+                    PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token, operation);
+            });
+            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } RefreshInstalled(); End(operation == "repair" ? "Repair complete" : "Uninstall complete", product.Name); CloseCompletedChild(result.RebootRequired); });
         }
+        catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 1223) { await ErrorAsync("Maintenance canceled", new OperationCanceledException("Administrator approval was canceled.", error)); }
         catch (Exception error) { await ErrorAsync("Maintenance stopped", error); }
     }
 
@@ -440,7 +442,7 @@ internal sealed partial class AppController : IDisposable
         finally { await game.OnUiAsync(() => { SigningIn = false; Notify(); }); }
     }
 
-    public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; }
+    public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; DisposeWizardArtwork(); }
 
     internal void SaveSettings()
     {
@@ -454,8 +456,9 @@ internal sealed partial class AppController : IDisposable
         Begin("heirowUpdater", "Connecting to the companion update manager.");
         try
         {
-            if (!File.Exists(UpdaterPath)) throw new FileNotFoundException("Install the complete heirowInstaller release to include heirowUpdater next to the desktop executable.");
-            var start = new ProcessStartInfo(UpdaterPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(UpdaterPath)! };
+            var updater = UpdaterPath;
+            if (!File.Exists(updater)) throw new FileNotFoundException("Install or repair heirowInstaller with optional updates enabled to restore its verified heirowUpdater.");
+            var start = new ProcessStartInfo(updater) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(updater)! };
             foreach (var item in command) start.ArgumentList.Add(item);
             if (command.FirstOrDefault() == "update")
             {
@@ -585,9 +588,35 @@ internal sealed partial class AppController : IDisposable
     private IProgress<InstallProgress> Reporter() => new UiProgress(value => game.Enqueue(() =>
     {
         if (value.Phase.Equals("applications", StringComparison.OrdinalIgnoreCase)) ClearRunningApplicationsDialog();
-        Progress = value.Fraction;
-        Status = value.Phase;
-        StatusDetail = value.Message;
+        Progress = IsWizard && Stage == SetupStage.Progress ? Math.Max(Progress, value.Phase.ToLowerInvariant() switch
+        {
+            "verify" => value.Fraction * 0.10,
+            "extract" => 0.12 + value.Fraction * 0.30,
+            "install" => 0.45 + value.Fraction * 0.50,
+            "uninstall" => 0.15 + value.Fraction * 0.80,
+            "complete" => 1,
+            _ => Progress
+        }) : value.Fraction;
+        Status = IsWizard ? value.Phase.ToLowerInvariant() switch
+        {
+            "verify" => "Checking application files",
+            "extract" => "Preparing application files",
+            "applications" => "Applications closed",
+            "install" => "Installing application files",
+            "uninstall" => "Removing application files",
+            "complete" => MaintenanceOperation == "uninstall" ? "Uninstall complete" : MaintenanceOperation == "repair" ? "Repair complete" : "Installation complete",
+            _ => "Installing " + Manifest!.Name
+        } : value.Phase;
+        StatusDetail = IsWizard ? value.Phase.ToLowerInvariant() switch
+        {
+            "verify" => "Checking your application's installation files.",
+            "extract" => "Preparing the selected application files.",
+            "install" => "Installing the selected application components.",
+            "uninstall" => "Removing the application and its recorded changes.",
+            "applications" => "The apps using this installation have closed. Setup is continuing.",
+            "complete" => MaintenanceOperation == "uninstall" ? "The application has been removed." : "Your application is ready to use.",
+            _ => "Applying this application's installation changes."
+        } : value.Message;
         AddActivity(value.Phase, value.Message);
         Notify();
     }));
