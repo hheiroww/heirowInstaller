@@ -15,6 +15,8 @@ internal static class PublishingCommands
             throw new ArgumentException("--sealed-delivery requires the native administrator bearer session and cannot use GitHub OIDC or browser cookies.");
         if (protectedPreparation && (sealedDelivery || githubOidc || sessionCookie is not null))
             throw new ArgumentException("--protected-preparation is for native administrator bearer publishing; use --github-oidc separately for CI preparation.");
+        if (protectedPreparation && !Path.GetExtension(packagePath).Equals(".hinst", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Native protected preparation requires a .hinst source draft.");
         if (!githubOidc && resumeUploadId is not null)
             throw new ArgumentException("--resume-upload requires --github-oidc.");
         string productId, version;

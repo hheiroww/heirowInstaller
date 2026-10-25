@@ -59,7 +59,8 @@ public sealed partial class PublisherClient : IDisposable
     public Task<PublishedRelease> PublishProtectedPreparationAsync(string packagePath, CancellationToken cancellationToken = default,
         string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
     {
-        RequireFullInput(packagePath);
+        if (!Path.GetExtension(packagePath).Equals(".hinst", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Native protected preparation requires a .hinst source draft.", nameof(packagePath));
         if (client.DefaultRequestHeaders.Authorization?.Scheme != "Bearer" || client.DefaultRequestHeaders.Contains("Cookie"))
             throw new InvalidOperationException("Native protected preparation requires the publisher's in-memory bearer session.");
         return PublishCoreAsync(packagePath, null, null, cancellationToken, releaseNotes, progress, protectedPreparation: true);

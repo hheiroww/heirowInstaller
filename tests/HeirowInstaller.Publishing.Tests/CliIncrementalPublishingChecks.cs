@@ -143,8 +143,11 @@ internal static class CliIncrementalPublishingChecks
             && !nativeDraft.Error.Contains("Unknown option", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,
             "Actual CLI parses native preparation and requires its explicit in-memory bearer session before HTTP");
         var wrongLane = await Run(delta, ["--protected-preparation"], cookie: false);
-        check(wrongLane.ExitCode == 2 && wrongLane.Error.Contains("require a full", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,
+        check(wrongLane.ExitCode == 2 && wrongLane.Error.Contains("requires a .hinst source draft", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,
             "Actual CLI keeps file transitions out of the full protected preparation lane");
+        var executableDraft = await Run(Path.Combine(directory, "not-a-preparation.exe"), ["--protected-preparation"], cookie: false);
+        check(executableDraft.ExitCode == 2 && executableDraft.Error.Contains("requires a .hinst source draft", StringComparison.Ordinal)
+            && server.Requests.Count == beforeFlags, "Actual CLI refuses executable preparation inputs before opening or uploading them");
         check(server.UnexpectedRequests == 0, "CLI regression fixtures made only the expected local publisher requests");
         if (server.Failure is not null) throw new Exception("CLI loopback publisher fixture failed.", server.Failure);
     }

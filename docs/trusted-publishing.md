@@ -42,4 +42,4 @@ For the finished large package, use `PublisherClient.PublishSealedDeliveryAsync(
 
 The final delivery lane requires a native administrator bearer session and rejects browser cookies and scoped CI credentials. GitHub trusted publishing continues to publish component preparation drafts without persistent account credentials; it does not grant administration or final-delivery privileges.
 
-The explicit preparation and completed-delivery lanes accept full `.hinst` or standalone `.exe` inputs. Publish signed `.hupd` transitions through the ordinary file-update publisher; a file transition is not a component source draft or a full installer.
+Native protected preparation accepts only a `.hinst` source draft. Completed sealed delivery accepts a full `.hinst` or standalone `.exe`. Publish signed `.hupd` transitions through the ordinary file-update publisher; a file transition is not a component source draft or a full installer.
