@@ -31,6 +31,7 @@ Directory.CreateDirectory(root);
 try
 {
     await TrustedPublishingChecks.RunAsync(Check, root);
+    await CliIncrementalPublishingChecks.RunAsync(Check, root);
     using var listener = new TcpListener(IPAddress.Loopback, 0);
     listener.Start();
     var endpoint = (IPEndPoint)listener.LocalEndpoint;

@@ -14,7 +14,16 @@ internal static class PublishingCommands
         if (!githubOidc && resumeUploadId is not null)
             throw new ArgumentException("--resume-upload requires --github-oidc.");
         string productId, version;
-        using (var package = PackageReader.Open(packagePath))
+        if (Path.GetExtension(packagePath).Equals(".hupd", StringComparison.OrdinalIgnoreCase))
+        {
+            using var update = IncrementalUpdateReader.Open(packagePath);
+            update.VerifySignature(validation.TrustedPublisherKeySha256, requireSignature: true);
+            await update.VerifyAsync(cancellationToken: cancellationToken);
+            var transition = update.Transition;
+            productId = transition.ProductId;
+            version = transition.ToVersion;
+        }
+        else using (var package = PackageReader.Open(packagePath))
         {
             // OIDC identifies the publisher; package signatures still authenticate the delivered code.
             var protectedDraft = githubOidc && package.Manifest.Modules.TryGetValue("SocketJackSecurityLoader", out _);
