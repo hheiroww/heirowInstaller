@@ -51,6 +51,7 @@ internal static class ApplicationCommands
         long? ticks = args.Get("application-start") is { } ticksText ? long.Parse(ticksText, System.Globalization.CultureInfo.InvariantCulture) : null;
         var options = new ApplicationLifecycleOptions { AllowLoopback = args.Has("allow-loopback"), NoPrompt = args.Has("no-prompt"),
             ApplicationHost = args.Get("application-host"), StatusPath = Acceptance("status-file", "HEIROWUPDATER_TEST_STATUS_FILE"), DownloadDirectory = args.Get("download-directory"),
+            RunningApplicationsPrompt = (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, configuration, configurationPath, cancellation),
             AuthenticateAsync = async (profile, cancellation) =>
             {
                 if (!await NativeUpdatePrompt.SignInAsync(profile, configurationPath, cancellation)) return null;
@@ -105,12 +106,16 @@ internal static class ApplicationCommands
         if (product.Scope == "machine" && !product.Isolated && !InstallerEngine.IsElevated)
         {
             var start = new ProcessStartInfo(System.Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
-            start.ArgumentList.Add(command); start.ArgumentList.Add(id); start.ArgumentList.Add("--silent");
+            start.ArgumentList.Add(command); start.ArgumentList.Add(id);
+            foreach (var flag in new[] { "silent", "no-prompt" }) if (args.Has(flag)) start.ArgumentList.Add("--" + flag);
             if (args.Get("state-root") is { } root) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(root); }
             using var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start application maintenance.");
             await child.WaitForExitAsync(token); return child.ExitCode;
         }
-        var options = new InstallOptions { StateRoot = args.Get("state-root"), Scope = product.Scope, Isolated = product.Isolated, Silent = args.Has("silent"), InstallerPath = System.Environment.ProcessPath };
+        var identity = NativeUpdatePrompt.MaintenanceIdentity(product, args.Get("state-root"));
+        var options = new InstallOptions { StateRoot = args.Get("state-root"), Scope = product.Scope, Isolated = product.Isolated, Silent = args.Has("silent"), InstallerPath = System.Environment.ProcessPath,
+            RunningApplicationsPrompt = args.Has("silent") || args.Has("no-prompt") ? null
+                : (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, identity, null, cancellation) };
         var result = command == "repair" ? await new InstallerEngine().RepairAsync(id, options, cancellationToken: token) : await new InstallerEngine().UninstallAsync(id, options, cancellationToken: token);
         return result.RebootRequired ? 3010 : 0;
     }

@@ -63,7 +63,7 @@ function Stop-OwnedApp([Diagnostics.Process]$Process) {
     if ($null -eq $Process -or $Process.HasExited) { return }
     if (-not $Process.Path.Equals($installedExe,[StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing to close a process outside the unique fixture target.' }
     $null=$Process.CloseMainWindow()
-    if (-not $Process.WaitForExit(10000)) { $Process.Kill();$Process.WaitForExit() }
+    if (-not $Process.WaitForExit(10000)) { throw 'The owned native fixture did not accept a normal close request; it was left intact for inspection.' }
 }
 
 try {
@@ -161,6 +161,7 @@ try {
     $start=[Diagnostics.ProcessStartInfo]::new($installedExe)
     $start.UseShellExecute=$false;$start.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden;$start.WorkingDirectory=$target
     foreach($argument in @('--isolated','--target',$target,'--state-root',$state,'--self-update-smoke-feed',"$origin/update.json",'--self-update-smoke-report',$hookReport,'--capture',(Join-Path $runDirectory 'old-native-window.png'))){$start.ArgumentList.Add($argument)}
+    foreach ($name in @('HEIROWUPDATER_TOKEN','HEIROWUPDATER_COOKIE','SOCKETJACK_DOWNLOAD_TOKEN','SOCKETJACK_DOWNLOAD_COOKIE','SOCKETJACK_PUBLISHER_TOKEN','SOCKETJACK_PUBLISHER_COOKIE')) { $start.Environment.Remove($name) | Out-Null }
     $oldApp=[Diagnostics.Process]::Start($start)
     $receipt.oldPid=$oldApp.Id
     Wait-For -Condition {Test-Path -LiteralPath $hookReport} -Description 'the actual native controller update check and handoff' -Seconds 90
@@ -195,7 +196,7 @@ finally {
     if($newApp){try{Stop-OwnedApp $newApp}catch{$receipt.cleanup.appCloseError=$_.Exception.Message}}
     if($server){
         [IO.File]::WriteAllText((Join-Path $runDirectory 'server-stop.flag'),'stop')
-        if(-not $server.WaitForExit(10000)){$server.Kill();$server.WaitForExit()}
+        if(-not $server.WaitForExit(10000)){$receipt.cleanup.serverStopError='The owned loopback fixture did not exit after its stop signal; it was left intact for inspection.'}
         $receipt.cleanup.loopbackServerExited=$server.HasExited;$server.Dispose()
     }
     $receipt.cleanup.installedExecutableAbsent=-not (Test-Path -LiteralPath $installedExe)

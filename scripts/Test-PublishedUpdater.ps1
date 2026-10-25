@@ -186,8 +186,8 @@ try {
     $parentStatus = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
     Assert-Check ($parentStatus.transport -eq 'SocketJack' -and $parentStatus.products[0].status -eq 'update-staged') 'The caller-selected parent status file recorded the real SocketJack staged result'
 
-    Wait-For { @(Get-ChildItem -LiteralPath $downloads -Directory -Filter 'trusted-helper-*').Count -eq 1 } 'the trusted helper outside the installation' 15
-    $helperDirectory = @(Get-ChildItem -LiteralPath $downloads -Directory -Filter 'trusted-helper-*')[0].FullName
+    Wait-For { @(Get-ChildItem -LiteralPath $downloads -Directory -Filter 'h-*').Count -eq 1 } 'the trusted helper outside the installation' 15
+    $helperDirectory = @(Get-ChildItem -LiteralPath $downloads -Directory -Filter 'h-*')[0].FullName
     $helperExe = Join-Path $helperDirectory 'heirowUpdater.exe'
     $helperCli = Join-Path $helperDirectory 'heirowInstaller.Cli.exe'
     Assert-Check (-not $helperDirectory.StartsWith($target + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and (Get-FileHash -LiteralPath $helperExe -Algorithm SHA256).Hash.ToLowerInvariant() -eq $oldHash -and (Get-FileHash -LiteralPath $helperCli -Algorithm SHA256).Hash.ToLowerInvariant() -eq $cliHash) 'The staged trusted helper and maintenance CLI were copied from the actual installed host directory'

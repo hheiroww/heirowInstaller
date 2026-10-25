@@ -37,6 +37,7 @@ internal sealed partial class InstallerScene : Scene
         EnableDesignTimeControls = false;
         isCursorVisible = false;
         Controller = new AppController(game, arguments);
+        confirmUninstall = arguments.MaintenanceOperation == "uninstall" && !arguments.MaintenanceConfirmed;
         Controller.Changed += () => dirty = true;
         ViewportResized += (_, _) => dirty = true;
     }
@@ -49,26 +50,49 @@ internal sealed partial class InstallerScene : Scene
         if (dirty || lastWidth != Width || lastHeight != Height) Rebuild();
     }
 
+    public override void Tick(GameTime gameTime)
+    {
+        // Input is dispatched by SceneManager immediately before this tick.
+        // Register the replacement before base.Tick processes the scene queues;
+        // drawing a tree queued after that point would produce an empty frame.
+        RefreshLayoutIfNeeded();
+        base.Tick(gameTime);
+    }
+
     internal void Rebuild()
     {
-        dirty = false; lastWidth = Width; lastHeight = Height;
-        root?.Dispose(); controls.Clear();
+        var previousRoot = root;
+        var previousControls = controls.ToArray();
+        controls.Clear();
         root = new RectangleElement(this) { Position = Vector2.Zero, Size = new Vector2(Width, Height), BackgroundColor = Theme.Background, Padding = new Thickness(0) };
-        AddElement(root);
-        BuildRail();
-        BuildHeader();
-        switch (Controller.Page)
+        try
         {
-            case DesktopPage.Install: BuildInstall(); break;
-            case DesktopPage.Installed: BuildInstalled(); break;
-            case DesktopPage.Workspace: BuildWorkspace(); break;
-            case DesktopPage.Updates: BuildUpdates(); break;
-            case DesktopPage.Activity: BuildActivity(); break;
-            case DesktopPage.Settings: BuildSettings(); break;
+            BuildRail();
+            BuildHeader();
+            switch (Controller.Page)
+            {
+                case DesktopPage.Install: BuildInstall(); break;
+                case DesktopPage.Installed: BuildInstalled(); break;
+                case DesktopPage.Workspace: BuildWorkspace(); break;
+                case DesktopPage.Updates: BuildUpdates(); break;
+                case DesktopPage.Activity: BuildActivity(); break;
+                case DesktopPage.Settings: BuildSettings(); break;
+            }
+            BuildStatus();
+            if (confirmUninstall) BuildUninstallConfirmation();
+            if (showLicense) BuildLicense();
+            if (Controller.RunningApplicationsDialog is not null) BuildRunningApplicationsDialog();
+            AddElement(root);
+            previousRoot?.Dispose();
+            dirty = false; lastWidth = Width; lastHeight = Height;
         }
-        BuildStatus();
-        if (confirmUninstall) BuildUninstallConfirmation();
-        if (showLicense) BuildLicense();
+        catch
+        {
+            root.Dispose(); root = previousRoot;
+            controls.Clear();
+            foreach (var control in previousControls) controls.Add(control.Key, control.Value);
+            throw;
+        }
     }
 
     private T Add<T>(T element, string? id = null) where T : SceneElement
@@ -96,7 +120,7 @@ internal sealed partial class InstallerScene : Scene
             MouseOverBackgroundColor = primary ? Color.Lerp(tone, Color.White, 0.12f) : new Color(40, 54, 67),
             MouseDownBackgroundColor = primary ? Color.Lerp(tone, Color.Black, 0.13f) : new Color(45, 65, 72),
             CornerRadius = 8, BorderColor = primary ? Color.Transparent : Theme.Border, BorderThickness = primary ? 0 : 1,
-            isEnabled = enabled, Padding = new Thickness(12, 6, 12, 6), isAnimated = false
+            isEnabled = enabled && (Controller.RunningApplicationsDialog is null || id.StartsWith("running.", StringComparison.Ordinal)), Padding = new Thickness(12, 6, 12, 6), isAnimated = false
         }, id);
         button.MouseLeftClick += _ => click();
         return button;
@@ -109,7 +133,7 @@ internal sealed partial class InstallerScene : Scene
             Position = new(x, y), Size = new(width, height), Font = Theme.Font(10.5f), ForegroundColor = Theme.Text,
             BackgroundColor = Theme.Field, BorderColor = Theme.Border, BorderThickness = 1, CornerRadius = 8,
             TextPadding = new Vector2(12, multiline ? 10 : 9), AcceptsReturn = multiline, WrapText = multiline,
-            Padding = new Thickness(0), Text = value
+            Padding = new Thickness(0), Text = value, isEnabled = Controller.RunningApplicationsDialog is null
         }, id);
         field.OnTextChanged += change => changed(change.NewText);
         return field;

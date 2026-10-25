@@ -27,6 +27,8 @@ The public repository contains the installer tooling and public publisher identi
 
 Windows x64 and the .NET 10 SDK are required to build the tooling. Each released application setup is a self-contained executable; its recipient does not need heirowInstaller, the SDK, or a WiX compiler installed.
 
+When an app uses files being installed, repaired, or removed, the native interface offers **Close apps and continue** or **Cancel installation**. Closing uses the application's normal window request, allowing it to ask about unsaved work. Apps that remain open return to a responsive retry/cancel prompt. [Running-app integration](docs/running-applications.md) includes signed plugin resources and the noninteractive command-line contract.
+
 ```powershell
 dotnet build heirowInstaller.sln -c Release
 pwsh -File scripts/Test.ps1

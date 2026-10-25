@@ -17,6 +17,7 @@ internal sealed class InstallerGame : Game
     private SpriteBatch spriteBatch = null!;
     private int drawCount;
     private bool automaticCapture;
+    private NavigationCapture? navigationCapture;
 
     public InstallerGame(AppArguments arguments)
     {
@@ -55,7 +56,13 @@ internal sealed class InstallerGame : Game
         manager.AddScene("installer", MainScene);
         manager.ActiveScene = MainScene;
         MainScene.Rebuild();
-        if (arguments.SelfUpdateSmokeFeed is not null)
+        if (arguments.MaintenanceOperation == "repair")
+            _ = MainScene.Controller.RepairAsync();
+        else if (arguments.MaintenanceOperation == "uninstall")
+        {
+            if (arguments.MaintenanceConfirmed) _ = MainScene.Controller.UninstallAsync();
+        }
+        else if (arguments.SelfUpdateSmokeFeed is not null)
             _ = MainScene.Controller.RunSelfUpdateAcceptanceAsync();
         else if (arguments.SmokeDirectory is not null)
             _ = DesktopSmoke.RunAsync(this, arguments.SmokeDirectory);
@@ -79,19 +86,32 @@ internal sealed class InstallerGame : Game
         return completion.Task;
     }
 
+    internal Task<IReadOnlyList<NavigationFrame>> CaptureNavigationAsync(string id, string directory)
+    {
+        var completion = new TaskCompletionSource<IReadOnlyList<NavigationFrame>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Enqueue(() =>
+        {
+            if (navigationCapture is not null) { completion.SetException(new InvalidOperationException("A navigation frame capture is already running.")); return; }
+            Directory.CreateDirectory(directory);
+            navigationCapture = new(directory, completion);
+            Activate(id);
+        });
+        return completion.Task;
+    }
+
     protected override void Update(GameTime gameTime)
     {
         while (actions.TryDequeue(out var action)) action();
         MainScene.Controller.ExpirePublisherSession();
         manager.Tick(gameTime);
-        MainScene.RefreshLayoutIfNeeded();
         base.Update(gameTime);
     }
 
     protected override void Draw(GameTime gameTime)
     {
         GraphicsDevice.Clear(Theme.Background);
-        manager.Draw(gameTime);
+        if (navigationCapture is { } capture) DrawNavigationFrame(gameTime, capture);
+        else manager.Draw(gameTime);
         drawCount++;
         if (!automaticCapture && drawCount > 15 && arguments.CapturePath is not null)
         {
@@ -119,6 +139,47 @@ internal sealed class InstallerGame : Game
         base.Draw(gameTime);
     }
 
+    // During acceptance this is the single scene render presented to the window,
+    // not a delayed screenshot or an extra draw that could hide an empty frame.
+    private void DrawNavigationFrame(GameTime time, NavigationCapture capture)
+    {
+        var width = GraphicsDevice.Viewport.Width; var height = GraphicsDevice.Viewport.Height;
+        capture.Target ??= new RenderTarget2D(GraphicsDevice, width, height, false, SurfaceFormat.Color, DepthFormat.Depth24Stencil8);
+        GraphicsDevice.SetRenderTarget(capture.Target);
+        GraphicsDevice.Clear(Theme.Background);
+        manager.Draw(time);
+        GraphicsDevice.SetRenderTarget(null);
+        spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.Opaque, SamplerState.PointClamp, DepthStencilState.None, RasterizerState.CullNone);
+        spriteBatch.Draw(capture.Target, new Microsoft.Xna.Framework.Rectangle(0, 0, width, height), Color.White);
+        spriteBatch.End();
+        var pixels = new Color[width * height];
+        capture.Target.GetData(pixels);
+        var railPixels = 0; var headerPixels = 0;
+        for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+            {
+                var pixel = pixels[y * width + x];
+                if (x < 220 && pixel == Theme.Rail) railPixels++;
+                if (x >= 250 && y >= 20 && y < 115 && pixel.R >= 100 && pixel.G >= 100 && pixel.B >= 100) headerPixels++;
+            }
+        var frame = new NavigationFrame(drawCount + 1, MainScene.Controller.Page.ToString(), width, height, railPixels, headerPixels, IsFixedTimeStep);
+        capture.Frames.Add(frame);
+        using (var file = File.Create(Path.Combine(capture.Directory, $"{capture.Frames.Count:00}.png"))) capture.Target.SaveAsPng(file, width, height);
+        if (capture.Frames.Count < 4) return;
+        navigationCapture = null;
+        capture.Target.Dispose();
+        capture.Completion.SetResult(capture.Frames);
+    }
+
+    internal sealed record NavigationFrame(int DrawNumber, string Page, int Width, int Height, int RailPixels, int HeaderTextPixels, bool FixedTimeStep);
+    private sealed class NavigationCapture(string directory, TaskCompletionSource<IReadOnlyList<NavigationFrame>> completion)
+    {
+        internal string Directory { get; } = directory;
+        internal TaskCompletionSource<IReadOnlyList<NavigationFrame>> Completion { get; } = completion;
+        internal List<NavigationFrame> Frames { get; } = [];
+        internal RenderTarget2D? Target { get; set; }
+    }
+
     internal void Activate(string id)
     {
         var rectangle = MainScene.Control(id).Rectangle;
@@ -138,6 +199,8 @@ internal sealed class InstallerGame : Game
 
     protected override void UnloadContent()
     {
+        navigationCapture?.Target?.Dispose();
+        navigationCapture?.Completion.TrySetCanceled();
         MainScene?.Controller.Dispose();
         MainScene?.Dispose();
         spriteBatch?.Dispose();

@@ -17,6 +17,8 @@ public sealed class ApplicationLifecycleOptions
     public string? ApplicationHost { get; set; }
     public Func<UpdateCompanionConfiguration, CancellationToken, Task<string?>>? AuthenticateAsync { get; set; }
     public Action<ApplicationLifecycleResult>? StatusChanged { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? RunningApplicationsPrompt { get; set; }
 }
 public sealed class ApplicationLifecycleResult : IDisposable
 {
@@ -90,6 +92,15 @@ public static class ApplicationUpdater
         if (!Path.GetFullPath(installed.InstallDirectory).Equals(configuration.InstallDirectory, StringComparison.OrdinalIgnoreCase) ||
             !PackageSafety.HashEquals(installed.PublisherKeySha256 ?? "", configuration.PublisherKeySha256) || installed.Isolated != configuration.Isolated)
             throw new InvalidDataException("The application updater configuration does not match its installed receipt.");
+        // The writable profile is not authority to close another application. Rebind closure resources to signed package metadata.
+        using (var package = PackageReader.Open(installed.PackagePath))
+        {
+            package.VerifySignature(installed.PublisherKeySha256, requireSignature: true);
+            if (!package.Manifest.EntryPoint.Equals(configuration.EntryPoint, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The updater entry point does not match its signed installed package.");
+            configuration.AffectedResourceFiles = RunningApplicationTarget.FromManifest(package.Manifest, installed.InstallDirectory,
+                features: installed.Features).AffectedResourceFiles.ToList();
+        }
         configuration.CurrentVersion = installed.Version;
         configuration.Features = installed.Features;
         return configuration;
@@ -230,8 +241,11 @@ public static class ApplicationUpdater
                     DownloadDirectory = options.DownloadDirectory ?? Path.Combine(directory, "downloads"), StageForElevation = true };
                 using var current = Process.GetCurrentProcess();
                 var handoff = await Authorized(client => client.PrepareInstallerHandoffAsync(target, check, current.Id, current.StartTime.ToUniversalTime().Ticks, policy, cancellationToken: cancellationToken));
-                if (AppRunning()) await Status("waiting-for-exit", check);
-                await WaitForApps();
+                if (AppRunning()) await Status("waiting-for-applications", check);
+                var runningTarget = RunningApplicationTarget.FromConfiguration(configuration).WithWaitOnlyExecutables(
+                    ApplicationHostRegistry.Paths(configuration).Concat(options.ApplicationHost is { } host ? [host] : []));
+                await RunningApplications.EnsureClosedAsync(runningTarget,
+                    options.NoPrompt ? null : options.RunningApplicationsPrompt, cancellationToken);
                 handoff.ArgumentList.Add("--lifecycle-config"); handoff.ArgumentList.Add(configurationPath);
                 handoff.ArgumentList.Add("--lifecycle-state"); handoff.ArgumentList.Add(statePath);
                 var readyPath = Path.Combine(Path.GetDirectoryName(handoff.FileName)!, "lifecycle-ready-" + Guid.NewGuid().ToString("N") + ".json");

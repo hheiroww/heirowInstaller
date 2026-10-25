@@ -65,6 +65,15 @@ public static partial class PackageSafety
             ValidateId(feature.Id);
             if (!featureIds.Add(feature.Id)) throw new InvalidDataException($"Duplicate feature: {feature.Id}");
         }
+        var affectedResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (manifest.AffectedResources.Count > 256) throw new InvalidDataException("A package may declare at most 256 exact affected-resource files.");
+        foreach (var resource in manifest.AffectedResources)
+        {
+            if (resource.Feature is not null && !featureIds.Contains(resource.Feature))
+                throw new InvalidDataException("An affected resource references an unknown feature.");
+            var resolved = RunningApplicationTarget.ResolveResourceFile(resource.Path, Path.Combine(Path.GetTempPath(), "heirowInstaller-resource-validation"));
+            if (!affectedResources.Add(resolved)) throw new InvalidDataException("Duplicate affected-resource file.");
+        }
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (manifest.Payload.Count == 0) throw new InvalidDataException("Package has no payload files.");
         foreach (var file in manifest.Payload)

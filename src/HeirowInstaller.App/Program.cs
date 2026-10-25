@@ -9,33 +9,26 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        AppArguments? options = null;
         try
         {
-            if (args.Length >= 2 && args[0] is "uninstall" or "repair") return Maintain(args);
-            var options = AppArguments.Parse(args);
-            if (options.WaitForPid is { } waitForPid)
-            {
-                try
-                {
-                    using var previous = Process.GetProcessById(waitForPid);
-                    if (options.WaitForStartTicks is null || previous.StartTime.ToUniversalTime().Ticks == options.WaitForStartTicks)
-                        if (!previous.WaitForExit(120_000)) throw new TimeoutException("The previous application did not exit within two minutes.");
-                }
-                catch (ArgumentException) { }
-            }
+            var maintenance = args.Length >= 2 && args[0] is "uninstall" or "repair";
+            options = maintenance ? AppArguments.Parse(args.Skip(2).ToArray()) with { MaintenanceProductId = args[1], MaintenanceOperation = args[0] } : AppArguments.Parse(args);
             if (options.Silent)
             {
+                EnsureRequestedDependencyExited(options);
+                if (maintenance) return Maintain(args, options);
                 if (options.PackagePath is null) throw new ArgumentException("Silent installation requires a .hinst package or bundled installer.");
                 using var package = PackageReader.Open(options.PackagePath);
                 options.ValidatePackageIdentity(package);
                 var engine = new InstallerEngine();
                 var install = new InstallOptions { TargetDirectory = options.TargetDirectory, StateRoot = options.StateRoot, Scope = options.Scope, Features = options.Features, Silent = true, InstallerPath = Environment.ProcessPath, Isolated = options.Isolated, RegisterProduct = !options.Isolated && !options.NoRegister, Launch = options.Launch, TrustedPublisherKeySha256 = options.TrustedPublisherKeySha256, RequireSignature = options.RequireSignature, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
-                if (engine.Plan(package, install).RequiresElevation && !InstallerEngine.IsElevated) return Elevate(args);
+                if (engine.Plan(package, install).RequiresElevation && !InstallerEngine.IsElevated && !options.Isolated) return Elevate(args);
                 var result = engine.InstallAsync(package, install).GetAwaiter().GetResult();
                 return result.RebootRequired ? 3010 : 0;
             }
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
-            if (options.PackagePath is null && !options.Install && !options.Isolated && options.SmokeDirectory is null && options.SelfUpdateSmokeFeed is null && options.CapturePath is null)
+            if (!maintenance && options.PackagePath is null && !options.Install && !options.Isolated && options.SmokeDirectory is null && options.SelfUpdateSmokeFeed is null && options.CapturePath is null)
                 global::SocketJack.HeirowUpdaterBootstrap.StartAfterExit();
             using var game = new InstallerGame(options);
             game.Run();
@@ -43,7 +36,7 @@ internal static class Program
         }
         catch (Exception error)
         {
-            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "Logs");
+            var directory = options is { Isolated: true, StateRoot: { } stateRoot } ? Path.Combine(stateRoot, "Logs") : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "Logs");
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, "desktop-error.log");
             File.AppendAllText(path, $"{DateTimeOffset.Now:O}\n{error}\n\n");
@@ -53,16 +46,28 @@ internal static class Program
         }
     }
 
-    private static int Maintain(string[] args)
+    private static int Maintain(string[] args, AppArguments options)
     {
-        var options = AppArguments.Parse(args.Skip(2).ToArray());
         var install = new InstallOptions { StateRoot = options.StateRoot, Scope = options.Scope, Silent = options.Silent, InstallerPath = Environment.ProcessPath, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
         var product = InstallerEngine.ListInstalled(options.StateRoot).FirstOrDefault(value => value.Id.Equals(args[1], StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException("The application is not installed.");
         if (AppController.NeedsMaintenanceElevation(product)) return Elevate(args);
-        if (args[0] == "uninstall" && !options.Silent && System.Windows.Forms.MessageBox.Show($"Uninstall {product.Name}?", "heirowInstaller", System.Windows.Forms.MessageBoxButtons.YesNo, System.Windows.Forms.MessageBoxIcon.Question) != System.Windows.Forms.DialogResult.Yes) return 0;
         var engine = new InstallerEngine();
         var result = args[0] == "uninstall" ? engine.UninstallAsync(args[1], install).GetAwaiter().GetResult() : engine.RepairAsync(args[1], install).GetAwaiter().GetResult();
         return result.RebootRequired ? 3010 : 0;
+    }
+
+    private static void EnsureRequestedDependencyExited(AppArguments options)
+    {
+        if (options.WaitForPid is not { } pid) return;
+        var running = false;
+        try
+        {
+            using var previous = Process.GetProcessById(pid);
+            running = !previous.HasExited && (options.WaitForStartTicks is null || previous.StartTime.ToUniversalTime().Ticks == options.WaitForStartTicks);
+        }
+        catch (ArgumentException) { }
+        catch (InvalidOperationException) { }
+        if (running) throw new InvalidOperationException("The requested application is still running. Close it and retry, or run the installer without --silent to review the running applications. Silent installation never closes applications automatically.");
     }
 
     private static int Elevate(string[] args)
@@ -77,6 +82,10 @@ internal static class Program
 
 internal sealed record AppArguments(string? PackagePath, string? CapturePath, string? SmokeDirectory, bool Install, string? StateRoot, string? TargetDirectory, string? Scope, List<string>? Features, bool Silent, int? WaitForPid, bool Isolated, bool Launch, bool AcceptLicense, long? WaitForStartTicks, string? TrustedPublisherKeySha256, bool RequireSignature, string? SelfUpdateSmokeFeed, string? SelfUpdateSmokeReport, List<string> LegacyArguments, string? LogPath, string? ExpectedProductId, string? ExpectedVersion, string? ExpectedSha256, bool NoRegister)
 {
+    internal string? MaintenanceProductId { get; init; }
+    internal string? MaintenanceOperation { get; init; }
+    internal bool MaintenanceConfirmed { get; init; }
+    internal bool CloseOnComplete { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
     {
         if (ExpectedProductId is not null && !package.Manifest.Id.Equals(ExpectedProductId, StringComparison.OrdinalIgnoreCase))
@@ -95,6 +104,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? trustedKey = null, selfUpdateFeed = null, selfUpdateReport = null; var requireSignature = false;
         List<string> legacyArguments = []; string? logPath = null;
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
+        var closeOnComplete = false; var maintenanceConfirmed = false;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
@@ -116,6 +126,8 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
                 case "--expected-version": expectedVersion = Value(); break;
                 case "--expected-sha256": expectedSha256 = Value(); break;
                 case "--no-register": noRegister = true; break;
+                case "--close-on-complete": closeOnComplete = true; break;
+                case "--maintenance-confirmed": maintenanceConfirmed = true; break;
                 case "--self-update-smoke-feed": selfUpdateFeed = Value(); break;
                 case "--self-update-smoke-report": selfUpdateReport = Path.GetFullPath(Value()); break;
                 case "--backend-arg": legacyArguments.Add(Value()); break;
@@ -147,6 +159,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         if (selfUpdateFeed is not null && (!isolated || state is null || target is null || selfUpdateReport is null ||
             !Uri.TryCreate(selfUpdateFeed, UriKind.Absolute, out var smokeUri) || !smokeUri.IsLoopback || smokeUri.Scheme is not ("http" or "https")))
             throw new ArgumentException("Self-update acceptance requires an explicit isolated state, target, report, and loopback feed.");
-        return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister);
+        return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
+        { CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed };
     }
 }

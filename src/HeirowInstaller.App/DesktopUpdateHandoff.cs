@@ -31,10 +31,10 @@ internal static class DesktopUpdateHandoff
         }
         // The signed package does not authenticate an arbitrary downloaded EXE prefix.
         // Run our already installed engine and treat the entire download as package data.
-        var executable = CopyHelper();
+        var executable = CopyHelper(options);
         var start = new ProcessStartInfo(executable) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(executable)! };
         if (product.Scope == "machine" && !InstallerEngine.IsElevated) start.Verb = "runas";
-        start.ArgumentList.Add("--silent");
+        start.ArgumentList.Add("--close-on-complete");
         start.ArgumentList.Add("--install"); start.ArgumentList.Add(download);
         start.ArgumentList.Add("--expected-product-id"); start.ArgumentList.Add(product.Id);
         start.ArgumentList.Add("--expected-version"); start.ArgumentList.Add(feed.Version);
@@ -49,13 +49,18 @@ internal static class DesktopUpdateHandoff
         if (product.PublisherKeySha256 is { } trustedKey) { start.ArgumentList.Add("--trust-key"); start.ArgumentList.Add(trustedKey); start.ArgumentList.Add("--require-signature"); }
         if (!options.RegisterProduct) start.ArgumentList.Add("--no-register");
         if (options.LogPath is not null) { start.ArgumentList.Add("--log"); start.ArgumentList.Add(options.LogPath); }
+        foreach (var value in options.LegacyArguments) { start.ArgumentList.Add("--backend-arg"); start.ArgumentList.Add(value); }
         start.ArgumentList.Add("--launch");
         _ = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the update installer.");
     }
 
-    private static string CopyHelper()
+    private static string CopyHelper(InstallOptions options)
     {
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "UpdateHost", Guid.NewGuid().ToString("N"));
+        var helperRoot = options.Isolated
+            ? Path.Combine(options.StateRoot ?? throw new InvalidOperationException("Isolated self-updates require a separate state root."), ".update-host")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "UpdateHost");
+        PackageSafety.EnsureNoReparsePoints(helperRoot);
+        var directory = TrustedHelperStaging.NewDirectoryPath(helperRoot, "heirowInstaller.exe");
         Directory.CreateDirectory(directory);
         var source = Path.GetFullPath(AppContext.BaseDirectory);
         PackageSafety.EnsureNoReparsePoints(source);

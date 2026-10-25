@@ -37,6 +37,7 @@ internal static class DesktopElevatedUpdate
         // Cancellation is observed after the child exits; it never kills an installer.
         await child.WaitForExitAsync(CancellationToken.None);
         cancellationToken.ThrowIfCancellationRequested();
+        if (child.ExitCode == 1602) throw new OperationCanceledException("The update was canceled. The installed application is unchanged.");
         if (child.ExitCode is not (0 or 3010)) throw new InvalidOperationException($"The administrator update returned exit code {child.ExitCode}.");
         return new() { ProductId = product.Id, Version = feed.Version, InstallDirectory = product.InstallDirectory, RebootRequired = child.ExitCode == 3010 };
     }
@@ -46,7 +47,7 @@ internal static class DesktopElevatedUpdate
         var host = Environment.ProcessPath ?? throw new InvalidOperationException("The trusted desktop installer host is unavailable.");
         var start = new ProcessStartInfo(host) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(host)! };
         void Value(string key, string value) { start.ArgumentList.Add(key); start.ArgumentList.Add(value); }
-        start.ArgumentList.Add("--silent");
+        start.ArgumentList.Add("--close-on-complete");
         Value("--install", Path.GetFullPath(download));
         Value("--expected-product-id", product.Id);
         Value("--expected-version", feed.Version);
@@ -60,6 +61,7 @@ internal static class DesktopElevatedUpdate
         if (!options.RegisterProduct) start.ArgumentList.Add("--no-register");
         if (options.Isolated) start.ArgumentList.Add("--isolated");
         if (options.LogPath is not null) Value("--log", options.LogPath);
+        foreach (var value in options.LegacyArguments) Value("--backend-arg", value);
         return start;
     }
 }

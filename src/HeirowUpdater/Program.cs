@@ -233,6 +233,7 @@ Credentials remain in environment variables and are sent only to their exact con
             if (args.Get("lifecycle-ready") is { } readyPath)
                 await UpdaterSchedule.WriteJsonAsync(readyPath, new { status = "ready", helperProcessId = System.Environment.ProcessId }, CancellationToken.None);
         }
+        string? waitingDependency = null;
         if (args.Get("wait-pid") is { } waiting)
         {
             var pid = int.Parse(waiting, System.Globalization.CultureInfo.InvariantCulture);
@@ -242,23 +243,53 @@ Credentials remain in environment variables and are sent only to their exact con
             {
                 using var previous = Process.GetProcessById(pid);
                 if (previous.StartTime.ToUniversalTime().Ticks == ticks)
-                    await previous.WaitForExitAsync(token).WaitAsync(TimeSpan.FromMinutes(2), token);
+                {
+                    var image = previous.MainModule?.FileName ?? throw new InvalidOperationException("The handoff process cannot be inspected. Close it and try updating again.");
+                    var trustedUpdater = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The trusted updater image is missing.");
+                    if (TrustedUpdaterImagesMatch(image, trustedUpdater))
+                    {
+                        using var ownerWait = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        ownerWait.CancelAfter(TimeSpan.FromSeconds(3));
+                        try { await previous.WaitForExitAsync(ownerWait.Token); }
+                        catch (OperationCanceledException) when (!token.IsCancellationRequested) { waitingDependency = Path.GetFullPath(image); }
+                    }
+                    else waitingDependency = Path.GetFullPath(image);
+                }
             }
             catch (ArgumentException) { }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                throw new InvalidOperationException("The handoff process cannot be verified. Close it yourself, then run the updater again.");
+            }
         }
         if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256"))) throw new System.Security.Cryptography.CryptographicException("Staged update hash mismatch.");
-        if (lifecycle is not null)
-        {
-            await ApplicationProcesses.WaitForExitAsync(PackageSafety.UnderRoot(lifecycle.InstallDirectory, lifecycle.EntryPoint), token, args.Get("application-host"), () => ApplicationHostRegistry.Paths(lifecycle));
-        }
         using var package = PackageReader.Open(path);
-        if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256"))) throw new System.Security.Cryptography.CryptographicException("Staged update changed while waiting for the application to close.");
+        if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256"))) throw new System.Security.Cryptography.CryptographicException("Staged update changed before package verification.");
         var key = args.Get("trust-key");
         package.VerifySignature(key, key is not null || !args.Has("allow-unsigned"));
         if (!package.Manifest.Id.Equals(expectedId, StringComparison.OrdinalIgnoreCase) || package.Manifest.Version != expectedVersion)
             throw new InvalidDataException("Staged update package identity mismatch.");
         await package.VerifyAsync(null, token);
         var prior = InstallerEngine.ListInstalled(args.Get("state-root")).FirstOrDefault(x => x.Id.Equals(expectedId, StringComparison.OrdinalIgnoreCase) && x.Scope == (args.Get("scope") ?? "user"));
+        var promptIdentity = lifecycle ?? (prior is null ? null : NativeUpdatePrompt.MaintenanceIdentity(prior, args.Get("state-root")));
+        Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? runningPrompt =
+            args.Has("no-prompt") || promptIdentity is null ? null : (request, cancellation) =>
+                NativeUpdatePrompt.ShowRunningApplicationsAsync(request, promptIdentity, args.Get("lifecycle-config"), cancellation);
+        if (lifecycle is not null || waitingDependency is not null)
+        {
+            // A handoff PID identifies the previous updater only. Verified profile
+            // targets and fresh user consent govern any application close request.
+            var extraHost = args.Get("application-host");
+            var target = lifecycle is not null ? RunningApplicationTarget.FromConfiguration(lifecycle)
+                : RunningApplicationTarget.FromPlan(new InstallerEngine().Plan(package, new() { TargetDirectory = args.Get("target"),
+                    StateRoot = args.Get("state-root"), Scope = args.Get("scope"), Features = prior?.Features,
+                    TrustedPublisherKeySha256 = key, RequireSignature = key is not null || !args.Has("allow-unsigned"), Isolated = args.Has("isolated") }), "update");
+            target = target.WithWaitOnlyExecutables((lifecycle is null ? [] : ApplicationHostRegistry.Paths(lifecycle))
+                .Concat(extraHost is null ? [] : new[] { extraHost }).Concat(waitingDependency is null ? [] : new[] { waitingDependency }));
+            await RunningApplications.EnsureClosedAsync(target, runningPrompt, token);
+        }
+        if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), args.Require("sha256")))
+            throw new System.Security.Cryptography.CryptographicException("Staged update changed while applications were closing.");
         if (lifecycleCancellation?.StopRequested == true) throw new OperationCanceledException("Application maintenance stopped this update.", token);
         var result = await new InstallerEngine().InstallAsync(package, new()
         {
@@ -266,12 +297,30 @@ Credentials remain in environment variables and are sent only to their exact con
             TrustedPublisherKeySha256 = key, RequireSignature = key is not null || !args.Has("allow-unsigned"),
             Features = prior?.Features, Silent = true, Launch = false, InstallerPath = args.Get("maintenance-host"),
             RegisterProduct = prior?.RegisteredProduct ?? true, Isolated = args.Has("isolated"), LogPath = args.Get("log"),
-            CompanionStopAlreadyHandled = lifecycle is not null
+            CompanionStopAlreadyHandled = lifecycle is not null, RunningApplicationsPrompt = runningPrompt
         }, null, token);
         if (args.Get("lifecycle-state") is { } lifecycleState) await ApplicationUpdater.CompleteHandoffAsync(lifecycleState, CancellationToken.None);
         if (args.Get("status-file") is { } statusPath) await UpdaterSchedule.WriteJsonAsync(statusPath, new { status = "updated", result }, CancellationToken.None);
         if (!args.Has("background")) Print(result);
         return result.RebootRequired ? 3010 : 0;
+    }
+    private static bool TrustedUpdaterImagesMatch(string previous, string current)
+    {
+        PackageSafety.EnsureNoReparsePoints(previous); PackageSafety.EnsureNoReparsePoints(current);
+        if (!PackageSafety.HashEquals(PackageSafety.HashFile(previous), PackageSafety.HashFile(current))) return false;
+        // Framework-dependent apphosts share a generic launcher. Their adjacent
+        // managed image and runtime metadata must match as well.
+        foreach (var extension in new[] { ".dll", ".deps.json", ".runtimeconfig.json" })
+        {
+            var left = Path.ChangeExtension(previous, extension); var right = Path.ChangeExtension(current, extension);
+            if (File.Exists(left) != File.Exists(right)) return false;
+            if (File.Exists(left))
+            {
+                PackageSafety.EnsureNoReparsePoints(left); PackageSafety.EnsureNoReparsePoints(right);
+                if (!PackageSafety.HashEquals(PackageSafety.HashFile(left), PackageSafety.HashFile(right))) return false;
+            }
+        }
+        return true;
     }
     private static void Print<T>(T value) => Console.WriteLine(JsonSerializer.Serialize(value, InstallerJson.Options));
     private sealed class InlineProgress(Action<InstallProgress> report) : IProgress<InstallProgress> { public void Report(InstallProgress value) => report(value); }

@@ -323,12 +323,14 @@ return operation == "fail" ? 42 : operation.StartsWith("install",StringCompariso
             $bundle = [Diagnostics.Process]::Start($bundleStart)
             try {
                 if ($identityMatches) {
-                    Start-Sleep -Milliseconds 1800
-                    Assert-Check (-not $bundle.HasExited -and -not (Test-Path -LiteralPath $waitFile)) 'The actual published bundle --defer/--wait-pid alias waited for the matching process identity before writing payload'
+                    Assert-Check ($bundle.WaitForExit(5000) -and $bundle.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $waitFile) -and -not $hold.HasExited) 'The silent published bundle rejects a live exact dependency promptly without closing it or writing payload'
                     [IO.File]::WriteAllText((Join-Path $holdTarget 'release.flag'),'release')
+                    Assert-Check ($hold.WaitForExit(5000)) 'The owned dependency exits only after its normal release flag'
+                    $null = Invoke-FixtureProcess -Executable $waitSetup -Arguments $bundleArguments -Name 'retry-released-native-dependency'
                 }
                 if (-not $bundle.WaitForExit(15000)) { throw "The $name identity bundle invocation did not complete." }
-                Assert-Check ($bundle.ExitCode -eq 0 -and (Test-Path -LiteralPath $waitFile)) "The $name identity invocation completed native isolated installation"
+                $expectedInitialExit = if ($identityMatches) { 1 } else { 0 }
+                Assert-Check ($bundle.ExitCode -eq $expectedInitialExit -and (Test-Path -LiteralPath $waitFile)) "The $name identity invocation installs only after its required dependency has exited or no longer matches"
                 if (-not $identityMatches) {
                     Assert-Check (-not $hold.HasExited) 'A mismatched --wait-start identity skipped waiting for an unrelated live process'
                     [IO.File]::WriteAllText((Join-Path $holdTarget 'release.flag'),'release')

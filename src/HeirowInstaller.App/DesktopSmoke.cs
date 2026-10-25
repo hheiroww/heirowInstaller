@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using HeirowInstaller.Core;
 using ProjectZ.Shared.Drawing.UI.Input;
 using Button = ProjectZ.Shared.Drawing.UI.Input.Button;
@@ -13,9 +14,23 @@ internal static class DesktopSmoke
         Directory.CreateDirectory(directory);
         var fixture = Path.Combine(directory, "fixture");
         var install = Path.Combine(directory, "installed");
+        var probes = new List<(Process Process, string Directory)>();
         try
         {
             Directory.CreateDirectory(fixture);
+            var probeSource = Environment.GetEnvironmentVariable("HEIROWINSTALLER_SMOKE_APPLICATION") ?? throw new InvalidOperationException("Build RunningApplicationProbe and set HEIROWINSTALLER_SMOKE_APPLICATION to its published executable before running native acceptance.");
+            probeSource = Path.GetFullPath(probeSource);
+            PackageSafety.EnsureNoReparsePoints(probeSource);
+            if (!File.Exists(probeSource) || Path.GetFileName(probeSource) != "RunningApplicationProbe.exe") throw new InvalidDataException("Native acceptance requires the dedicated RunningApplicationProbe executable.");
+            var probeFiles = new[] { "RunningApplicationProbe.exe", "RunningApplicationProbe.dll", "RunningApplicationProbe.deps.json", "RunningApplicationProbe.runtimeconfig.json" };
+            var probePayload = Path.Combine(fixture, "application");
+            Directory.CreateDirectory(probePayload);
+            foreach (var file in probeFiles)
+            {
+                var source = Path.Combine(Path.GetDirectoryName(probeSource)!, file);
+                PackageSafety.EnsureNoReparsePoints(source);
+                File.Copy(source, Path.Combine(probePayload, file));
+            }
             await File.WriteAllTextAsync(Path.Combine(fixture, "hello.txt"), "heirowInstaller native desktop acceptance\n");
             await File.WriteAllTextAsync(Path.Combine(fixture, "readme.txt"), "An optional documentation feature.\n");
             await File.WriteAllTextAsync(Path.Combine(fixture, "LICENSE.txt"), "Desktop acceptance license\n\nPermission is granted to install this isolated acceptance fixture.\n");
@@ -23,15 +38,31 @@ internal static class DesktopSmoke
             {
                 Id = "heirowInstaller.desktop-fixture", Name = "Desktop acceptance app", Version = "1.0.0", Publisher = "heirowInstaller acceptance",
                 Description = "An isolated package used to verify the native installer workflow.",
+                EntryPoint = "application/RunningApplicationProbe.exe",
                 LicenseFile = "LICENSE.txt",
                 Features = [new() { Id = "core", Name = "Application files", Description = "Required application components.", Required = true }, new() { Id = "docs", Name = "Documentation", Description = "Optional reference files.", Default = true }],
                 Payload = [new() { Source = "hello.txt", Path = "hello.txt", Feature = "core" }, new() { Source = "readme.txt", Path = "readme.txt", Feature = "docs" }, new() { Source = "LICENSE.txt", Path = "LICENSE.txt", Feature = "core" }]
             };
+            manifest.Payload.AddRange(probeFiles.Select(file => new PayloadFile { Source = "application/" + file, Path = "application/" + file, Feature = "core" }));
             var manifestPath = Path.Combine(fixture, "installer.json");
             await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
             var package = Path.Combine(directory, "desktop-fixture.hinst");
             await Task.Delay(500);
             await game.CaptureAsync(Path.Combine(directory, "01-welcome.png"));
+            var navigationFrames = new List<InstallerGame.NavigationFrame>();
+            foreach (var fixedTimeStep in new[] { true, false })
+            {
+                // Readback can cause fixed-step catch-up ticks. Also exercise a
+                // single layout tick per presentation so those extra ticks cannot
+                // conceal a page rebuilt after layout.
+                await game.OnUiAsync(() => game.IsFixedTimeStep = fixedTimeStep);
+                for (var pass = 1; pass <= 2; pass++)
+                    foreach (var tab in new[] { "workspace", "installed", "updates", "activity", "settings", "install" })
+                        navigationFrames.AddRange(await game.CaptureNavigationAsync("nav." + tab, Path.Combine(directory, "navigation", $"{(fixedTimeStep ? "fixed" : "single-update")}-{pass}-{tab}")));
+            }
+            await game.OnUiAsync(() => game.IsFixedTimeStep = true);
+            await File.WriteAllTextAsync(Path.Combine(directory, "navigation-frames.json"), JsonSerializer.Serialize(navigationFrames, InstallerJson.Options));
+            Require(navigationFrames.All(frame => frame.RailPixels > 10_000 && frame.HeaderTextPixels > 200), "All 96 consecutive fixed-step and single-update navigation frames retained the sidebar and header across cold and repeated visits to every tab");
             await Click("nav.workspace");
             await game.OnUiAsync(() =>
             {
@@ -69,6 +100,50 @@ internal static class DesktopSmoke
             await Click("setup.installed");
             await game.CaptureAsync(Path.Combine(directory, "08-installed.png"));
             await File.WriteAllTextAsync(Path.Combine(install, "hello.txt"), "intentional acceptance corruption");
+            var installedReceipt = await Ui(() => game.MainScene.Controller.LastReceiptPath!);
+            var receiptBeforePrompt = await File.ReadAllBytesAsync(installedReceipt);
+            var cancelProbe = await StartProbe("cancel", keepOpen: false);
+            await Click("installed.repair");
+            await Wait(() => game.MainScene.Controller.RunningApplicationsDialog is { Waiting: false });
+            Require(await Ui(() => game.MainScene.Controller.RunningApplicationsDialog!.Applications.Any(application => application.ProcessId == cancelProbe.Id)), "Running-app prompt listed the actual isolated application using affected files");
+            await game.CaptureAsync(Path.Combine(directory, "08a-close-apps.png"));
+            await game.OnUiAsync(() => game.ResizeForAcceptance(980, 760));
+            await Task.Delay(160);
+            await game.CaptureAsync(Path.Combine(directory, "08a-close-apps-compact.png"));
+            Require(await Ui(() => game.MainScene.Control("running.close").Rectangle.Right <= 980 && game.MainScene.Control("running.cancel").Rectangle.Bottom <= 760), "The native close-apps prompt retained both choices at the minimum 980 by 760 viewport");
+            await game.OnUiAsync(() => game.ResizeForAcceptance(1180, 800));
+            await Task.Delay(160);
+            await Click("running.cancel");
+            await Wait(() => !game.MainScene.Controller.Busy && game.MainScene.Controller.RunningApplicationsDialog is null);
+            Require(!cancelProbe.HasExited && !File.Exists(Path.Combine(directory, "running-cancel", "close-requests.json")), "Cancel made no close request and left the application running");
+            var receiptAfterCancel = await File.ReadAllBytesAsync(installedReceipt);
+            Require(await File.ReadAllTextAsync(Path.Combine(install, "hello.txt")) == "intentional acceptance corruption" && receiptBeforePrompt.SequenceEqual(receiptAfterCancel), "Cancel preserved application files and the installed receipt before any repair mutation");
+            await Click("installed.repair");
+            await Wait(() => game.MainScene.Controller.RunningApplicationsDialog is { Waiting: false });
+            await Click("running.close");
+            await Wait(() => !game.MainScene.Controller.Busy && game.MainScene.Controller.Status == "Repair complete");
+            await cancelProbe.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Require(cancelProbe.ExitCode == 0 && File.Exists(Path.Combine(directory, "running-cancel", "close-requests.json")), "Close apps and continue requested normal application closure and completed repair after exit");
+            Require((await File.ReadAllTextAsync(Path.Combine(install, "hello.txt"))).Contains("native desktop acceptance"), "The close-apps repair restored the payload only after the application exited");
+
+            var keepOpenProbe = await StartProbe("keep-open", keepOpen: true);
+            await File.WriteAllTextAsync(Path.Combine(install, "hello.txt"), "save confirmation remains open");
+            receiptBeforePrompt = await File.ReadAllBytesAsync(installedReceipt);
+            await Click("installed.repair");
+            await Wait(() => game.MainScene.Controller.RunningApplicationsDialog is { Waiting: false });
+            await Click("running.close");
+            await Wait(() => game.MainScene.Controller.RunningApplicationsDialog is { Waiting: true });
+            await game.CaptureAsync(Path.Combine(directory, "08b-save-work.png"));
+            await Wait(() => game.MainScene.Controller.RunningApplicationsDialog is { IsRetry: true, Waiting: false });
+            Require(!keepOpenProbe.HasExited && File.Exists(Path.Combine(directory, "running-keep-open", "close-requests.json")), "An application save guard refused closure without being force-terminated");
+            var receiptAfterRefusedClose = await File.ReadAllBytesAsync(installedReceipt);
+            Require(await File.ReadAllTextAsync(Path.Combine(install, "hello.txt")) == "save confirmation remains open" && receiptBeforePrompt.SequenceEqual(receiptAfterRefusedClose), "A kept-open application blocked payload and receipt changes and returned to the retry prompt");
+            await game.CaptureAsync(Path.Combine(directory, "08c-retry-close-apps.png"));
+            await Click("running.cancel");
+            await Wait(() => !game.MainScene.Controller.Busy && game.MainScene.Controller.RunningApplicationsDialog is null);
+            Require(!keepOpenProbe.HasExited, "Cancel remained available after a save guard kept the application open");
+            await File.WriteAllTextAsync(Path.Combine(directory, "running-keep-open", "allow-close"), "Acceptance fixture may close normally.");
+            await keepOpenProbe.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             await Click("installed.repair");
             await Wait(() => !game.MainScene.Controller.Busy && game.MainScene.Controller.Status == "Repair complete");
             Require((await File.ReadAllTextAsync(Path.Combine(install, "hello.txt"))).Contains("native desktop acceptance"), "Native Repair button restored a changed file");
@@ -123,7 +198,25 @@ internal static class DesktopSmoke
             Environment.ExitCode = 1;
             await File.WriteAllTextAsync(Path.Combine(directory, "ui-smoke.json"), JsonSerializer.Serialize(new { success = false, checks, error = error.ToString() }, new JsonSerializerOptions { WriteIndented = true }));
         }
-        finally { game.Enqueue(game.Exit); }
+        finally
+        {
+            try
+            {
+                foreach (var probe in probes)
+                {
+                    try
+                    {
+                        if (!probe.Process.HasExited)
+                        {
+                            await File.WriteAllTextAsync(Path.Combine(probe.Directory, "allow-close"), "Acceptance fixture may close normally.");
+                            await probe.Process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                        }
+                    }
+                    finally { probe.Process.Dispose(); }
+                }
+            }
+            finally { game.Enqueue(game.Exit); }
+        }
 
         void Require(bool condition, string description)
         {
@@ -135,6 +228,28 @@ internal static class DesktopSmoke
         {
             await game.OnUiAsync(() => game.Activate(id));
             await Task.Delay(160);
+        }
+
+        async Task<Process> StartProbe(string name, bool keepOpen)
+        {
+            var run = Path.Combine(directory, "running-" + name);
+            Directory.CreateDirectory(run);
+            await File.WriteAllTextAsync(Path.Combine(run, ".running-application-probe"), "heirowInstaller running-application acceptance\n");
+            var start = new ProcessStartInfo(Path.Combine(install, "application", "RunningApplicationProbe.exe")) { UseShellExecute = false, WorkingDirectory = install };
+            start.ArgumentList.Add("--run-directory"); start.ArgumentList.Add(run);
+            if (keepOpen) start.ArgumentList.Add("--keep-open");
+            start.Environment.Remove("HEIROWUPDATER_TOKEN"); start.Environment.Remove("HEIROWUPDATER_COOKIE");
+            start.Environment.Remove("SOCKETJACK_DOWNLOAD_TOKEN"); start.Environment.Remove("SOCKETJACK_DOWNLOAD_COOKIE");
+            var process = Process.Start(start) ?? throw new InvalidOperationException("The owned running-application fixture did not start.");
+            probes.Add((process, run));
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!File.Exists(Path.Combine(run, "ready.json")))
+            {
+                if (process.HasExited) throw new InvalidOperationException("The running-application fixture exited with code " + process.ExitCode);
+                if (DateTime.UtcNow >= deadline) throw new TimeoutException("The running-application fixture did not become ready.");
+                await Task.Delay(50);
+            }
+            return process;
         }
 
         async Task<T> Ui<T>(Func<T> get)

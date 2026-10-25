@@ -9,6 +9,7 @@
   <ItemGroup><ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" /></ItemGroup>
   <ItemGroup>
     <PackageReference Include="ProjectZ" Version="[2026.10.23.2]" />
+    <EmbeddedResource Include="../../assets/heirowInstaller-256.png" LogicalName="HeirowUpdater.Assets.Logo.png" />
     <Content Include="../../assets/heirowInstaller.png" Link="Assets/heirowInstaller.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="../../assets/heirowInstaller.ico" Link="Assets/heirowInstaller.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

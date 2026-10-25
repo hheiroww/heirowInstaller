@@ -16,6 +16,9 @@ jobs:
       - name: Engine and publisher integration tests
         shell: pwsh
         run: ./scripts/Test.ps1
+      - name: Running applications and graceful-close consent
+        shell: pwsh
+        run: ./scripts/Test-ProcessSafety.ps1 -OutputDirectory artifacts/ci/process-safety
       - name: Native Project-Z application
         run: dotnet build src/HeirowInstaller.App/HeirowInstaller.App.csproj -c Release --nologo
       - name: CLI

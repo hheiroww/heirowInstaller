@@ -58,6 +58,9 @@ function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpo
     $start.Environment['HEIROWUPDATER_TEST_CHOICE'] = $Choice; $start.Environment['HEIROWUPDATER_TEST_CAPTURE'] = $capture
     $start.Environment['HEIROWUPDATER_TEST_CHOICE_FILE'] = $choiceFile
     $start.Environment['HEIROWUPDATER_TEST_PROMPT_REPORT'] = $promptReport; $start.Environment['HEIROWUPDATER_TEST_STATUS_FILE'] = $status
+    $start.Environment['HEIROWUPDATER_TEST_CLOSE_APPS_CHOICE'] = 'close'
+    $start.Environment['HEIROWUPDATER_TEST_CLOSE_APPS_CAPTURE'] = Join-Path $run "$Session.close-apps.png"
+    $start.Environment['HEIROWUPDATER_TEST_CLOSE_APPS_REPORT'] = Join-Path $run "$Session.close-apps.json"
     $start.Environment['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = Join-Path $run 'bundle-extraction'
     $process = [Diagnostics.Process]::Start($start); $apps.Add($process)
     Wait-For { Test-Path -LiteralPath $ready } "the direct $Session application bootstrap" 30
@@ -157,9 +160,12 @@ return 0;
     Assert-Check ((Requests '/a-Setup.exe').Count -eq 0 -and -not $a4.process.HasExited) 'Manual Postpone keeps the app and its exit watcher alive without downloading'
     Copy-Item -LiteralPath $a4.capture -Destination (Join-Path $run 'a-manual-postpone.prompt.png')
     [IO.File]::WriteAllText($a4.choiceFile,'update');[IO.File]::WriteAllText($a4.manual,'manual check again')
-    Wait-For {(Test-Path -LiteralPath $a4.promptReport) -and (Requests '/a-Setup.exe').Count -eq 1 -and (Read-Json $a4.status).status -eq 'waiting-for-exit'} 'manual Update now downloading and deferring until exit' 120
+    Wait-For {(Test-Path -LiteralPath $a4.promptReport) -and (Requests '/a-Setup.exe').Count -eq 1 -and (Read-Json $a4.status).status -eq 'waiting-for-applications'} 'manual Update now downloading and requesting explicit application closure' 120
     Assert-Check ((Read-Json $a4.promptReport).choice -eq 'UpdateNow') 'A second manual check opens a working native prompt in the same companion process'
     $a5=Start-App $a 'a-reopened-during-update' 'update'
+    Wait-For {(Read-Json (Join-Path $run 'a-manual-update.close-apps.json')).choice -eq 'CloseAppsAndContinue'} 'the actual native close-apps consent' 45
+    $closePrompt=Read-Json (Join-Path $run 'a-manual-update.close-apps.json')
+    Assert-Check ($closePrompt.framework -eq 'Project-Z' -and $closePrompt.pointerEventsInjected -and @($closePrompt.applications|Where-Object {$_.processId -eq $a4.process.Id}).Count -eq 1) 'Manual Update now lists the exact running fixture and requires a separate native close-apps choice'
     Assert-Check ([IO.File]::ReadAllText((Join-Path $a.target 'generation.txt')) -eq '1.0.0' -and (Read-Json $a4.promptReport).choice -eq 'UpdateNow') 'Manual Update now is a real native choice and does not replace files while the app is active'
     Close-App $a4;Start-Sleep -Milliseconds 1200;Assert-Check ([IO.File]::ReadAllText((Join-Path $a.target 'generation.txt')) -eq '1.0.0') 'An instance opened during download also prevents mutation after the original instance exits'
     Close-App $a5

@@ -47,6 +47,7 @@ internal sealed class AcceptanceSuite
             ,("SocketJack updater streams signed updates through validated redirects and keeps credentials on their origin", SocketJackUpdates)
             ,("an attached signed package never authorizes execution of an untrusted executable prefix", UntrustedBundlePrefix)
             ,("the updater exits and a copied trusted helper replaces its own application safely", TrustedSelfHandoff)
+            ,("trusted helper staging keeps its boundary and rejects unsupported launch paths before download", TrustedStagingPaths)
             ,("legacy executable defaults and explicit silent, target, and log overrides reach the actual child process", LegacyArguments)
             ,("machine state rejects writable or user-owned ACLs without changing them and preserves explicit isolation", MachineStateAcls)
             ,("user scope rejects selected machine integrations and spoofed machine receipt snapshots", IntegrationScope)
@@ -487,6 +488,33 @@ internal sealed class AcceptanceSuite
         True(!File.Exists(Path.Combine(target, "heirowUpdater.exe")));
     }
 
+    private async Task TrustedStagingPaths()
+    {
+        var area = Area("trusted-staging-paths");
+        var directory = TrustedHelperStaging.NewDirectoryPath(area, "heirowUpdater.exe", "heirowInstaller.Cli.exe");
+        Equal(Path.GetFullPath(area), Path.GetDirectoryName(directory));
+        Equal(24, Path.GetFileName(directory).Length);
+        True(Path.GetFileName(directory).StartsWith("h-", StringComparison.Ordinal));
+        True(!Directory.Exists(directory));
+        True(directory != TrustedHelperStaging.NewDirectoryPath(area, "heirowUpdater.exe"));
+        await Throws<ArgumentException>(() => { TrustedHelperStaging.NewDirectoryPath(area, "../other.exe"); return Task.CompletedTask; });
+        if (!OperatingSystem.IsWindows()) return;
+        var tooLong = area;
+        while (tooLong.Length < 230) tooLong = Path.Combine(tooLong, new string('x', 32));
+        var requests = 0;
+        await using var server = new LoopbackServer((string _) => { requests++; return []; });
+        using var updater = new SocketJackUpdater(allowLoopback: true);
+        var target = new UpdaterTarget { ProductId = "test.staging", Scope = "user" };
+        var check = new UpdateCheckResult { Available = true, Feed = new() { ProductId = target.ProductId, Version = "2",
+            InstallerUrl = server.Origin + "setup.hinst", Sha256 = new string('a', 64), Size = 1 } };
+        using var current = Process.GetCurrentProcess();
+        await Throws<PathTooLongException>(() => updater.PrepareInstallerHandoffAsync(target, check, current.Id,
+            current.StartTime.ToUniversalTime().Ticks, new() { Isolated = true, DownloadDirectory = tooLong,
+                TrustedPublisherKeySha256 = new string('b', 64) }));
+        Equal(0, requests);
+        True(!Directory.Exists(tooLong));
+    }
+
     private async Task LegacyArguments()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -671,6 +699,7 @@ internal sealed class AcceptanceSuite
         manifest.UpdateUrl = "https://updates.example.invalid/application.json";
         manifest.Features = [new() { Id = "updates", Default = false }];
         manifest.UpdateCompanion = new() { TokenEnvironmentVariable = "FIXTURE_UPDATE_TOKEN", AuthApplication = "example" };
+        manifest.AffectedResources = [new() { Path = "{app}\\owned-plugin.vst3", Feature = "updates" }];
         manifest.Payload = [new() { Path = "application.exe" }, new() { Path = "heirowUpdater.exe", Feature = "updates" }];
         var files = new Dictionary<string, string> { ["application.exe"] = "non-executed application fixture", ["heirowUpdater.exe"] = "non-executed updater fixture" };
         var path = Build(area, "v1", manifest, files, key);
@@ -690,6 +719,17 @@ internal sealed class AcceptanceSuite
         Equal("application.exe", config.EntryPoint); Equal("after-exit", config.Mode); True(config.Isolated);
         Equal("FIXTURE_UPDATE_TOKEN", config.TokenEnvironmentVariable); True(config.Features.Contains("updates"));
         Equal("example", config.AuthApplication);
+        Equal(Path.Combine(target, "owned-plugin.vst3"), config.AffectedResourceFiles.Single());
+        config.AffectedResourceFiles = [Path.Combine(area, "unrelated.dll")];
+        File.WriteAllText(configurationPath, JsonSerializer.Serialize(config, InstallerJson.Options));
+        Equal(Path.Combine(target, "owned-plugin.vst3"), ApplicationUpdater.ReadConfiguration(configurationPath).AffectedResourceFiles.Single());
+        config.AffectedResourceFiles = [];
+        File.WriteAllText(configurationPath, JsonSerializer.Serialize(config, InstallerJson.Options));
+        Equal(Path.Combine(target, "owned-plugin.vst3"), ApplicationUpdater.ReadConfiguration(configurationPath).AffectedResourceFiles.Single());
+        config.EntryPoint = "unrelated.exe"; File.WriteAllText(Path.Combine(target, config.EntryPoint), "not an executed application");
+        File.WriteAllText(configurationPath, JsonSerializer.Serialize(config, InstallerJson.Options));
+        await Throws<InvalidDataException>(() => Task.Run(() => ApplicationUpdater.ReadConfiguration(configurationPath)));
+        File.Delete(Path.Combine(target, config.EntryPoint));
         True(InstallerEngine.ListInstalled(options.StateRoot).Single().Files.Any(x => x.Path == "heirowUpdater.json"));
         File.WriteAllText(configurationPath, "corrupted");
         await engine.RepairAsync(manifest.Id, Options(area, target));

@@ -143,6 +143,7 @@ public sealed class InstallerEngine
         options ??= new();
         var plan = Plan(package, options);
         if (plan.RequiresElevation && !IsElevated && !options.Isolated) throw new UnauthorizedAccessException("This installation requires an elevated process. Run the installer as administrator.");
+        await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
         var root = GetStateRoot(options, plan.Scope);
         using var machineState = OperatingSystem.IsWindows() && plan.Scope == "machine" && !options.Isolated ? MachineStateSecurity.Acquire(root, create: true) : null;
         if (machineState is null) Directory.CreateDirectory(root);
@@ -163,6 +164,7 @@ public sealed class InstallerEngine
         await package.VerifyAsync(progress, cancellationToken);
         await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
+        await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
         if (previous is not null && !options.CompanionStopAlreadyHandled) await StopCompanionAsync(previous, cancellationToken);
         Log(options, $"Installing {package.Manifest.Id} {package.Manifest.Version} to {plan.InstallDirectory}");
         var product = new InstalledProduct
@@ -186,6 +188,7 @@ public sealed class InstallerEngine
         if (previous is not null && (previous.IsMsi != product.IsMsi || previous.IsExecutable != product.IsExecutable))
             throw new InvalidOperationException("Changing installation backend requires uninstalling the existing product first.");
         var digest = PackageSafety.HashFile(package.PackagePath);
+        await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
         if (product.IsMsi || product.IsExecutable)
             product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, digest, externalMedia!);
         if (OperatingSystem.IsWindows() && machineState is not null) MachineStateSecurity.ValidateExistingRoot(root);
@@ -308,13 +311,16 @@ public sealed class InstallerEngine
             cancellationToken.ThrowIfCancellationRequested();
             var previous = ReadReceipt(product.ReceiptPath, product.Scope, options.Isolated) ?? throw new InvalidDataException("Installation receipt is missing.");
             var plan = Plan(package, options);
+            await EnsureApplicationsClosedAsync(plan, options, "repair", progress, cancellationToken);
             using var transaction = new InstallTransaction(Path.Combine(root, ".transactions", Guid.NewGuid().ToString("N")));
             using var externalMedia = new InstallTransaction(Path.Combine(transaction.Root, "external-media"));
             await package.VerifyAsync(progress, cancellationToken);
             var extracted = Path.Combine(transaction.Root, "payload");
             await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
+            await EnsureApplicationsClosedAsync(plan, options, "repair", progress, cancellationToken);
             await StopCompanionAsync(previous, cancellationToken);
             product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, PackageSafety.HashFile(product.PackagePath), externalMedia);
+            await EnsureApplicationsClosedAsync(plan, options, "repair", progress, cancellationToken);
             var exit = product.IsMsi
                 ? await WindowsIntegration.RunMsiAsync("repair", ValidateMsiSourcePath(PackageSafety.UnderRoot(product.LegacySourceDirectory, package.Manifest.LegacyMsi!.PayloadPath)), product.MsiProductCode, package.Manifest.LegacyMsi,
                     plan, options, cancellationToken)
@@ -360,6 +366,13 @@ public sealed class InstallerEngine
         using var operationLock = AcquireLock(root, product.Id);
         cancellationToken.ThrowIfCancellationRequested();
         product = ReadReceipt(product.ReceiptPath, product.Scope, options.Isolated) ?? throw new InvalidDataException("Installation receipt is missing.");
+        using (var guardedPackage = PackageReader.Open(product.PackagePath))
+        {
+            guardedPackage.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
+            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(guardedPackage.Manifest, product.InstallDirectory, "uninstall", product.Features),
+                options.RunningApplicationsPrompt, cancellationToken);
+            progress?.Report(new("applications", "Applications closed. Continuing uninstall.", 1, 1));
+        }
         await StopCompanionAsync(product, cancellationToken);
         var cache = Path.GetDirectoryName(product.ReceiptPath)!;
         using var transaction = new InstallTransaction(Path.Combine(root, ".transactions", Guid.NewGuid().ToString("N")));
@@ -374,6 +387,8 @@ public sealed class InstallerEngine
             var extracted = Path.Combine(transaction.Root, "external");
             await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
             product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, PackageSafety.HashFile(product.PackagePath), transaction);
+            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(package.Manifest, product.InstallDirectory, "uninstall", product.Features),
+                options.RunningApplicationsPrompt, cancellationToken);
             var exit = await WindowsIntegration.RunExecutableAsync("uninstall", package.Manifest.LegacyExecutable!, product.LegacySourceDirectory, product.InstallDirectory, options, cancellationToken);
             reboot = exit is 3010 or 1641;
         }
@@ -413,6 +428,13 @@ public sealed class InstallerEngine
         Log(options, $"Uninstalled {product.Id}");
         progress?.Report(new("complete", "Uninstall completed", 1, 1));
         return Result(product, reboot);
+    }
+
+    private static async Task EnsureApplicationsClosedAsync(InstallPlan plan, InstallOptions options, string operation,
+        IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+    {
+        await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromPlan(plan, operation), options.RunningApplicationsPrompt, cancellationToken);
+        progress?.Report(new("applications", "Applications closed. Continuing " + operation + ".", 1, 1));
     }
 
     private static async Task StopCompanionAsync(InstalledProduct product, CancellationToken cancellationToken)
@@ -489,7 +511,8 @@ public sealed class InstallerEngine
             PublisherKeySha256 = product.PublisherKeySha256!, Features = product.Features, EntryPoint = manifest.EntryPoint,
             Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin,
             AuthApplication = definition.AuthApplication,
-            CookieEnvironmentVariable = definition.CookieEnvironmentVariable, TokenEnvironmentVariable = definition.TokenEnvironmentVariable
+            CookieEnvironmentVariable = definition.CookieEnvironmentVariable, TokenEnvironmentVariable = definition.TokenEnvironmentVariable,
+            AffectedResourceFiles = RunningApplicationTarget.FromManifest(manifest, product.InstallDirectory, features: product.Features).AffectedResourceFiles.ToList()
         };
         var temporary = Path.Combine(transaction.Root, "app-updater-config.json");
         File.WriteAllText(temporary, JsonSerializer.Serialize(configuration, InstallerJson.Options));

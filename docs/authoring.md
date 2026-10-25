@@ -2,6 +2,8 @@
 
 A distributed application setup can be one `.exe` containing its installer runtime and verified payload. The recipient does not need an installed copy of heirowInstaller, the .NET SDK, or the WiX compiler. The application's own native prerequisites still need to be embedded or authored explicitly.
 
+The application entry point is protected by a running-application consent step. Declare exact `affectedResources` for external plugin binaries so their hosts can be listed safely before maintenance; see [running applications](running-applications.md) for authoring and SDK callbacks.
+
 Use the portable builder's `heirowInstaller.Cli.exe` and `heirowInstaller.exe` together, or pass the published launcher explicitly. The builder checks the launcher's .NET single-file manifest and embedded runtime; a framework-dependent apphost is rejected.
 
 ```powershell

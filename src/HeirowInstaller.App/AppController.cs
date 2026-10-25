@@ -12,7 +12,7 @@ internal enum DesktopPage { Install, Installed, Workspace, Updates, Activity, Se
 internal enum SetupStage { Package, Features, Destination, Review, Progress, Complete }
 internal sealed record ActivityEntry(DateTimeOffset Time, string Title, string Detail, bool Error = false);
 
-internal sealed class AppController : IDisposable
+internal sealed partial class AppController : IDisposable
 {
     private readonly InstallerGame game;
     private readonly AppArguments arguments;
@@ -68,6 +68,12 @@ internal sealed class AppController : IDisposable
         Settings = DesktopSettings.Load();
         OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe");
         RefreshInstalled();
+        if (arguments.MaintenanceProductId is { } maintenanceId)
+        {
+            SelectedProduct = Installed.SingleOrDefault(product => product.Id.Equals(maintenanceId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("The application is not installed.");
+            Page = DesktopPage.Installed;
+        }
         AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
     }
 
@@ -79,6 +85,7 @@ internal sealed class AppController : IDisposable
 
     internal void Navigate(DesktopPage page)
     {
+        if (RunningApplicationsDialog is not null) return;
         if (Busy && page == DesktopPage.Install && Stage == SetupStage.Progress) { Page = page; Notify(); return; }
         Page = page;
         if (page == DesktopPage.Installed) RefreshInstalled();
@@ -170,12 +177,13 @@ internal sealed class AppController : IDisposable
         RegisterProduct = !arguments.Isolated && !arguments.NoRegister && Settings.RegisterProducts,
         Isolated = arguments.Isolated,
         Silent = arguments.Silent,
-        Launch = arguments.SmokeDirectory is null && Settings.LaunchAfterInstall,
+        Launch = arguments.SmokeDirectory is null && (arguments.Launch || Settings.LaunchAfterInstall),
         InstallerPath = Environment.ProcessPath,
         TrustedPublisherKeySha256 = arguments.TrustedPublisherKeySha256,
         RequireSignature = arguments.RequireSignature,
         LegacyArguments = arguments.LegacyArguments,
-        LogPath = arguments.LogPath
+        LogPath = arguments.LogPath,
+        RunningApplicationsPrompt = PromptRunningApplicationsAsync
     };
 
     internal async Task InstallAsync()
@@ -184,7 +192,7 @@ internal sealed class AppController : IDisposable
         if (LicenseText is not null && !LicenseAccepted) { Stage = SetupStage.Package; Notify(); return; }
         try { Replan(); }
         catch (Exception error) { await ErrorAsync("Installation needs attention", error); return; }
-        if (Plan!.RequiresElevation && !InstallerEngine.IsElevated && arguments.SmokeDirectory is null)
+        if (Plan!.RequiresElevation && !InstallerEngine.IsElevated && !arguments.Isolated)
         {
             try
             {
@@ -193,8 +201,19 @@ internal sealed class AppController : IDisposable
                 if (LicenseAccepted) start.ArgumentList.Add("--accept-license");
                 if (!OriginalInstallerDestination) { start.ArgumentList.Add("--target"); start.ArgumentList.Add(TargetDirectory); }
                 start.ArgumentList.Add("--scope"); start.ArgumentList.Add(Scope);
-                if (Features.Count > 0) { start.ArgumentList.Add("--features"); start.ArgumentList.Add(string.Join(',', Features)); }
+                start.ArgumentList.Add("--features"); start.ArgumentList.Add(string.Join(',', Features));
                 if (arguments.StateRoot is not null) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(arguments.StateRoot); }
+                if (arguments.WaitForPid is { } pid) { start.ArgumentList.Add("--wait-pid"); start.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+                if (arguments.WaitForStartTicks is { } ticks) { start.ArgumentList.Add("--wait-start"); start.ArgumentList.Add(ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+                if (arguments.TrustedPublisherKeySha256 is { } key) { start.ArgumentList.Add("--trust-key"); start.ArgumentList.Add(key); }
+                if (arguments.RequireSignature) start.ArgumentList.Add("--require-signature");
+                if (arguments.ExpectedProductId is { } productId) { start.ArgumentList.Add("--expected-product-id"); start.ArgumentList.Add(productId); }
+                if (arguments.ExpectedVersion is { } version) { start.ArgumentList.Add("--expected-version"); start.ArgumentList.Add(version); }
+                if (arguments.ExpectedSha256 is { } sha256) { start.ArgumentList.Add("--expected-sha256"); start.ArgumentList.Add(sha256); }
+                if (arguments.NoRegister || !Settings.RegisterProducts) start.ArgumentList.Add("--no-register");
+                if (arguments.CloseOnComplete) start.ArgumentList.Add("--close-on-complete");
+                if (arguments.LogPath is { } logPath) { start.ArgumentList.Add("--log"); start.ArgumentList.Add(logPath); }
+                foreach (var value in arguments.LegacyArguments) { start.ArgumentList.Add("--backend-arg"); start.ArgumentList.Add(value); }
                 Process.Start(start);
                 Status = "Installation opened with administrator access";
                 StatusDetail = "Complete installation in the elevated heirowInstaller window.";
@@ -214,6 +233,7 @@ internal sealed class AppController : IDisposable
             {
                 using var reader = PackageReader.Open(packagePath);
                 arguments.ValidatePackageIdentity(reader);
+                await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(engine.Plan(reader, options), "install"), Cancellation!.Token);
                 return await engine.InstallAsync(reader, options, Reporter(), Cancellation!.Token);
             });
             await game.OnUiAsync(() =>
@@ -223,6 +243,7 @@ internal sealed class AppController : IDisposable
                 Progress = 1;
                 RefreshInstalled();
                 End(result.RebootRequired ? "Installed · restart required" : "Installation complete", $"{Manifest!.Name} {result.Version} is ready to use.");
+                CloseCompletedChild(result.RebootRequired);
             });
         }
         catch (Exception error) { await ErrorAsync("Installation stopped", error); }
@@ -242,8 +263,12 @@ internal sealed class AppController : IDisposable
         Begin("Repairing application", product.Name);
         try
         {
-            var result = await Task.Run(() => engine.RepairAsync(product.Id, OptionsFor(product), Reporter(), Cancellation!.Token));
-            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; RefreshInstalled(); End("Repair complete", $"Verified and restored {product.Name}."); });
+            var result = await Task.Run(async () =>
+            {
+                await WaitForProductDependencyAsync(product, "repair", Cancellation!.Token);
+                return await engine.RepairAsync(product.Id, OptionsFor(product), Reporter(), Cancellation.Token);
+            });
+            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; RefreshInstalled(); End("Repair complete", $"Verified and restored {product.Name}."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Repair stopped", error); }
     }
@@ -256,8 +281,12 @@ internal sealed class AppController : IDisposable
         Begin("Uninstalling application", product.Name);
         try
         {
-            await Task.Run(() => engine.UninstallAsync(product.Id, OptionsFor(product), Reporter(), Cancellation!.Token));
-            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End("Uninstall complete", $"Removed {product.Name} and its recorded installation changes."); });
+            var result = await Task.Run(async () =>
+            {
+                await WaitForProductDependencyAsync(product, "uninstall", Cancellation!.Token);
+                return await engine.UninstallAsync(product.Id, OptionsFor(product), Reporter(), Cancellation.Token);
+            });
+            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End("Uninstall complete", $"Removed {product.Name} and its recorded installation changes."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Uninstall stopped", error); }
     }
@@ -274,7 +303,9 @@ internal sealed class AppController : IDisposable
         Silent = arguments.Silent,
         TrustedPublisherKeySha256 = product.PublisherKeySha256,
         RequireSignature = product.PublisherKeySha256 is not null,
-        LogPath = arguments.LogPath
+        LogPath = arguments.LogPath,
+        LegacyArguments = arguments.LegacyArguments,
+        RunningApplicationsPrompt = PromptRunningApplicationsAsync
     };
 
     internal static bool NeedsMaintenanceElevation(InstalledProduct product) => !product.Isolated && !InstallerEngine.IsElevated &&
@@ -287,11 +318,17 @@ internal sealed class AppController : IDisposable
         {
             var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
             start.ArgumentList.Add(operation); start.ArgumentList.Add(product.Id);
+            start.ArgumentList.Add("--close-on-complete");
+            if (operation == "uninstall") start.ArgumentList.Add("--maintenance-confirmed");
             start.ArgumentList.Add("--scope"); start.ArgumentList.Add(product.Scope);
-            start.ArgumentList.Add("--silent");
+            if (arguments.WaitForPid is { } pid) { start.ArgumentList.Add("--wait-pid"); start.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            if (arguments.WaitForStartTicks is { } ticks) { start.ArgumentList.Add("--wait-start"); start.ArgumentList.Add(ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            if (arguments.LogPath is not null) { start.ArgumentList.Add("--log"); start.ArgumentList.Add(arguments.LogPath); }
+            foreach (var value in arguments.LegacyArguments) { start.ArgumentList.Add("--backend-arg"); start.ArgumentList.Add(value); }
             if (arguments.StateRoot is not null) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(arguments.StateRoot); }
             using var process = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the maintenance operation.");
             await process.WaitForExitAsync();
+            if (process.ExitCode == 1602) throw new OperationCanceledException("Maintenance was canceled. The application is unchanged.");
             if (process.ExitCode is not (0 or 3010)) throw new InvalidOperationException($"The maintenance operation returned exit code {process.ExitCode}.");
             await game.OnUiAsync(() => { RefreshInstalled(); End(operation == "repair" ? "Repair complete" : "Uninstall complete", product.Name); });
         }
@@ -335,7 +372,7 @@ internal sealed class AppController : IDisposable
                 result = await DesktopElevatedUpdate.InstallAsync(download, update.Feed, product, OptionsFor(product), Reporter(), Cancellation.Token);
             }
             else result = await client.ApplyAsync(download, update.Feed, OptionsFor(product), Reporter(), Cancellation.Token);
-            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End(result.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); });
+            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End(result.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Update stopped", error); }
     }
@@ -403,7 +440,7 @@ internal sealed class AppController : IDisposable
         finally { await game.OnUiAsync(() => { SigningIn = false; Notify(); }); }
     }
 
-    public void Dispose() { Cancellation?.Cancel(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; }
+    public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; }
 
     internal void SaveSettings()
     {
@@ -447,7 +484,11 @@ internal sealed class AppController : IDisposable
         catch (Exception error) { await ErrorAsync("Updater unavailable", error); }
     }
 
-    internal void Cancel() => Cancellation?.Cancel();
+    internal void Cancel()
+    {
+        if (RunningApplicationsDialog is not null) CancelRunningApplications();
+        else Cancellation?.Cancel();
+    }
 
     private UpdateClient CreateUpdateClient() => new(allowLoopback: arguments.SelfUpdateSmokeFeed is not null, transport: new SocketJackUpdateTransport(
         credentialOrigin: new Uri("https://socketjack.com"),
@@ -543,6 +584,7 @@ internal sealed class AppController : IDisposable
 
     private IProgress<InstallProgress> Reporter() => new UiProgress(value => game.Enqueue(() =>
     {
+        if (value.Phase.Equals("applications", StringComparison.OrdinalIgnoreCase)) ClearRunningApplicationsDialog();
         Progress = value.Fraction;
         Status = value.Phase;
         StatusDetail = value.Message;
@@ -552,6 +594,7 @@ internal sealed class AppController : IDisposable
 
     private void Begin(string title, string detail)
     {
+        ClearRunningApplicationsDialog(); runningApplicationsCanceled = false;
         Cancellation?.Dispose(); Cancellation = new CancellationTokenSource();
         Busy = true; Failed = false; Progress = 0; Status = title; StatusDetail = detail;
         AddActivity(title, detail); Notify();
@@ -559,15 +602,28 @@ internal sealed class AppController : IDisposable
 
     private void End(string title, string detail)
     {
+        ClearRunningApplicationsDialog();
         Busy = false; Failed = false; Status = title; StatusDetail = detail;
         AddActivity(title, detail); Notify();
     }
 
+    private void CloseCompletedChild(bool rebootRequired = false)
+    {
+        if (arguments.MaintenanceProductId is not null || arguments.CloseOnComplete) Environment.ExitCode = rebootRequired ? 3010 : 0;
+        if (!arguments.CloseOnComplete) return;
+        game.Exit();
+    }
+
     private Task ErrorAsync(string title, Exception error) => game.OnUiAsync(() =>
     {
-        Busy = false; Failed = true; Status = error is OperationCanceledException ? "Operation canceled" : title;
-        StatusDetail = error.Message;
-        AddActivity(Status, StatusDetail, true); Notify();
+        ClearRunningApplicationsDialog();
+        Busy = false; Failed = error is not OperationCanceledException;
+        Status = error is OperationCanceledException ? "Operation canceled" : title;
+        StatusDetail = runningApplicationsCanceled ? "The operation was canceled before changing application files. You can try again when you are ready." : error.Message;
+        if (runningApplicationsCanceled && Stage == SetupStage.Progress) Stage = SetupStage.Review;
+        AddActivity(Status, StatusDetail, Failed); Notify();
+        if (arguments.CloseOnComplete || arguments.MaintenanceProductId is not null) Environment.ExitCode = error is OperationCanceledException ? 1602 : 1;
+        if (arguments.CloseOnComplete && error is OperationCanceledException) game.Exit();
     });
 
     private void AddActivity(string title, string detail, bool error = false)

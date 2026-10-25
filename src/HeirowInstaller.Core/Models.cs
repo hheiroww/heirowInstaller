@@ -37,6 +37,7 @@ public sealed class PackageManifest
     public List<EnvironmentDefinition> Environment { get; set; } = [];
     public List<ServiceDefinition> Services { get; set; } = [];
     public List<PrerequisiteDefinition> Prerequisites { get; set; } = [];
+    public List<AffectedResourceDefinition> AffectedResources { get; set; } = [];
     public LegacyMsiDefinition? LegacyMsi { get; set; }
     public LegacyExecutableDefinition? LegacyExecutable { get; set; }
     public UpdateCompanionDefinition? UpdateCompanion { get; set; }
@@ -53,6 +54,13 @@ public sealed class UpdateCompanionDefinition
     public string? AuthApplication { get; set; }
     public string? CookieEnvironmentVariable { get; set; }
     public string? TokenEnvironmentVariable { get; set; }
+}
+
+/// <summary>An exact installed file whose users must exit before application maintenance.</summary>
+public sealed class AffectedResourceDefinition
+{
+    public string Path { get; set; } = "";
+    public string? Feature { get; set; }
 }
 
 /// <summary>Generated app-local updater configuration. Credential values are never stored here.</summary>
@@ -75,6 +83,7 @@ public sealed class UpdateCompanionConfiguration
     public string? AuthApplication { get; set; }
     public string? CookieEnvironmentVariable { get; set; }
     public string? TokenEnvironmentVariable { get; set; }
+    public List<string> AffectedResourceFiles { get; set; } = [];
 }
 
 public sealed class PackageFeature
@@ -198,6 +207,9 @@ public sealed class InstallOptions
     public string? TrustedPublisherKeySha256 { get; set; }
     /// <summary>A verified staged helper already stopped its owning watcher and still observes its cancellation event.</summary>
     public bool CompanionStopAlreadyHandled { get; set; }
+    /// <summary>Explicit interactive consent. Without a callback, running applications fail immediately and are never closed.</summary>
+    [JsonIgnore]
+    public Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? RunningApplicationsPrompt { get; set; }
     /// <summary>Disables OS-wide integrations for isolated package validation. Never use for production installation.</summary>
     public bool Isolated { get; set; }
 }

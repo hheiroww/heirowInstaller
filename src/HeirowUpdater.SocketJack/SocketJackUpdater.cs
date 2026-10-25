@@ -112,7 +112,10 @@ public sealed class SocketJackUpdater : IDisposable
         if (target.Scope == "machine" && !InstallerEngine.IsElevated && !policy.Isolated && !policy.StageForElevation) throw new UpdateRequiresElevationException(target.ProductId);
         var key = policy.TrustedPublisherKeySha256 ?? target.PublisherKeySha256;
         if (key is null && !policy.AllowUnsigned) throw new InvalidOperationException("Update handoff requires a trusted publisher key.");
-        var download = await client.DownloadAsync(update.Feed, policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads"), progress, cancellationToken);
+        var downloadDirectory = policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads");
+        var stageRoot = policy.Isolated ? downloadDirectory : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "staging");
+        var stage = TrustedHelperStaging.NewDirectoryPath(stageRoot, "heirowUpdater.exe", "heirowInstaller.Cli.exe");
+        var download = await client.DownloadAsync(update.Feed, downloadDirectory, progress, cancellationToken);
         using (var package = PackageReader.Open(download))
         {
             package.VerifySignature(key, key is not null || !policy.AllowUnsigned);
@@ -122,8 +125,6 @@ public sealed class SocketJackUpdater : IDisposable
         }
         var host = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The currently trusted heirowUpdater apphost is missing.");
         var hostDirectory = Path.GetDirectoryName(host)!;
-        var stage = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "staging", Guid.NewGuid().ToString("N"));
-        if (policy.Isolated) stage = Path.Combine(policy.DownloadDirectory ?? Path.GetDirectoryName(download)!, "trusted-helper-" + Guid.NewGuid().ToString("N"));
         PackageSafety.EnsureNoReparsePoints(stage); Directory.CreateDirectory(stage);
         var names = new[] { "heirowUpdater.exe", "heirowUpdater.deps.json", "heirowUpdater.runtimeconfig.json", "heirowInstaller.Cli.exe", "heirowInstaller.Cli.deps.json", "heirowInstaller.Cli.runtimeconfig.json" }
             .Concat(Directory.EnumerateFiles(hostDirectory, "*.dll", SearchOption.TopDirectoryOnly).Select(Path.GetFileName).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase);

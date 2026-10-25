@@ -27,6 +27,13 @@ and 16× anisotropic filtering, with pixel-aligned vector text.
   requires an existing publisher-key pin and checks the signed package, product,
   version and download digest before planning or installing it. Machine
   self-updates use the same pin requirement and release binding.
+- Before installation, repair, update or uninstall changes application files, a
+  native dialog lists apps using those files. **Close apps and continue** sends
+  normal close requests only to the verified affected apps. Their save dialogs
+  remain in control. **Cancel installation** stops the operation without
+  changing application files. An app that stays open or restarts returns to the
+  same dialog with another attempt available. No app is force-terminated.
+  Apps that cannot safely receive a close request must be closed manually.
 - **Build & publish** builds a verified `.hinst` from a manifest and application
   files and publishes through the shared SocketJack publisher client. Publisher
   credentials come from `SOCKETJACK_PUBLISHER_TOKEN` or `SOCKETJACK_PUBLISHER_COOKIE`; they are not saved in the
@@ -68,7 +75,13 @@ heirowInstaller.exe uninstall product-id --scope user
 A bundled setup detects its appended package when no package argument is passed.
 The same executable handles Windows Installed apps maintenance commands.
 `--silent`, `--quiet`, `/quiet`, `/qn`, `/SILENT` and `/VERYSILENT` suppress the GUI.
-`--wait-pid` with `--wait-start` waits for the exact previous process identity.
+`--wait-pid` with `--wait-start` identifies a previous process dependency. The
+native window opens immediately and offers a visible choice. A supplied PID
+alone never grants permission to close an app: Core must independently verify
+that the app is using affected files. Other dependencies can only be closed
+manually, checked again, or canceled. A stale creation-time identity is ignored.
+Silent operations fail promptly with an actionable error while an affected app
+or requested dependency remains open; they never close applications themselves.
 The original FruityLoopsCollab wait/defer contract and explicit Inno directory/log
 arguments are supported by compatible adapter packages. Self-updates copy the
 currently installed trusted helper outside the application's folder, verify the
@@ -78,6 +91,10 @@ Internal update handoffs use `--expected-product-id`, `--expected-version` and
 `--expected-sha256` to bind the child to the checked release. Product and version
 must be supplied together. `--no-register` preserves a product that was installed
 without a separate heirowInstaller Windows registration.
+Trusted native self-update and administrator handoffs keep the interactive app
+closure dialog available. They return success only after installation completes;
+Cancel returns Windows installer cancellation code 1602. Isolated self-update
+helpers stay beneath their supplied state root.
 
 For framework development only, pass `-p:UseLocalProjectZ=true` and, if needed,
 `-p:ProjectZRoot=...`. Release builds use the pinned public package.
@@ -86,13 +103,24 @@ For framework development only, pass `-p:UseLocalProjectZ=true` and, if needed,
 
 ```powershell
 heirowInstaller.exe --capture C:\Temp\heirowInstaller.png
-heirowInstaller.exe --ui-smoke C:\Temp\heirowInstaller-acceptance
+./scripts/Test-NativeDesktop.ps1 -LauncherPath C:\Build\heirowInstaller.exe
 ```
 
 The smoke mode drives native controls through Project-Z's injected pointer
-events. It builds and opens an isolated package, accepts a license, excludes an
+events. It records 96 presented frames: the first four consecutive frames during
+cold and repeated visits to all six tabs, using both the normal fixed-step loop
+and one native update per presentation. The latter prevents readback-induced
+catch-up ticks from concealing an empty transition frame. Every frame must keep
+the sidebar and header visible. Page replacement happens before the native layout tick,
+so a new page is registered and laid out before it is drawn. The scene builds
+the replacement tree before disposing the old page. It builds and opens an isolated package, accepts a license, excludes an
 optional feature, edits the target, installs, corrupts and repairs a file, tests
 uninstall cancellation and confirmation, resizes the native viewport, and saves
-screenshots and a JSON receipt. Its separate state root and isolated engine
+screenshots and a JSON receipt. The runner builds a dedicated Windows Forms
+acceptance app, supplies it through `HEIROWINSTALLER_SMOKE_APPLICATION`, and tests
+the real native close-apps dialog. Cancel preserves the running app, payload and
+receipt; Close requests a normal exit before repair; a simulated save dialog
+keeps the app open, blocks changes, returns to Retry, and still permits Cancel.
+The fixture is excluded from production packages. Its separate state root and isolated engine
 options prevent Windows registry, shortcut and service changes. It does not
 authenticate to a publisher or send a production update request.
