@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace HeirowInstaller.Publishing;
 
 /// <summary>A publisher connection owns its own HttpClient; credentials never enter manifests or logs.</summary>
-public sealed class PublisherClient : IDisposable
+public sealed partial class PublisherClient : IDisposable
 {
     private readonly HttpClient client;
     private readonly Uri origin;
@@ -19,7 +19,7 @@ public sealed class PublisherClient : IDisposable
             throw new ArgumentException("Publisher must use HTTPS without credentials in the URL.", nameof(publisher));
         origin = new Uri(publisher.GetLeftPart(UriPartial.Authority) + "/");
         // Do not forward a publisher credential through an HTTP redirect.
-        client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(45) };
+        client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }) { Timeout = TimeSpan.FromMinutes(45) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("heirowInstaller/2026.10.24.1");
         if (!string.IsNullOrWhiteSpace(bearerToken)) client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
         if (!string.IsNullOrWhiteSpace(sessionCookie)) client.DefaultRequestHeaders.Add("Cookie", sessionCookie);
@@ -44,33 +44,37 @@ public sealed class PublisherClient : IDisposable
     {
         var path = Path.GetFullPath(packagePath);
         if (!string.Equals(Path.GetExtension(path), ".hinst", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Publish a signed .hinst package or standalone Setup.exe.", nameof(packagePath));
+            !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(Path.GetExtension(path), ".hupd", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Publish a signed .hinst, .hupd update, or standalone Setup.exe.", nameof(packagePath));
         // Hash and upload the same open file, denying writers while it is read.
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (file.Length == 0) throw new InvalidDataException("Package is empty.");
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken)).ToLowerInvariant();
         file.Position = 0;
-        string? uploadId = null;
-        try
+        // Keep failed/cancelled uploads resumable until the server's bounded expiry.
+        using var begin = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, "api/installer/publisher/uploads"));
+        begin.Headers.Add("X-HeirowInstaller-SHA256", hash);
+        begin.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "" }, Json));
+        begin.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        using var opened = await client.SendAsync(begin, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        await EnsureSuccessAsync(opened, cancellationToken);
+        var session = JsonSerializer.Deserialize<UploadSession>(await ReadBoundedAsync(opened, cancellationToken), Json) ?? throw new InvalidDataException("Publisher returned no upload session.");
+        if (session.Receipt is not null) { ValidateReceipt(session.Receipt); return session.Receipt; }
+        if (!Guid.TryParseExact(session.UploadId, "N", out _) || session.ChunkSize is <= 0 or > 4 * 1024 * 1024 || session.ReceivedBytes < 0 || session.ReceivedBytes > file.Length)
+            throw new InvalidDataException("Publisher returned an invalid upload session.");
+        var uploadId = session.UploadId;
+        var uploadPath = "api/installer/publisher/uploads/" + uploadId;
+        var buffer = new byte[session.ChunkSize];
+        long sent = session.ReceivedBytes;
+        var recoveries = 0;
+        while (sent < file.Length)
         {
-            using var begin = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, "api/installer/publisher/uploads"));
-            begin.Headers.Add("X-HeirowInstaller-SHA256", hash);
-            begin.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(new { filename = Path.GetFileName(path), length = file.Length, sha256 = hash, releaseNotes = releaseNotes ?? "" }, Json));
-            begin.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-            using var opened = await client.SendAsync(begin, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            await EnsureSuccessAsync(opened, cancellationToken);
-            var session = await opened.Content.ReadFromJsonAsync<UploadSession>(Json, cancellationToken) ?? throw new InvalidDataException("Publisher returned no upload session.");
-            if (!Guid.TryParseExact(session.UploadId, "N", out _) || session.ChunkSize is <= 0 or > 4 * 1024 * 1024 || session.ReceivedBytes != 0)
-                throw new InvalidDataException("Publisher returned an invalid upload session.");
-            uploadId = session.UploadId;
-            var uploadPath = "api/installer/publisher/uploads/" + uploadId;
-            var buffer = new byte[session.ChunkSize];
-            long sent = 0;
-            while (sent < file.Length)
+            file.Position = sent;
+            var count = (int)Math.Min(buffer.Length, file.Length - sent);
+            await file.ReadExactlyAsync(buffer.AsMemory(0, count), cancellationToken);
+            try
             {
-                var count = (int)Math.Min(buffer.Length, file.Length - sent);
-                await file.ReadExactlyAsync(buffer.AsMemory(0, count), cancellationToken);
                 using var chunk = new HttpRequestMessage(HttpMethod.Put, new Uri(origin, uploadPath + "?offset=" + sent.ToString(System.Globalization.CultureInfo.InvariantCulture)));
                 chunk.Headers.Add("X-HeirowInstaller-SHA256", hash);
                 chunk.Headers.Add("X-HeirowInstaller-Chunk-SHA256", Convert.ToHexString(SHA256.HashData(buffer.AsSpan(0, count))).ToLowerInvariant());
@@ -78,37 +82,45 @@ public sealed class PublisherClient : IDisposable
                 chunk.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 using var accepted = await client.SendAsync(chunk, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 await EnsureSuccessAsync(accepted, cancellationToken);
-                var acknowledgement = await accepted.Content.ReadFromJsonAsync<UploadAcknowledgement>(Json, cancellationToken);
+                var acknowledgement = JsonSerializer.Deserialize<UploadAcknowledgement>(await ReadBoundedAsync(accepted, cancellationToken), Json);
                 sent += count;
                 if (acknowledgement?.ReceivedBytes != sent) throw new InvalidDataException("Publisher acknowledged an unexpected upload offset.");
                 progress?.Report(new PublishProgress(sent, file.Length));
+                recoveries = 0;
             }
-            using var complete = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, uploadPath + "/complete"));
-            complete.Headers.Add("X-HeirowInstaller-SHA256", hash);
-            complete.Content = new ByteArrayContent("{}"u8.ToArray());
-            complete.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-            using var response = await client.SendAsync(complete, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            await EnsureSuccessAsync(response, cancellationToken);
-            var receipt = await response.Content.ReadFromJsonAsync<PublishedRelease>(Json, cancellationToken) ?? throw new InvalidDataException("Publisher returned no release receipt.");
-            if (!string.Equals(receipt.Sha256, hash, StringComparison.OrdinalIgnoreCase) || receipt.Size != file.Length)
-                throw new InvalidDataException("Publisher receipt does not match the uploaded package.");
-            uploadId = null;
-            return receipt;
-        }
-        catch
-        {
-            if (uploadId is not null)
+            catch (HttpRequestException error) when (error.StatusCode is null or System.Net.HttpStatusCode.Conflict && recoveries++ < 3)
             {
-                using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                try
-                {
-                    using var cleanup = new HttpRequestMessage(HttpMethod.Delete, new Uri(origin, "api/installer/publisher/uploads/" + uploadId));
-                    cleanup.Headers.Add("X-HeirowInstaller-SHA256", hash);
-                    using var ignored = await client.SendAsync(cleanup, cleanupTimeout.Token);
-                }
-                catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { }
+                // A lost response may follow a successful write. Query the authoritative offset before retrying.
+                using var query = new HttpRequestMessage(HttpMethod.Get, new Uri(origin, uploadPath));
+                query.Headers.Add("X-HeirowInstaller-SHA256", hash);
+                using var status = await client.SendAsync(query, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                await EnsureSuccessAsync(status, cancellationToken);
+                var state = JsonSerializer.Deserialize<UploadSession>(await ReadBoundedAsync(status, cancellationToken), Json) ?? throw new InvalidDataException("Publisher returned no resume state.");
+                if (state.UploadId != uploadId || state.Length != file.Length || !string.Equals(state.Sha256, hash, StringComparison.OrdinalIgnoreCase) ||
+                    state.ReceivedBytes < 0 || state.ReceivedBytes > file.Length || state.ChunkSize is <= 0 or > 4 * 1024 * 1024) throw new InvalidDataException("Publisher resume state does not match this package.");
+                if (state.Receipt is not null) { ValidateReceipt(state.Receipt); return state.Receipt; }
+                sent = state.ReceivedBytes;
+                if (buffer.Length != state.ChunkSize) buffer = new byte[state.ChunkSize];
             }
-            throw;
+        }
+        using var complete = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, uploadPath + "/complete"));
+        complete.Headers.Add("X-HeirowInstaller-SHA256", hash);
+        complete.Content = new ByteArrayContent("{}"u8.ToArray());
+        complete.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        using var response = await client.SendAsync(complete, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        var receipt = JsonSerializer.Deserialize<PublishedRelease>(await ReadBoundedAsync(response, cancellationToken), Json) ?? throw new InvalidDataException("Publisher returned no release receipt.");
+        ValidateReceipt(receipt);
+        return receipt;
+        void ValidateReceipt(PublishedRelease receipt)
+        {
+            if ((receipt.UploadedPackageSha256 is null) != (receipt.UploadedSize is null) ||
+                !string.Equals(receipt.UploadedPackageSha256 ?? receipt.Sha256, hash, StringComparison.OrdinalIgnoreCase) ||
+                (receipt.UploadedSize ?? receipt.Size) != file.Length)
+                throw new InvalidDataException("Publisher receipt does not match the uploaded package.");
+            if (receipt.Status is not null && (receipt.Status is not ("pending" or "activated" or "rejected") || !Guid.TryParseExact(receipt.ReceiptId, "N", out _) ||
+                receipt.Status == "activated" && (receipt.Size <= 0 || receipt.Sha256.Length != 64 || !receipt.Sha256.All(Uri.IsHexDigit))))
+                throw new InvalidDataException("Publisher returned an invalid publication receipt.");
         }
     }
 
@@ -137,6 +149,9 @@ public sealed class PublisherClient : IDisposable
         public string UploadId { get; set; } = "";
         public int ChunkSize { get; set; }
         public long ReceivedBytes { get; set; }
+        public long Length { get; set; }
+        public string Sha256 { get; set; } = "";
+        public PublishedRelease? Receipt { get; set; }
     }
     private sealed class UploadAcknowledgement { public long ReceivedBytes { get; set; } }
 }
@@ -162,4 +177,9 @@ public sealed class PublishedRelease
     public string UpdateUrl { get; set; } = "";
     public string Sha256 { get; set; } = "";
     public long Size { get; set; }
+    public string? UploadedPackageSha256 { get; set; }
+    public long? UploadedSize { get; set; }
+    public string? ReceiptId { get; set; }
+    public string? Status { get; set; }
+    public bool Activated => string.Equals(Status, "activated", StringComparison.Ordinal);
 }
