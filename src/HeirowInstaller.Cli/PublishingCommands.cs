@@ -20,6 +20,8 @@ internal static class PublishingCommands
         string productId, version;
         if (Path.GetExtension(packagePath).Equals(".hupd", StringComparison.OrdinalIgnoreCase))
         {
+            if (protectedPreparation || sealedDelivery)
+                throw new ArgumentException("Protected preparation and sealed delivery require a full .hinst or standalone .exe; publish signed .hupd transitions through ordinary publishing.");
             using var update = IncrementalUpdateReader.Open(packagePath);
             update.VerifySignature(validation.TrustedPublisherKeySha256, requireSignature: true);
             await update.VerifyAsync(cancellationToken: cancellationToken);

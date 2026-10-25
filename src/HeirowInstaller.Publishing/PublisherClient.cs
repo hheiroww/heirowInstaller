@@ -47,6 +47,7 @@ public sealed partial class PublisherClient : IDisposable
     public Task<PublishedRelease> PublishSealedDeliveryAsync(string packagePath, string productId, string version,
         CancellationToken cancellationToken = default, string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
     {
+        RequireFullInput(packagePath);
         if (productId is not { Length: > 0 and <= 100 } || !productId.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-') || !Version.TryParse(version, out _))
             throw new ArgumentException("Supply the exact sealed installer's product and numeric version.");
         if (client.DefaultRequestHeaders.Authorization?.Scheme != "Bearer" || client.DefaultRequestHeaders.Contains("Cookie"))
@@ -58,9 +59,16 @@ public sealed partial class PublisherClient : IDisposable
     public Task<PublishedRelease> PublishProtectedPreparationAsync(string packagePath, CancellationToken cancellationToken = default,
         string? releaseNotes = null, IProgress<PublishProgress>? progress = null)
     {
+        RequireFullInput(packagePath);
         if (client.DefaultRequestHeaders.Authorization?.Scheme != "Bearer" || client.DefaultRequestHeaders.Contains("Cookie"))
             throw new InvalidOperationException("Native protected preparation requires the publisher's in-memory bearer session.");
         return PublishCoreAsync(packagePath, null, null, cancellationToken, releaseNotes, progress, protectedPreparation: true);
+    }
+
+    private static void RequireFullInput(string packagePath)
+    {
+        if (Path.GetExtension(packagePath).ToLowerInvariant() is not (".hinst" or ".exe"))
+            throw new ArgumentException("Protected preparation and sealed delivery require a full .hinst or standalone .exe input.", nameof(packagePath));
     }
 
     private async Task<PublishedRelease> PublishCoreAsync(string packagePath, string? sealedProduct, string? sealedVersion,

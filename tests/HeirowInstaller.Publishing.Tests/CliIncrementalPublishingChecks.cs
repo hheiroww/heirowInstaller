@@ -134,6 +134,17 @@ internal static class CliIncrementalPublishingChecks
         var draft = await Run(protectedPackage, ["--github-oidc"], trust: false, cookie: false);
         check(draft.ExitCode == 1 && draft.Error.Contains("GitHub Actions OIDC requires", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,
             "Unsigned hosted-signing full drafts retain their explicit OIDC preflight exception");
+        await RejectedBeforeHttp(protectedPackage, "Actual CLI refuses browser-cookie credentials for native preparation", ["--protected-preparation"], trust: false);
+        var ordinaryDraft = await Run(packages[target], ["--protected-preparation"], trust: false, cookie: false);
+        check(ordinaryDraft.ExitCode == 2 && ordinaryDraft.Error.Contains("protected hosted-signing source draft", StringComparison.Ordinal)
+            && server.Requests.Count == beforeFlags, "Actual CLI refuses a non-hosted source in native preparation before HTTP");
+        var nativeDraft = await Run(protectedPackage, ["--protected-preparation"], trust: false, cookie: false);
+        check(nativeDraft.ExitCode != 0 && nativeDraft.Error.Contains("in-memory bearer session", StringComparison.Ordinal)
+            && !nativeDraft.Error.Contains("Unknown option", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,
+            "Actual CLI parses native preparation and requires its explicit in-memory bearer session before HTTP");
+        var wrongLane = await Run(delta, ["--protected-preparation"], cookie: false);
+        check(wrongLane.ExitCode == 2 && wrongLane.Error.Contains("require a full", StringComparison.Ordinal) && server.Requests.Count == beforeFlags,
+            "Actual CLI keeps file transitions out of the full protected preparation lane");
         check(server.UnexpectedRequests == 0, "CLI regression fixtures made only the expected local publisher requests");
         if (server.Failure is not null) throw new Exception("CLI loopback publisher fixture failed.", server.Failure);
     }
