@@ -182,7 +182,7 @@ internal sealed partial class InstallerScene
         Text("Hourly checks run through your Windows user account.", Left + 267, 446, BodyWidth - 267, 26, 9, Theme.Muted);
         Text(available ? "UPDATE RESULTS" : "The companion updater is included in the complete installed release.", Left, 503, BodyWidth, 27, 8.5f, Theme.Muted, available);
         var output = Field("updates.results", Controller.UpdaterOutput, Left, 539, BodyWidth, _ => { }, true, Math.Max(100, BodyBottom - 548));
-        output.IsReadOnly = true;
+        ReadOnlyField(output);
     }
 
     private void Toggle(string id, string title, string description, float y, bool selected, Action changed)

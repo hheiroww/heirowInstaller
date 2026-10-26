@@ -187,7 +187,7 @@ internal sealed partial class InstallerScene
         Text(Controller.DisplayInstallDirectory, Left + 24, y + 164, BodyWidth - 48, 26, 10.5f, Theme.Muted);
         Text(Controller.Scope == "machine" ? "All users · Administrator access required" : "Current user", Left + 24, y + 201, BodyWidth - 48, 24, 9, Theme.Orange);
         var operations = Field("setup.operations", string.Join(Environment.NewLine, Controller.Plan!.Operations.Select(operation => "✓  " + operation)), Left, y + 258, BodyWidth, _ => { }, true, Math.Max(80, BodyBottom - 63 - y - 258));
-        operations.IsReadOnly = true;
+        ReadOnlyField(operations);
     }
 
     private void BuildProgress(float y)
@@ -227,7 +227,7 @@ internal sealed partial class InstallerScene
         Text("License agreement", x + 25, y + 23, width - 50, 42, 21, bold: true);
         Text("Provided by " + Controller.Manifest!.Publisher, x + 27, y + 79, width - 54, 27, 10, Theme.Muted);
         var license = Field("license.text", Controller.LicenseText ?? "", x + 25, y + 123, width - 50, _ => { }, true, height - 212);
-        license.IsReadOnly = true;
+        ReadOnlyField(license);
         Action("license.close", "Close", x + 25, y + height - 65, 116, () => { showLicense = false; Controller.Notify(); });
         Action("license.accept", "Accept license", x + width - 198, y + height - 65, 173, () => { Controller.LicenseAccepted = true; showLicense = false; Controller.Notify(); }, true);
     }

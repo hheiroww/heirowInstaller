@@ -169,6 +169,12 @@ internal sealed partial class InstallerScene : Scene
         Text(label, x + 12, y + 5, width - 24, 20, 9, tone ?? Theme.Lime, true);
     }
 
+    private void ReadOnlyField(Textbox field)
+    {
+        field.IsReadOnly = true;
+        field.isEnabled = Controller.RunningApplicationsDialog is null;
+    }
+
     private void Logo(float x, float y, int size)
     {
         var path = Controller.IsWizard ? Controller.WizardArtworkPath : Path.Combine(AppContext.BaseDirectory, "Assets", "heirowInstaller.png");

@@ -9,7 +9,8 @@ internal sealed partial class InstallerScene
         Box(0, 0, RailWidth, Height, Theme.Rail, 0, Color.Transparent);
         Box(RailWidth - 1, 0, 1, Height, Theme.Border, 0, Color.Transparent);
         Logo(27, 28, 56);
-        Text(Controller.Manifest?.Name ?? "Application setup", 27, 105, RailWidth - 54, 57, 19, bold: true, wrap: true);
+        var applicationName = Controller.Manifest?.Name ?? "Application setup";
+        Text(applicationName, 27, 105, RailWidth - 54, 57, applicationName.Length > 14 ? 17 : 19, bold: true, wrap: true);
         Text(Controller.Manifest is { } manifest ? "Version " + manifest.Version : "Preparing your installation", 28, 174, RailWidth - 56, 26, 9.5f, Theme.Muted);
         var labels = Controller.IsMaintenanceWizard ? new[] { "Review", Controller.MaintenanceOperation == "repair" ? "Repairing" : "Uninstalling", "Finish" }
             : new[] { "Welcome", "Features", "Location", "Ready to install", "Installing", "Finish" };
@@ -112,7 +113,7 @@ internal sealed partial class InstallerScene
         Text(Controller.Manifest?.Name ?? "Setup", x + 27, y + 79, width - 54, 28, 11, Theme.Muted);
         var details = Field("wizard.details", string.Join(Environment.NewLine, Controller.Activity.Select(entry => $"{entry.Time:HH:mm:ss}  {entry.Title}: {entry.Detail}")),
             x + 25, y + 127, width - 50, _ => { }, true, height - 217);
-        details.IsReadOnly = true;
+        ReadOnlyField(details);
         Action("wizard.details.close", "Close details", x + width - 198, y + height - 65, 173, () => { showWizardDetails = false; Controller.Notify(); }, true);
     }
 
@@ -130,7 +131,7 @@ internal sealed partial class InstallerScene
         Text(repair ? "Repair restores this application's installed files and configured components." : "Uninstall removes this application and its recorded installation changes.",
             Left + 30, 345, BodyWidth - 60, 60, 12, Theme.Muted, wrap: true);
         var location = Field("maintenance.location", Controller.DisplayInstallDirectory, Left + 30, 421, BodyWidth - 60, _ => { }, height: 42);
-        location.IsReadOnly = true;
+        ReadOnlyField(location);
         Text("Save your work before continuing. Setup will ask before closing any application that is using these files.",
             Left + 2, 522, BodyWidth - 4, 65, 11, Theme.Muted, wrap: true);
         Action("wizard.cancel", "Cancel", Left, BodyBottom - 48, 112, game.Exit, enabled: !Controller.Busy);
