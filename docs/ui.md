@@ -64,6 +64,22 @@ and 16× anisotropic filtering, with pixel-aligned vector text.
 
 ## Launch and maintenance
 
+Planning, maintenance identity checks, application launching and updater verification run on worker
+threads. The wizard retains its verified read-only package reader while reviewing
+choices; installation independently opens and verifies the actual input again.
+Migration and cleanup authorities read immutable signed manifest bytes from that
+verified reader. They never take authority from the mutable presentation model.
+Progress reports are coalesced into a bounded activity history and update the
+existing progress controls. Artwork textures survive layout changes, and each
+frame limits background callback dispatch so input and drawing keep running.
+
+`scripts/Test-UiResponsiveness.ps1` measures a real Project-Z wizard against a
+supplied signed package, including repeated planning and 100,000 progress
+reports. It uses an isolated window outside the desktop, never injects global
+input, and never installs the supplied application. Its receipt records update
+and draw times, navigation latency, progress rebuilds and artwork decodes with
+16× AA and 16× AF enabled. Output stays in a fresh local artifact directory.
+
 ```powershell
 heirowInstaller.exe application.hinst
 heirowInstaller.exe --install application.hinst

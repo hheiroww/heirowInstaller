@@ -21,7 +21,11 @@ internal sealed partial class AppController
         if (!IsWizard || Busy || Stage != SetupStage.Complete || LastInstallation is null) return;
         try
         {
-            if (OpenApplicationOnFinish && CanOpenInstalledApplication) await LaunchInstalledApplicationAsync();
+            if (OpenApplicationOnFinish && CanOpenInstalledApplication)
+            {
+                Begin("Opening application", "Checking and starting your installed application.");
+                await LaunchInstalledApplicationAsync();
+            }
             if (arguments.WizardSmokeDirectory is { } acceptance)
                 await File.WriteAllTextAsync(Path.Combine(acceptance, "finish-action.json"), System.Text.Json.JsonSerializer.Serialize(new { finish = true, openApplication = OpenApplicationOnFinish, productId = Manifest!.Id, version = LastInstallation.Version }));
             await game.OnUiAsync(game.Exit);
@@ -33,12 +37,15 @@ internal sealed partial class AppController
     {
         var manifest = Manifest ?? throw new InvalidOperationException("The installed application is unavailable.");
         var result = LastInstallation ?? throw new InvalidOperationException("Installation has not completed.");
-        var product = InstallerEngine.ListInstalled(arguments.StateRoot).SingleOrDefault(x => x.Id == manifest.Id && x.Version == result.Version &&
-            Path.GetFullPath(x.InstallDirectory).Equals(Path.GetFullPath(result.InstallDirectory), StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidDataException("The installed application receipt is unavailable. Repair the application before opening it.");
-        var start = InstalledApplicationLaunch.Create(product, Plan!.UpdateCompanionEnabled);
-        _ = Process.Start(start) ?? throw new InvalidOperationException("Windows did not open the installed application.");
-        return Task.CompletedTask;
+        var updaterEnabled = Plan!.UpdateCompanionEnabled;
+        return Task.Run(() =>
+        {
+            var product = InstallerEngine.ListInstalled(arguments.StateRoot).SingleOrDefault(x => x.Id == manifest.Id && x.Version == result.Version &&
+                Path.GetFullPath(x.InstallDirectory).Equals(Path.GetFullPath(result.InstallDirectory), StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException("The installed application receipt is unavailable. Repair the application before opening it.");
+            var start = InstalledApplicationLaunch.Create(product, updaterEnabled);
+            _ = Process.Start(start) ?? throw new InvalidOperationException("Windows did not open the installed application.");
+        });
     }
 
     // Artwork is selected only from verified payload metadata, never an external URL or arbitrary path.

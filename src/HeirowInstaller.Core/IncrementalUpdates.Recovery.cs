@@ -33,7 +33,7 @@ public sealed class FileTransactionRecoveryContext
             throw new InvalidDataException("Recovery plan differs from its verified package.");
         var stateRoot = Path.GetFullPath(options.StateRoot ?? InstallerEngine.DefaultStateRoot(plan.Scope));
         var installRoot = Path.GetFullPath(plan.InstallDirectory);
-        byte[] targetManifest = ReadManifest(package.PackagePath);
+        byte[] targetManifest = package.ReadManifestBytes();
         string? baseDigest = null;
         PackageManifest? oldManifest = null;
         if (previous is not null)
@@ -43,7 +43,7 @@ public sealed class FileTransactionRecoveryContext
             using var old = PackageReader.Open(previous.PackagePath);
             old.VerifySignature(previous.PublisherKeySha256, previous.PublisherKeySha256 is not null);
             if (old.Manifest.Id != previous.Id || old.Manifest.Version != previous.Version) throw new InvalidDataException("Prior repair package identity differs from its validated receipt.");
-            var bytes = ReadManifest(previous.PackagePath);
+            var bytes = old.ReadManifestBytes();
             baseDigest = IncrementalPackageIO.Hash(bytes);
             oldManifest = JsonSerializer.Deserialize<PackageManifest>(bytes, InstallerJson.Options)!;
         }
@@ -171,7 +171,7 @@ public sealed class FileTransactionRecoveryContext
             throw new InvalidDataException("The installed incremental base changed while the update was being prepared.");
         using var package = PackageReader.Open(installed.PackagePath);
         package.VerifySignature(PublisherKeySha256, requireSignature: true);
-        if (BaseManifestSha256 is null || !PackageSafety.HashEquals(IncrementalPackageIO.Hash(ReadManifest(installed.PackagePath)), BaseManifestSha256))
+        if (BaseManifestSha256 is null || !PackageSafety.HashEquals(IncrementalPackageIO.Hash(package.ReadManifestBytes()), BaseManifestSha256))
             throw new CryptographicException("The incremental repair-cache base changed before installation.");
         var receipt = Files.SingleOrDefault(file => file.Location == "state" && file.Path == ProductId + "/receipt.json");
         if (receipt?.BeforeSha256 is null || !PackageSafety.HashEquals(PackageSafety.HashFile(installed.ReceiptPath), receipt.BeforeSha256))

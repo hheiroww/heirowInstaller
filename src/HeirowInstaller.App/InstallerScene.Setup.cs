@@ -6,7 +6,7 @@ internal sealed partial class InstallerScene
 {
     private void BuildInstall()
     {
-        if (Controller.Manifest is null) { if (Controller.IsWizard) BuildWizardPreparing(); else BuildWelcome(); return; }
+        if (Controller.Manifest is null || Controller.Plan is null) { if (Controller.IsWizard || Controller.Busy) BuildWizardPreparing(); else BuildWelcome(); return; }
         var stage = Controller.Stage;
         var stages = new[] { "Package", "Features", "Location", "Review" };
         var stepWidth = BodyWidth / 4f;
@@ -166,11 +166,11 @@ internal sealed partial class InstallerScene
         var selected = Controller.Scope == scope;
         var button = Action("setup.scope." + scope, "", x, y, width, () =>
         {
+            if (Controller.Busy) return;
             Controller.Scope = scope;
             Controller.TargetDirectory = "";
-            try { Controller.Replan(); } catch { }
-            Controller.Notify();
-        });
+            _ = Controller.ReplanChoicesAsync();
+        }, enabled: !Controller.Busy);
         button.Size = new(width, 140);
         button.BackgroundColor = selected ? Theme.GreenSurface : Theme.Surface;
         button.BorderColor = selected ? Theme.Lime : Theme.Border;
@@ -196,9 +196,9 @@ internal sealed partial class InstallerScene
         Text(Controller.Failed ? "Setup needs attention" : Controller.MaintenanceOperation == "uninstall" ? "Removing the application." : Controller.MaintenanceOperation == "repair" ? "Getting you ready again." : "Making everything ready.", Left + 24, y + 132, BodyWidth - 48, 48, 25, bold: true);
         Text(Controller.Manifest!.Name, Left + 24, y + 195, BodyWidth - 48, 31, 13, Theme.Muted);
         Box(Left + 24, y + 262, BodyWidth - 48, 8, Theme.SurfaceRaised, 4, Color.Transparent);
-        Box(Left + 24, y + 262, Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8, Controller.Failed ? Theme.Danger : Theme.Lime, 4, Color.Transparent);
-        Text($"{Controller.Progress:P0}", Left + 24, y + 294, BodyWidth - 48, 30, 14, Theme.Lime, true);
-        Text(Controller.StatusDetail, Left + 24, y + 335, BodyWidth - 48, Math.Clamp(BodyBottom - 58 - y - 335, 40, 65), 11, Theme.Muted, wrap: true);
+        progressBar = Box(Left + 24, y + 262, Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8, Controller.Failed ? Theme.Danger : Theme.Lime, 4, Color.Transparent);
+        progressPercent = Text($"{Controller.Progress:P0}", Left + 24, y + 294, BodyWidth - 48, 30, 14, Theme.Lime, true);
+        progressDetail = Text(Controller.StatusDetail, Left + 24, y + 335, BodyWidth - 48, Math.Clamp(BodyBottom - 58 - y - 335, 40, 65), 11, Theme.Muted, wrap: true);
         var cancelLabel = Controller.MaintenanceOperation == "uninstall" ? "Cancel uninstall" : Controller.MaintenanceOperation == "repair" ? "Cancel repair" : "Cancel installation";
         Action("setup.cancel", Controller.Busy ? cancelLabel : "Back to review", Left + 24, BodyBottom - 48, 184, () => { if (Controller.Busy) Controller.Cancel(); else { Controller.Stage = SetupStage.Review; Controller.Notify(); } });
         Action("setup.logs", Controller.IsWizard ? "Details" : "View activity", Width - 181, BodyBottom - 48, 147, () => { if (Controller.IsWizard) { showWizardDetails = true; Controller.Notify(); } else Controller.Navigate(DesktopPage.Activity); });

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -7,7 +8,7 @@ using ProjectZ.Shared.Drawing;
 
 namespace HeirowInstaller.App;
 
-internal sealed class InstallerGame : Game
+internal sealed partial class InstallerGame : Game
 {
     private readonly GraphicsDeviceManager graphics;
     private readonly ConcurrentQueue<Action> actions = new();
@@ -38,7 +39,7 @@ internal sealed class InstallerGame : Game
             SynchronizeWithVerticalRetrace = true,
             GraphicsProfile = GraphicsProfile.HiDef
         };
-        if ((arguments.WizardSmokeDirectory is not null || arguments.SmokeDirectory is not null) && arguments.Isolated)
+        if ((arguments.WizardSmokeDirectory is not null || arguments.SmokeDirectory is not null || arguments.PerformanceSmokeDirectory is not null) && arguments.Isolated)
         {
             // Owned test rendering uses internal scene input, never the user's foreground window.
             var handle = Window.Handle;
@@ -61,12 +62,14 @@ internal sealed class InstallerGame : Game
         quality.AntiAliasingSamples = 16;
         quality.Filtering = TextureFiltering.Anisotropic16x;
         quality.PpiPerfectText = true;
-        manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(980, 760), UseHardwareInput = true };
+        manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(980, 760), UseHardwareInput = arguments.PerformanceSmokeDirectory is null };
         MainScene = new InstallerScene(manager, this, arguments);
         manager.AddScene("installer", MainScene);
         manager.ActiveScene = MainScene;
         MainScene.Rebuild();
-        if (arguments.MaintenanceOperation is not null && arguments.WizardSmokeDirectory is null)
+        if (arguments.PerformanceSmokeDirectory is not null)
+            _ = UiResponsivenessSmoke.RunAsync(this, arguments);
+        else if (arguments.MaintenanceOperation is not null && arguments.WizardSmokeDirectory is null)
             _ = MainScene.Controller.InitializeMaintenanceWizardAsync();
         else if (arguments.SelfUpdateSmokeFeed is not null)
             _ = MainScene.Controller.RunSelfUpdateAcceptanceAsync();
@@ -109,14 +112,24 @@ internal sealed class InstallerGame : Game
 
     protected override void Update(GameTime gameTime)
     {
-        while (actions.TryDequeue(out var action)) action();
+        var started = Performance?.BeginUpdate();
+        // Progress and background completions cannot drain an unbounded queue
+        // before the next input/render tick. Preserve FIFO and yield each frame.
+        var dispatchStarted = Stopwatch.GetTimestamp();
+        for (var count = 0; count < 64 && actions.TryDequeue(out var action); count++)
+        {
+            action();
+            if (Stopwatch.GetElapsedTime(dispatchStarted).TotalMilliseconds >= 2) break;
+        }
         MainScene.Controller.ExpirePublisherSession();
         manager.Tick(gameTime);
         base.Update(gameTime);
+        if (started is { } timestamp) Performance?.EndUpdate(timestamp);
     }
 
     protected override void Draw(GameTime gameTime)
     {
+        var started = Performance?.BeginDraw();
         GraphicsDevice.Clear(Theme.Background);
         if (navigationCapture is { } capture) DrawNavigationFrame(gameTime, capture);
         else manager.Draw(gameTime);
@@ -145,6 +158,7 @@ internal sealed class InstallerGame : Game
             catch (Exception error) { request.Completion?.SetException(error); throw; }
         }
         base.Draw(gameTime);
+        if (started is { } timestamp) Performance?.EndDraw(timestamp);
     }
 
     // During acceptance this is the single scene render presented to the window,

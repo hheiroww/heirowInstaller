@@ -32,6 +32,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Burn child ownership must agree with bundle removal and boot identity ignores timezone formatting", BurnChildrenAndBoot),
     ("real Windows boot identity stays stable across three same-process queries", RepeatedLiveBootIdentity),
     ("wrong signed baseline, backend, publisher, scope and root reject before mutation", RejectBindings),
+    ("a changed presentation model cannot replace immutable signed migration authority", ChangedPresentationModel),
     ("unknown legacy installations are never discovered or adopted", UnknownInstallation),
     ("default discovery follows one recorded scope, rejects ambiguity and fresh isolation never inspects a real backend", DiscoveryAndIsolation),
     ("an unauthorized backend change fails before extraction or prerequisites", UnauthorizedTransition),
@@ -398,6 +399,15 @@ static async Task PreparingRecovery()
         await fixture.Engine.InstallAsync(target, fixture.Options);
         True(fixture.Backend.Uninstalls == 1 && fixture.Phase == "complete");
     }
+}
+
+static async Task ChangedPresentationModel()
+{
+    using var fixture = new Fixture();
+    using var target = fixture.Build();
+    target.Manifest.NativeMigration!.Baselines[0].MsiProductCode = Guid.NewGuid().ToString("B");
+    await Throws<CryptographicException>(() => Task.Run(() => fixture.Engine.Plan(target, fixture.Options)));
+    fixture.Unchanged();
 }
 
 sealed class Fixture : IDisposable

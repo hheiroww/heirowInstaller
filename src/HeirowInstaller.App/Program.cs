@@ -29,10 +29,13 @@ internal static class Program
                 return result.RebootRequired ? 3010 : 0;
             }
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+            Task? startupCompanion = null;
             if (!maintenance && options.PackagePath is null && !options.Install && !options.Isolated && options.SmokeDirectory is null && options.SelfUpdateSmokeFeed is null && options.CapturePath is null)
-                global::SocketJack.HeirowUpdaterBootstrap.StartAfterExit();
-            using var game = new InstallerGame(options);
-            game.Run();
+                startupCompanion = Task.Run(() => global::SocketJack.HeirowUpdaterBootstrap.StartAfterExit());
+            using (var game = new InstallerGame(options)) game.Run();
+            // The window is disposed before this bounded shutdown grace period.
+            // Startup verification never delays creating or drawing the UI.
+            startupCompanion?.Wait(TimeSpan.FromSeconds(3));
             return Environment.ExitCode;
         }
         catch (Exception error)
@@ -41,7 +44,7 @@ internal static class Program
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, "desktop-error.log");
             File.AppendAllText(path, $"{DateTimeOffset.Now:O}\n{error}\n\n");
-            if (!args.Any(value => new[] { "--silent", "--quiet", "/quiet", "/qn", "/silent", "/verysilent", "--defer", "--wizard-smoke", "--ui-smoke" }.Contains(value, StringComparer.OrdinalIgnoreCase)))
+            if (!args.Any(value => new[] { "--silent", "--quiet", "/quiet", "/qn", "/silent", "/verysilent", "--defer", "--wizard-smoke", "--ui-smoke", "--ui-performance" }.Contains(value, StringComparer.OrdinalIgnoreCase)))
                 System.Windows.Forms.MessageBox.Show($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}", "heirowInstaller", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
             return 1;
         }
@@ -88,6 +91,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal bool MaintenanceConfirmed { get; init; }
     internal bool CloseOnComplete { get; init; }
     internal string? WizardSmokeDirectory { get; init; }
+    internal string? PerformanceSmokeDirectory { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
     {
         if (ExpectedProductId is not null && !package.Manifest.Id.Equals(ExpectedProductId, StringComparison.OrdinalIgnoreCase))
@@ -106,7 +110,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? trustedKey = null, selfUpdateFeed = null, selfUpdateReport = null; var requireSignature = false;
         List<string> legacyArguments = []; string? logPath = null;
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
-        var closeOnComplete = false; var maintenanceConfirmed = false; string? wizardSmoke = null;
+        var closeOnComplete = false; var maintenanceConfirmed = false; string? wizardSmoke = null, performanceSmoke = null;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
@@ -115,6 +119,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
                 case "--capture": capture = Path.GetFullPath(Value()); break;
                 case "--ui-smoke": smoke = Path.GetFullPath(Value()); break;
                 case "--wizard-smoke": wizardSmoke = Path.GetFullPath(Value()); break;
+                case "--ui-performance": performanceSmoke = Path.GetFullPath(Value()); break;
                 case "--state-root": state = Path.GetFullPath(Value()); break;
                 case "--install": install = true; package = Path.GetFullPath(Value()); break;
                 case "--target": target = Path.GetFullPath(Value()); break;
@@ -156,6 +161,12 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             if (smoke is not null || package is null && !maintenanceInvocation) throw new ArgumentException("Wizard acceptance requires a package and its own isolated output directory.");
             state = Path.Combine(wizardSmoke, "state"); target = Path.Combine(wizardSmoke, "installed"); isolated = true; noRegister = true;
         }
+        if (performanceSmoke is not null)
+        {
+            if (smoke is not null || wizardSmoke is not null || maintenanceInvocation || package is null || install || silent)
+                throw new ArgumentException("UI performance checks require one package and a fresh isolated output directory; they never install it.");
+            state = Path.Combine(performanceSmoke, "state"); target = Path.Combine(performanceSmoke, "installed"); isolated = true; noRegister = true;
+        }
         if (isolated && state is null) throw new ArgumentException("Isolated installation requires an explicit --state-root.");
         if (waitForPid is <= 0 || waitForPid == Environment.ProcessId) throw new ArgumentException("Choose a different valid process to wait for.");
         if (waitForStartTicks is <= 0 || (waitForStartTicks is not null && waitForPid is null)) throw new ArgumentException("--wait-start requires a valid --wait-pid.");
@@ -168,6 +179,6 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             !Uri.TryCreate(selfUpdateFeed, UriKind.Absolute, out var smokeUri) || !smokeUri.IsLoopback || smokeUri.Scheme is not ("http" or "https")))
             throw new ArgumentException("Self-update acceptance requires an explicit isolated state, target, report, and loopback feed.");
         return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
-        { CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke };
+        { CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke };
     }
 }

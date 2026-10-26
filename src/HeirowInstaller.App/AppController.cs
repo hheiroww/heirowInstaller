@@ -18,6 +18,7 @@ internal sealed partial class AppController : IDisposable
     private readonly AppArguments arguments;
     private readonly InstallerEngine engine = new();
     private PublisherSession? publisherSession;
+    private PackageReader? verifiedPlanningPackage;
     internal bool SigningIn { get; private set; }
     internal bool PublisherSignedIn => publisherSession is { } session && session.ExpiresUtc > DateTimeOffset.UtcNow;
     internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username} · expires {publisherSession.ExpiresUtc.ToLocalTime():HH:mm}" : "Sign in to SocketJack to publish, or use publisher credentials from your environment.";
@@ -53,20 +54,28 @@ internal sealed partial class AppController : IDisposable
     internal string? BuiltPackagePath { get; private set; }
     internal string? LastReceiptPath { get; private set; }
     internal string UpdaterOutput { get; private set; } = "Check your installed applications to see published update information here.";
-    internal string UpdaterPath
+    // Presentation snapshot only. Operations resolve and verify again off the UI thread.
+    internal string UpdaterPath { get; private set; } = "";
+    private int refreshingUpdater;
+    private static string ResolveUpdater()
     {
-        get
+        try { return UpdaterHostResolver.FindExecutable() ?? ""; }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or CryptographicException or JsonException or ArgumentException or FormatException or InvalidOperationException or NotSupportedException)
+        { return ""; } // Invalid own-root profiles still fail closed.
+    }
+    private async Task RefreshUpdaterAvailabilityAsync()
+    {
+        if (Interlocked.CompareExchange(ref refreshingUpdater, 1, 0) != 0) return;
+        try
         {
-            try { return UpdaterHostResolver.FindExecutable() ?? ""; }
-            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or CryptographicException or JsonException or ArgumentException or FormatException or InvalidOperationException or NotSupportedException)
-            {
-                // Invalid shared profiles fail closed; never pick an unverified sibling after a resolver failure.
-                return "";
-            }
+            var path = await Task.Run(ResolveUpdater);
+            await game.OnUiAsync(() => { if (UpdaterPath != path) { UpdaterPath = path; Notify(); } });
         }
+        finally { Interlocked.Exchange(ref refreshingUpdater, 0); }
     }
     internal CancellationTokenSource? Cancellation { get; private set; }
     internal event Action? Changed;
+    internal event Action? ProgressChanged;
 
     internal AppController(InstallerGame game, AppArguments arguments)
     {
@@ -82,6 +91,7 @@ internal sealed partial class AppController : IDisposable
             Page = DesktopPage.Install;
         }
         AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
+        if (!IsWizard) _ = RefreshUpdaterAvailabilityAsync();
     }
 
     internal void Notify() => Changed?.Invoke();
@@ -96,6 +106,7 @@ internal sealed partial class AppController : IDisposable
         if (RunningApplicationsDialog is not null) return;
         if (Busy && page == DesktopPage.Install && Stage == SetupStage.Progress) { Page = page; Notify(); return; }
         Page = page;
+        if (page == DesktopPage.Updates) _ = RefreshUpdaterAvailabilityAsync();
         if (page == DesktopPage.Installed) RefreshInstalled();
         Notify();
     }
@@ -108,29 +119,35 @@ internal sealed partial class AppController : IDisposable
         {
             var loaded = await Task.Run(async () =>
             {
-                using var package = PackageReader.Open(path);
-                arguments.ValidatePackageIdentity(package);
-                await package.VerifyAsync(cancellationToken: Cancellation!.Token);
-                if (IsWizard && package.Manifest.LegacyExecutable is { SilentInstallArguments: null })
-                    throw new NotSupportedException("This application's publisher has not configured unattended setup. Ask the publisher for a package with silent installation support.");
-                string? license = null;
-                if (!string.IsNullOrWhiteSpace(package.Manifest.LicenseFile))
+                var package = PackageReader.Open(path);
+                try
                 {
-                    var payload = package.Manifest.Payload.FirstOrDefault(file => file.Path.Equals(package.Manifest.LicenseFile, StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidDataException("The package license is missing from the verified payload.");
-                    if (payload.Size > 512 * 1024) throw new InvalidDataException("The package license exceeds the desktop text display limit.");
-                    var temporary = Path.Combine(Path.GetTempPath(), "heirowInstaller-license-" + Guid.NewGuid().ToString("N"));
-                    await package.ExtractVerifiedAsync(temporary, [payload], cancellationToken: Cancellation.Token);
-                    var licensePath = Path.GetFullPath(Path.Combine(temporary, payload.Path));
-                    if (!licensePath.StartsWith(Path.GetFullPath(temporary) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("The license path is outside the temporary package directory.");
-                    license = await File.ReadAllTextAsync(licensePath, Cancellation.Token);
-                    File.Delete(licensePath);
+                    arguments.ValidatePackageIdentity(package);
+                    await package.VerifyAsync(cancellationToken: Cancellation!.Token);
+                    if (IsWizard && package.Manifest.LegacyExecutable is { SilentInstallArguments: null })
+                        throw new NotSupportedException("This application's publisher has not configured unattended setup. Ask the publisher for a package with silent installation support.");
+                    string? license = null;
+                    if (!string.IsNullOrWhiteSpace(package.Manifest.LicenseFile))
+                    {
+                        var payload = package.Manifest.Payload.FirstOrDefault(file => file.Path.Equals(package.Manifest.LicenseFile, StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidDataException("The package license is missing from the verified payload.");
+                        if (payload.Size > 512 * 1024) throw new InvalidDataException("The package license exceeds the desktop text display limit.");
+                        var temporary = Path.Combine(Path.GetTempPath(), "heirowInstaller-license-" + Guid.NewGuid().ToString("N"));
+                        await package.ExtractVerifiedAsync(temporary, [payload], cancellationToken: Cancellation.Token);
+                        var licensePath = Path.GetFullPath(Path.Combine(temporary, payload.Path));
+                        if (!licensePath.StartsWith(Path.GetFullPath(temporary) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("The license path is outside the temporary package directory.");
+                        license = await File.ReadAllTextAsync(licensePath, Cancellation.Token);
+                        File.Delete(licensePath);
+                    }
+                    var artwork = IsWizard ? await ReadWizardArtworkAsync(package, Cancellation!.Token) : null;
+                    return (Package: package, Manifest: package.Manifest, License: license, Artwork: artwork);
                 }
-                var artwork = IsWizard ? await ReadWizardArtworkAsync(package, Cancellation!.Token) : null;
-                return (Manifest: package.Manifest, License: license, Artwork: artwork);
+                catch { package.Dispose(); throw; }
             });
             await game.OnUiAsync(() =>
             {
                 var metadata = loaded.Manifest;
+                verifiedPlanningPackage?.Dispose();
+                verifiedPlanningPackage = loaded.Package;
                 PackagePath = Path.GetFullPath(path);
                 Manifest = metadata;
                 WizardArtworkPath = loaded.Artwork;
@@ -146,9 +163,14 @@ internal sealed partial class AppController : IDisposable
                     Features.Clear();
                     foreach (var feature in arguments.Features) Features.Add(feature);
                 }
-                Replan();
+                Plan = null;
+            });
+            await ReplanAsync();
+            await game.OnUiAsync(() =>
+            {
                 Stage = SetupStage.Package;
                 Page = DesktopPage.Install;
+                var metadata = Manifest!;
                 End(IsWizard ? "Ready to install" : "Package verified", IsWizard ? $"{metadata.Name} {metadata.Version} · {metadata.Publisher}" : $"{metadata.Name} {metadata.Version} · {metadata.Payload.Count} files");
             });
             if (arguments.Install && (LicenseText is null || LicenseAccepted)) await InstallAsync();
@@ -156,24 +178,54 @@ internal sealed partial class AppController : IDisposable
         catch (Exception error) { await ErrorAsync("Could not open package", error); }
     }
 
-    internal void Replan()
+    private async Task ReplanAsync()
     {
-        if (Manifest is null) return;
-        using var reader = PackageReader.Open(PackagePath);
-        arguments.ValidatePackageIdentity(reader);
-        Plan = engine.Plan(reader, Options());
-        if (string.IsNullOrWhiteSpace(TargetDirectory) && !OriginalInstallerDestination) TargetDirectory = Plan.InstallDirectory;
+        PackageReader package = null!; InstallOptions options = null!;
+        await game.OnUiAsync(() => { package = verifiedPlanningPackage ?? throw new InvalidOperationException("Open and verify the package before planning it."); options = Options(); });
+        var token = Cancellation!.Token;
+        var plan = await Task.Run(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            // The reader retains its read-only archive handle from the initial
+            // whole-package and payload checks. No timestamp-based trust cache.
+            // InstallAsync independently opens and validates the actual input again.
+            var result = engine.Plan(package, options);
+            token.ThrowIfCancellationRequested();
+            return result;
+        }, token);
+        await game.OnUiAsync(() =>
+        {
+            Plan = plan;
+            if (string.IsNullOrWhiteSpace(TargetDirectory) && !OriginalInstallerDestination) TargetDirectory = plan.InstallDirectory;
+        });
     }
 
-    internal void NextStage()
+    internal void NextStage() => _ = NextStageAsync();
+
+    private async Task NextStageAsync()
     {
         if (Manifest is null || Busy) return;
+        if (Stage == SetupStage.Review) { await InstallAsync(); return; }
+        if (Stage >= SetupStage.Review) return;
+        // Features and location do not display the operation plan. Revalidate
+        // the chosen configuration when entering Review and again before install.
+        if (Stage < SetupStage.Destination) { Stage++; Notify(); return; }
+        var next = Stage + 1;
+        Begin("Checking installation choices", "Checking the selected features and installation location.");
         try
         {
-            if (Stage < SetupStage.Review) { Replan(); Stage++; Notify(); }
-            else if (Stage == SetupStage.Review) _ = InstallAsync();
+            await ReplanAsync();
+            await game.OnUiAsync(() => { Stage = next; End("Ready to continue", "Your installation choices have been checked."); });
         }
-        catch (Exception error) { _ = ErrorAsync("Review needs attention", error); }
+        catch (Exception error) { await ErrorAsync("Review needs attention", error); }
+    }
+
+    internal async Task ReplanChoicesAsync()
+    {
+        if (Manifest is null || Busy) return;
+        Begin("Checking installation choices", "Checking the selected installation location.");
+        try { await ReplanAsync(); await game.OnUiAsync(() => End("Location checked", "Review your installation choices before continuing.")); }
+        catch (Exception error) { await ErrorAsync("Location needs attention", error); }
     }
 
     internal void PreviousStage()
@@ -203,16 +255,19 @@ internal sealed partial class AppController : IDisposable
     {
         if (Manifest is null || Busy) return;
         if (LicenseText is not null && !LicenseAccepted) { Stage = SetupStage.Package; Notify(); return; }
-        try { Replan(); }
+        Begin("Checking installation choices", "Checking the selected features and installation location.");
+        try { await ReplanAsync(); }
         catch (Exception error) { await ErrorAsync("Installation needs attention", error); return; }
-        var useWorker = Plan!.RequiresElevation && !InstallerEngine.IsElevated && !arguments.Isolated || arguments.WizardSmokeDirectory is not null;
-        Stage = SetupStage.Progress;
-        Page = DesktopPage.Install;
-        Begin("Preparing installation", Manifest.Name);
-        var options = Options();
-        var launchAfterWorker = useWorker && options.Launch;
-        if (useWorker) options.Launch = false;
-        var packagePath = PackagePath;
+        var useWorker = false; var launchAfterWorker = false; InstallOptions options = null!; string packagePath = "";
+        await game.OnUiAsync(() =>
+        {
+            useWorker = Plan!.RequiresElevation && !InstallerEngine.IsElevated && !arguments.Isolated || arguments.WizardSmokeDirectory is not null;
+            Stage = SetupStage.Progress; Page = DesktopPage.Install;
+            Begin("Preparing installation", Manifest.Name);
+            options = Options(); launchAfterWorker = useWorker && options.Launch;
+            if (useWorker) options.Launch = false;
+            packagePath = PackagePath;
+        });
         try
         {
             var result = await Task.Run(async () =>
@@ -256,7 +311,8 @@ internal sealed partial class AppController : IDisposable
         if (product is null || Busy) return;
         if (IsMaintenanceWizard)
         {
-            try { product = ValidateMaintenanceIdentity(); Stage = SetupStage.Progress; Page = DesktopPage.Install; }
+            Begin("Checking application", "Checking the installed application's maintenance files.");
+            try { product = await Task.Run(ValidateMaintenanceIdentity); await game.OnUiAsync(() => { Stage = SetupStage.Progress; Page = DesktopPage.Install; }); }
             catch (Exception error) { await ErrorAsync("The application changed", error); return; }
         }
         if (NeedsMaintenanceElevation(product) || arguments.WizardSmokeDirectory is not null) { await ElevatedMaintenanceAsync(product, "repair"); return; }
@@ -279,7 +335,8 @@ internal sealed partial class AppController : IDisposable
         if (product is null || Busy) return;
         if (IsMaintenanceWizard)
         {
-            try { product = ValidateMaintenanceIdentity(); Stage = SetupStage.Progress; Page = DesktopPage.Install; }
+            Begin("Checking application", "Checking the installed application's maintenance files.");
+            try { product = await Task.Run(ValidateMaintenanceIdentity); await game.OnUiAsync(() => { Stage = SetupStage.Progress; Page = DesktopPage.Install; }); }
             catch (Exception error) { await ErrorAsync("The application changed", error); return; }
         }
         if (NeedsMaintenanceElevation(product) || arguments.WizardSmokeDirectory is not null) { await ElevatedMaintenanceAsync(product, "uninstall"); return; }
@@ -393,11 +450,12 @@ internal sealed partial class AppController : IDisposable
             {
                 var metadata = JsonSerializer.Deserialize<PackageManifest>(await File.ReadAllTextAsync(manifest, Cancellation!.Token), InstallerJson.Options) ?? throw new InvalidDataException("The application manifest is empty.");
                 var project = File.Exists(source) && Path.GetExtension(source).ToLowerInvariant() is ".csproj" or ".vbproj" or ".fsproj";
+                var updater = metadata.UpdateCompanion is null ? null : await Task.Run(ResolveUpdater);
                 var built = await StandaloneInstallerBuilder.BuildAsync(manifest, output, new()
                 {
                     SourceDirectory = project ? null : source, ApplicationProjectPath = project ? source : null,
                     LauncherPath = Environment.GetEnvironmentVariable("HEIROWINSTALLER_LAUNCHER_PATH") ?? Environment.ProcessPath,
-                    SigningKeyPath = signingKey, UpdateCompanionExecutablePath = metadata.UpdateCompanion is not null && File.Exists(UpdaterPath) ? UpdaterPath : null
+                    SigningKeyPath = signingKey, UpdateCompanionExecutablePath = string.IsNullOrEmpty(updater) ? null : updater
                 }, Reporter(), Cancellation.Token);
                 result = built.Manifest;
             }
@@ -442,7 +500,7 @@ internal sealed partial class AppController : IDisposable
         finally { await game.OnUiAsync(() => { SigningIn = false; Notify(); }); }
     }
 
-    public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; DisposeWizardArtwork(); }
+    public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; verifiedPlanningPackage?.Dispose(); verifiedPlanningPackage = null; DisposeWizardArtwork(); }
 
     internal void SaveSettings()
     {
@@ -456,7 +514,7 @@ internal sealed partial class AppController : IDisposable
         Begin("heirowUpdater", "Connecting to the companion update manager.");
         try
         {
-            var updater = UpdaterPath;
+            var updater = await Task.Run(ResolveUpdater);
             if (!File.Exists(updater)) throw new FileNotFoundException("Install or repair heirowInstaller with optional updates enabled to restore its verified heirowUpdater.");
             var start = new ProcessStartInfo(updater) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(updater)! };
             foreach (var item in command) start.ArgumentList.Add(item);
@@ -585,9 +643,10 @@ internal sealed partial class AppController : IDisposable
         }
     }
 
-    private IProgress<InstallProgress> Reporter() => new UiProgress(value => game.Enqueue(() =>
+    internal IProgress<InstallProgress> Reporter() => new UiProgress(game.Enqueue, values =>
     {
-        if (value.Phase.Equals("applications", StringComparison.OrdinalIgnoreCase)) ClearRunningApplicationsDialog();
+        var value = values[^1];
+        if (values.Any(item => item.Phase.Equals("applications", StringComparison.OrdinalIgnoreCase))) ClearRunningApplicationsDialog();
         Progress = IsWizard && Stage == SetupStage.Progress ? Math.Max(Progress, value.Phase.ToLowerInvariant() switch
         {
             "verify" => value.Fraction * 0.10,
@@ -617,9 +676,9 @@ internal sealed partial class AppController : IDisposable
             "complete" => MaintenanceOperation == "uninstall" ? "The application has been removed." : "Your application is ready to use.",
             _ => "Applying this application's installation changes."
         } : value.Message;
-        AddActivity(value.Phase, value.Message);
-        Notify();
-    }));
+        foreach (var item in values) AddActivity(item.Phase, item.Message);
+        ProgressChanged?.Invoke();
+    });
 
     private void Begin(string title, string detail)
     {
@@ -661,6 +720,34 @@ internal sealed partial class AppController : IDisposable
         if (Activity.Count > 200) Activity.RemoveAt(Activity.Count - 1);
     }
 
-    private sealed class UiProgress(Action<InstallProgress> callback) : IProgress<InstallProgress>
-    { public void Report(InstallProgress value) => callback(value); }
+    private sealed class UiProgress(Action<Action> enqueue, Action<InstallProgress[]> callback) : IProgress<InstallProgress>
+    {
+        private readonly object gate = new();
+        private readonly Queue<InstallProgress> pending = new();
+        private InstallProgress? applicationsClosed;
+        private bool queued;
+        public void Report(InstallProgress value)
+        {
+            lock (gate)
+            {
+                if (value.Phase.Equals("applications", StringComparison.OrdinalIgnoreCase)) applicationsClosed = value;
+                if (pending.Count == 200) pending.Dequeue();
+                pending.Enqueue(value);
+                if (queued) return;
+                queued = true;
+            }
+            enqueue(Flush);
+        }
+        private void Flush()
+        {
+            InstallProgress[] values;
+            lock (gate)
+            {
+                values = pending.ToArray(); pending.Clear(); queued = false;
+                if (applicationsClosed is { } closed && !values.Contains(closed)) values = [closed, .. values];
+                applicationsClosed = null;
+            }
+            callback(values);
+        }
+    }
 }

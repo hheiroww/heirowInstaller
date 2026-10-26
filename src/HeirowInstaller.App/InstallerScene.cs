@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using HeirowInstaller.Core;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using ProjectZ.Shared.Drawing;
 using ProjectZ.Shared.Drawing.UI;
 using ProjectZ.Shared.Drawing.UI.Advanced;
@@ -24,6 +25,14 @@ internal sealed partial class InstallerScene : Scene
     private bool confirmUninstall;
     private bool showLicense;
     private bool showWizardDetails;
+    internal int ArtworkDecodeCount { get; private set; }
+    internal int RebuildCount { get; private set; }
+    private readonly Dictionary<string, Texture2D> artwork = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> usedArtwork = new(StringComparer.OrdinalIgnoreCase);
+    private TextElement? statusTitle, statusDetail, progressPercent, progressDetail;
+    private RectangleElement? progressBar;
+    private bool activityDirty;
+    private long activityRefresh;
     private int RailWidth => Controller.IsWizard ? 248 : 222;
     private int Width => game.GraphicsDevice.Viewport.Width;
     private int Height => game.GraphicsDevice.Viewport.Height;
@@ -40,6 +49,7 @@ internal sealed partial class InstallerScene : Scene
         Controller = new AppController(game, arguments);
         confirmUninstall = !Controller.IsMaintenanceWizard && arguments.MaintenanceOperation == "uninstall" && !arguments.MaintenanceConfirmed;
         Controller.Changed += () => dirty = true;
+        Controller.ProgressChanged += RefreshProgress;
         ViewportResized += (_, _) => dirty = true;
     }
 
@@ -54,6 +64,8 @@ internal sealed partial class InstallerScene : Scene
 
     public override void Tick(GameTime gameTime)
     {
+        if (activityDirty && Stopwatch.GetElapsedTime(activityRefresh).TotalMilliseconds >= 250)
+        { activityDirty = false; activityRefresh = Stopwatch.GetTimestamp(); dirty = true; }
         // Input is dispatched by SceneManager immediately before this tick.
         // Register the replacement before base.Tick processes the scene queues;
         // drawing a tree queued after that point would produce an empty frame.
@@ -63,6 +75,10 @@ internal sealed partial class InstallerScene : Scene
 
     internal void Rebuild()
     {
+        RebuildCount++;
+        statusTitle = statusDetail = progressPercent = progressDetail = null;
+        progressBar = null;
+        usedArtwork.Clear();
         var previousRoot = root;
         var previousControls = controls.ToArray();
         controls.Clear();
@@ -90,6 +106,8 @@ internal sealed partial class InstallerScene : Scene
             if (Controller.RunningApplicationsDialog is not null) BuildRunningApplicationsDialog();
             AddElement(root);
             previousRoot?.Dispose();
+            foreach (var path in artwork.Keys.Where(path => !usedArtwork.Contains(path)).ToArray())
+            { artwork[path].Dispose(); artwork.Remove(path); }
             dirty = false; lastWidth = Width; lastHeight = Height;
         }
         catch
@@ -139,7 +157,7 @@ internal sealed partial class InstallerScene : Scene
             Position = new(x, y), Size = new(width, height), Font = Theme.Font(10.5f), ForegroundColor = Theme.Text,
             BackgroundColor = Theme.Field, BorderColor = Theme.Border, BorderThickness = 1, CornerRadius = 8,
             TextPadding = new Vector2(12, multiline ? 10 : 9), AcceptsReturn = multiline, WrapText = multiline,
-            Padding = new Thickness(0), Text = value, isEnabled = Controller.RunningApplicationsDialog is null
+            Padding = new Thickness(0), Text = value, isEnabled = !Controller.Busy && Controller.RunningApplicationsDialog is null
         }, id);
         field.OnTextChanged += change => changed(change.NewText);
         return field;
@@ -156,8 +174,16 @@ internal sealed partial class InstallerScene : Scene
         var path = Controller.IsWizard ? Controller.WizardArtworkPath : Path.Combine(AppContext.BaseDirectory, "Assets", "heirowInstaller.png");
         if (path is not null && File.Exists(path))
         {
+            usedArtwork.Add(path);
             var image = Add(new ImageElement(this) { Position = new(x, y), Size = new(size, size), isMouseBypassEnabled = true });
-            image.Load(path);
+            if (!artwork.TryGetValue(path, out var texture))
+            {
+                using var file = File.OpenRead(path);
+                texture = Texture2D.FromStream(game.GraphicsDevice, file);
+                artwork.Add(path, texture);
+                ArtworkDecodeCount++;
+            }
+            image.Texture = texture; // Borrow the scene-owned texture across layout changes.
         }
         else
         {
@@ -224,8 +250,23 @@ internal sealed partial class InstallerScene : Scene
         var y = Height - 82;
         Box(Left, y, BodyWidth, 59, Theme.Surface, 10, Controller.Failed ? Theme.Danger : Theme.Border);
         Box(Left + 15, y + 17, 7, 7, Controller.Failed ? Theme.Danger : Controller.Busy ? Theme.Orange : Theme.Lime, 4, Color.Transparent);
-        Text(Controller.Status, Left + 33, y + 8, BodyWidth - 50, 22, 10, Controller.Failed ? Theme.Danger : Theme.Text, true);
-        Text(Controller.StatusDetail, Left + 33, y + 33, BodyWidth - 50, 20, 8.5f, Theme.Muted);
+        statusTitle = Text(Controller.Status, Left + 33, y + 8, BodyWidth - 50, 22, 10, Controller.Failed ? Theme.Danger : Theme.Text, true);
+        statusDetail = Text(Controller.StatusDetail, Left + 33, y + 33, BodyWidth - 50, 20, 8.5f, Theme.Muted);
+    }
+
+    private void RefreshProgress()
+    {
+        static void Set(TextElement? element, string value) { if (element is not null && element.Text != value) element.Text = value; }
+        Set(statusTitle, Controller.Status); Set(statusDetail, Controller.StatusDetail);
+        Set(progressPercent, $"{Controller.Progress:P0}"); Set(progressDetail, Controller.StatusDetail);
+        if (progressBar is not null) progressBar.Size = new(Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8);
+        if (Controller.Page == DesktopPage.Activity || showWizardDetails) activityDirty = true;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing) { foreach (var texture in artwork.Values) texture.Dispose(); artwork.Clear(); }
     }
 
     private void BrowsePackage()

@@ -23,7 +23,7 @@ internal sealed class VerifiedModuleAuthority
 
     internal static VerifiedModuleAuthority? Create(PackageReader package, InstallPlan plan, InstallOptions options, InstalledProduct? previous)
     {
-        var bytes = FileTransactionRecoveryContext.ReadManifest(package.PackagePath);
+        var bytes = package.ReadManifestBytes();
         var manifest = JsonSerializer.Deserialize<PackageManifest>(bytes, InstallerJson.Options)!;
         if (!manifest.Modules.TryGetValue(LegacyStagingCleanupModule.ModuleId, out var configuration)) return null;
         var expectedPin = options.TrustedPublisherKeySha256 ?? previous?.PublisherKeySha256

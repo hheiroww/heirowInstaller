@@ -166,6 +166,9 @@ public sealed class PackageReader : IDisposable
 
     public static PackageReader Open(string path) => new(path);
     public static bool HasEmbeddedPackage(string path) => BundleBuilder.HasEmbeddedPackage(path);
+    // This immutable copy is the exact manifest read from this verified, open archive.
+    // Reading it must not reopen and rehash a potentially very large setup executable.
+    internal byte[] ReadManifestBytes() => manifestBytes.ToArray();
 
     public void VerifySignature(string? trustedPublicKeySha256 = null, bool requireSignature = false)
     {

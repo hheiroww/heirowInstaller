@@ -46,7 +46,7 @@ internal static class NativeMigrationValidation
     internal static NativeMigrationBaseline? ForPlan(PackageReader target, InstallPlan plan, InstalledProduct? previous,
         InstallOptions options, INativeMigrationBackend backend)
     {
-        var signed = JsonSerializer.Deserialize<PackageManifest>(FileTransactionRecoveryContext.ReadManifest(target.PackagePath), InstallerJson.Options)
+        var signed = JsonSerializer.Deserialize<PackageManifest>(target.ReadManifestBytes(), InstallerJson.Options)
             ?? throw new InvalidDataException("The signed target manifest is empty.");
         var modelChangesBackend = previous is not null &&
             (previous.IsMsi != (target.Manifest.LegacyMsi is not null) || previous.IsExecutable != (target.Manifest.LegacyExecutable is not null));
@@ -109,7 +109,7 @@ internal static class NativeMigrationValidation
         return new(Clone(previous), Clone(original.Manifest), Clone(authorization), ManifestDigest(target), "");
     }
 
-    internal static string ManifestDigest(PackageReader reader) => IncrementalPackageIO.Hash(FileTransactionRecoveryContext.ReadManifest(reader.PackagePath));
+    internal static string ManifestDigest(PackageReader reader) => IncrementalPackageIO.Hash(reader.ReadManifestBytes());
     internal static InstalledProduct? SelectRecorded(IEnumerable<InstalledProduct> verifiedReceipts, string productId)
     {
         var matches = verifiedReceipts.Where(product => product.Id.Equals(productId, StringComparison.OrdinalIgnoreCase)).ToArray();
