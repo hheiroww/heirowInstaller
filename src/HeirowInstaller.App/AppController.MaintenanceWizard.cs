@@ -9,11 +9,13 @@ internal sealed partial class AppController
 
     internal async Task InitializeMaintenanceWizardAsync()
     {
-        if (!IsMaintenanceWizard || SelectedProduct is not { } product || Busy) return;
+        if (!IsMaintenanceWizard || Busy) return;
         Stage = SetupStage.Review;
-        Begin("Checking " + product.Name, "Preparing this application's maintenance options.");
+        Begin("Checking application", "Preparing this application's maintenance options.");
         try
         {
+            await RefreshInstalledAsync();
+            var product = SelectedProduct ?? throw new InvalidOperationException("The application is not installed.");
             var loaded = await Task.Run(async () =>
             {
                 PackageSafety.EnsureNoReparsePoints(product.PackagePath);

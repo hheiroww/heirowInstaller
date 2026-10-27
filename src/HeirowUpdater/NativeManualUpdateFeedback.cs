@@ -89,7 +89,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         statePath ??= Path.Combine(ApplicationUpdater.StateDirectory(profile), "manual-feedback-" + state!.RequestId + ".json");
         await UpdaterSchedule.WriteJsonAsync(statePath, state!, token);
         if (child is not null) return;
-        var executable = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The trusted native updater executable is missing.");
+        var executable = await Task.Run(() => UpdaterHostResolver.FindExecutable(), token) ?? throw new FileNotFoundException("The trusted native updater executable is missing.");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(executable)!, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var argument in new[] { "show-manual-feedback", "--config", Path.GetFullPath(configurationPath), "--prompt-request", statePath }) start.ArgumentList.Add(argument);
@@ -99,6 +99,18 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         state!.FeedbackProcessId = child.Id;
         state.FeedbackStartTicks = child.StartTime.ToUniversalTime().Ticks;
         await UpdaterSchedule.WriteJsonAsync(statePath, state, token);
+        // The feed check may begin only after the child has presented its first progress frame.
+        var readyPath = statePath + ".ready";
+        var wait = Stopwatch.StartNew();
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            PackageSafety.EnsureNoReparsePoints(readyPath);
+            try { if (File.Exists(readyPath) && await File.ReadAllTextAsync(readyPath, token) == state.RequestId) break; }
+            catch (IOException) { } // The first-frame acknowledgement may still be being written.
+            if (child.HasExited || wait.Elapsed > TimeSpan.FromSeconds(20)) { WindowFailed = true; throw new InvalidOperationException("The update progress window did not become ready."); }
+            await Task.Delay(25, token);
+        }
     }
 
     private async Task FinishChildAsync(bool requireTerminal = false)
@@ -118,6 +130,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
                 File.Delete(acknowledgementPath);
             }
             if (statePath is not null && File.Exists(statePath)) File.Delete(statePath);
+            if (statePath is not null) File.Delete(statePath + ".ready");
             statePath = null;
             var terminalShown = acknowledgement is { FramesRendered: > 0 } && acknowledgement.RequestId == state?.RequestId &&
                 acknowledgement.Status == state?.Status && !string.IsNullOrEmpty(acknowledgement.VisibleTitle);
@@ -278,7 +291,16 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             try
             {
                 System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
-                using var game = new FeedbackGame(first, readState, choice, capture, () => RecordFixtureEvent(fixtureEvents, "renderer-start", first));
+                using var game = new FeedbackGame(first, readState, choice, capture, () =>
+                {
+                    RecordFixtureEvent(fixtureEvents, "renderer-start", first);
+                    if (acknowledgementPath is not null)
+                    {
+                        var readyPath = acknowledgementPath[..^".ack.json".Length] + ".ready";
+                        PackageSafety.EnsureNoReparsePoints(readyPath);
+                        File.WriteAllText(readyPath, first.RequestId);
+                    }
+                });
                 using var cancellation = token.Register(() => game.Enqueue(game.Exit));
                 game.Run();
                 var acknowledgement = new FeedbackAcknowledgement { RequestId = first.RequestId, Status = game.Status,
@@ -318,6 +340,9 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         private SpriteBatch batch = null!;
         private int frames, statusFrames;
         private bool captured;
+        private readonly CancellationTokenSource polling = new();
+        private bool pollingStarted;
+        private bool firstFrameAcknowledged;
         internal string Status => state.Status;
         internal int RenderedFrames => statusFrames;
         internal string VisibleTitle => scene.Title.Text;
@@ -351,13 +376,9 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         }
         protected override void Update(GameTime time)
         {
+            if (!firstFrameAcknowledged && frames > 0) { firstFrameAcknowledged = true; rendered(); }
             while (actions.TryDequeue(out var action)) action();
-            if (frames % 6 == 0 && readState is not null)
-            {
-                var next = readState();
-                if (next.Status == "closed") { Exit(); return; }
-                if (next.Status != state.Status || next.Message != state.Message) { state = next; statusFrames = 0; captured = false; Rebuild(); }
-            }
+            scene.Animate(time.TotalGameTime.TotalSeconds, state.Status == "checking");
             manager.Tick(time);
             if (choice == "close" && !Injected && (state.Status is "current" or "error" or "update-staged") && frames > 30 && (capture is null || captured))
             {
@@ -371,7 +392,11 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         protected override void Draw(GameTime time)
         {
             GraphicsDevice.Clear(FeedbackScene.Background); manager.Draw(time); frames++; statusFrames++; StatusesRendered.Add(state.Status);
-            if (frames == 1) rendered();
+            if (!pollingStarted && readState is not null)
+            {
+                pollingStarted = true;
+                _ = PollStateAsync(polling.Token);
+            }
             if (!captured && capture is not null && frames > 20)
             {
                 captured = true; Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(capture))!);
@@ -381,7 +406,25 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             }
             base.Draw(time);
         }
-        protected override void UnloadContent() { scene?.Dispose(); batch?.Dispose(); base.UnloadContent(); }
+        private async Task PollStateAsync(CancellationToken token)
+        {
+            try
+            {
+                while (true)
+                {
+                    var next = await Task.Run(readState!, token);
+                    Enqueue(() =>
+                    {
+                        if (next.Status == "closed") { Exit(); return; }
+                        if (next.Status != state.Status || next.Message != state.Message) { state = next; statusFrames = 0; captured = false; Rebuild(); }
+                    });
+                    await Task.Delay(100, token);
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch { Enqueue(Exit); }
+        }
+        protected override void UnloadContent() { polling.Cancel(); scene?.Dispose(); batch?.Dispose(); base.UnloadContent(); }
     }
 
     private sealed class FeedbackScene : Scene
@@ -392,6 +435,15 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         private readonly RectangleElement root;
         internal Button CloseButton { get; }
         internal TextElement Title { get; }
+        private RectangleElement? checkingBar;
+        private TextElement? checkingElapsed;
+        internal void Animate(double seconds, bool checking)
+        {
+            if (!checking || checkingBar is null) return;
+            checkingBar.Position = new(45 + (float)((Math.Sin(seconds * 3) + 1) / 2) * 550, 363);
+            checkingBar.Margin = new((int)checkingBar.Position.X, 363, 0, 0);
+            if (checkingElapsed is not null) checkingElapsed.Text = $"{seconds:0}s elapsed";
+        }
         internal FeedbackScene(SceneManager manager, FeedbackGame game, FeedbackState state) : base(manager)
         {
             BackgroundColor = Background; EnableDesignTimeControls = false; isCursorVisible = false;
@@ -407,6 +459,11 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             Add(new Textbox(this) { Position = new(45, 268), Size = new(690, 89), Font = Font(10.5f), ForegroundColor = TextColor,
                 BackgroundColor = Surface, BorderThickness = 0, IsReadOnly = true, TextPadding = Vector2.Zero, AcceptsReturn = true,
                 WrapText = true, Padding = new Thickness(0), Text = state.Message });
+            if (state.Status == "checking")
+            {
+                checkingBar = Add(new RectangleElement(this) { Position = new(45, 363), Size = new(140, 3), BackgroundColor = Lime, Padding = new Thickness(0), isMouseBypassEnabled = true });
+                checkingElapsed = Label("0s elapsed", 32, 442, 250, 26, 10, Muted);
+            }
             Label(state.Status == "checking" ? "This window will show the result when the check finishes." : state.StartupFailure ? "Your application is unchanged." : state.Status == "update-staged" ? "Close this message to return to the update installer." : "Your app can stay open. We'll also check after it closes.", 32, 387, 710, 26, 9.5f, Muted);
             CloseButton = Add(new Button(this) { AutoSize = ButtonAutoSize.None, Text = state.Status == "checking" ? "Hide" : "Close", Position = new(514, 435), Size = new(235, 44), Font = Font(10.5f, true),
                 ForegroundColor = Background, BackgroundColor = Lime, BorderThickness = 0, CornerRadius = 8,

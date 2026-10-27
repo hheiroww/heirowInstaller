@@ -30,9 +30,7 @@ internal static class Program
             }
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
             Task? startupCompanion = null;
-            if (!maintenance && options.PackagePath is null && !options.Install && !options.Isolated && options.SmokeDirectory is null && options.SelfUpdateSmokeFeed is null && options.CapturePath is null)
-                startupCompanion = Task.Run(() => global::SocketJack.HeirowUpdaterBootstrap.StartAfterExit());
-            using (var game = new InstallerGame(options)) game.Run();
+            using (var game = new InstallerGame(options)) { game.Run(); startupCompanion = game.StartupCompanion; }
             // The window is disposed before this bounded shutdown grace period.
             // Startup verification never delays creating or drawing the UI.
             startupCompanion?.Wait(TimeSpan.FromSeconds(3));

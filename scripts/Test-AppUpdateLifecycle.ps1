@@ -54,6 +54,17 @@ function Manual-Events([object]$Session) {
     return @(('['+($text -replace '\}\s*\{','},{')+']')|ConvertFrom-Json)
 }
 function Manual-Renderers([object]$Session) { return @(Manual-Events $Session|Where-Object{$_.kind -eq 'renderer-start'}).Count }
+function Resolve-FixtureUpdater([object]$Fixture) {
+    $profile=Read-Json (Join-Path $Fixture.target 'heirowUpdater.json')
+    if(-not $profile){throw 'The fixture updater profile is missing.'}
+    if(-not $profile.sharedRuntime){return Join-Path $Fixture.target 'heirowUpdater.exe'}
+    if(-not $profile.isolated){throw 'Lifecycle runtime discovery requires an isolated fixture.'}
+    $parent=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($profile.stateRoot))
+    $runtime=Join-Path $parent ('.updater-runtime/'+$profile.sharedRuntime.version+'-'+$profile.sharedRuntime.sha256.ToLowerInvariant()+'/heirowUpdater.exe')
+    if(-not [IO.Path]::GetFullPath($runtime).StartsWith($run+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'The fixture runtime must stay inside its run.'}
+    if((Get-Item -LiteralPath $runtime).Length -ne $profile.sharedRuntime.size -or (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash -ine $profile.sharedRuntime.sha256){throw 'The fixture shared runtime differs from its installed binding.'}
+    return $runtime
+}
 function Requests([string]$Path) { @((Get-Content -LiteralPath (Join-Path $run 'requests.jsonl') -ErrorAction SilentlyContinue) | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.path -eq $Path }) }
 function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpone', [bool]$Hosted = $false, [bool]$WithoutWatcher = $false, [bool]$FaultedFeedback = $false) {
     $ready = Join-Path $run "$Session.ready.json"; $gate = Join-Path $run "$Session.exit.flag"; $manual = Join-Path $run "$Session.manual.flag"
@@ -87,11 +98,11 @@ function Confirm-DuplicateWatcher([object]$Fixture, [object]$Session, [string]$N
     $arguments=@('after-exit','--config',(Join-Path $Fixture.target 'heirowUpdater.json'),'--application-pid',[string]($Session.process.Id),
         '--application-start',[string]($Session.process.StartTime.ToUniversalTime().Ticks),'--json')
     if($Hosted){$arguments+=@('--application-host',$Session.process.Path)}
-    $result=Invoke-Child (Join-Path $Fixture.target 'heirowUpdater.exe') $arguments $Name | ConvertFrom-Json
+    $result=Invoke-Child (Resolve-FixtureUpdater $Fixture) $arguments $Name | ConvertFrom-Json
     if($result.status -ne 'already-watching' -or $result.manualCheck -or $Session.process.HasExited){throw 'The duplicate watcher did not return its real coalesced result while preserving the fixture application.'}
 }
 function Wait-CompanionExit([object]$Fixture) {
-    Wait-For { @(Get-CimInstance Win32_Process -Filter "Name='heirowUpdater.exe'" | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath.Equals((Join-Path $Fixture.target 'heirowUpdater.exe'),[StringComparison]::OrdinalIgnoreCase) -or $_.CommandLine -and $_.CommandLine.Contains($Fixture.id)) }).Count -eq 0 } 'the app-specific companion and trusted helper to exit' 30
+    Wait-For { @(Get-CimInstance Win32_Process -Filter "Name='heirowUpdater.exe'" | Where-Object { $_.ExecutablePath -and $_.CommandLine -and ($_.CommandLine.Contains($Fixture.target) -or $_.CommandLine.Contains($Fixture.id)) }).Count -eq 0 } 'the app-specific companion and trusted helper to exit' 30
 }
 try {
     $serverScript = Join-Path $run 'ProtectedFeed.ps1'
@@ -107,14 +118,15 @@ try { while(-not [IO.File]::Exists($Stop) -and [DateTime]::UtcNow -lt $deadline)
   try {for($i=0;$i -lt 64;$i++){$line=$reader.ReadLine();if([string]::IsNullOrEmpty($line)){break};if($line.StartsWith('Authorization:',[StringComparison]::OrdinalIgnoreCase)){$auth=$line.Substring(14).Trim()};if($line.StartsWith('User-Agent:',[StringComparison]::OrdinalIgnoreCase)){$agent=$line.Substring(11).Trim()}}}finally{$reader.Dispose()}
   $name=if($parts.Count -gt 1 -and $parts[0] -eq 'GET'){switch($parts[1]){'/a.json'{'a.json'};'/b.json'{'b.json'};'/a-Setup.exe'{'a-Setup.exe'};'/b-Setup.exe'{'b-Setup.exe'};default{$null}}}else{$null}
   $authenticated=$auth -ceq ('Bearer '+$env:FIXTURE_AUTH);$code=if(-not $name){404}elseif(-not $authenticated){401}elseif($name -eq 'a.json' -and [IO.File]::Exists([IO.Path]::Combine($Root,'feed-error.flag'))){503}else{200}
+  $progressRenderedBeforeRequest=$null
   if($name -eq 'a.json' -and [IO.File]::Exists([IO.Path]::Combine($Root,'feed-delay.flag'))){
    $gate=[IO.File]::ReadAllText([IO.Path]::Combine($Root,'feed-delay.flag'))|ConvertFrom-Json;$rendererEvents=[string]$gate.events;$ownerStatus=[string]$gate.status;$runPrefix=[IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($Root))+[IO.Path]::DirectorySeparatorChar
    if(-not [IO.Path]::GetFullPath($rendererEvents).StartsWith($runPrefix,[StringComparison]::OrdinalIgnoreCase) -or -not [IO.Path]::GetFullPath($ownerStatus).StartsWith($runPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture renderer gate must stay inside its own run.'}
-   $until=[DateTime]::UtcNow.AddSeconds(15);$rendered=$false
-   do{$rendered=$false;try{if([IO.File]::Exists($rendererEvents) -and [IO.File]::Exists($ownerStatus)){$requestId=((Read-SharedText $ownerStatus)|ConvertFrom-Json).manualRequestId;$eventText=(Read-SharedText $rendererEvents).Trim();$events=@(('['+($eventText-replace'\}\s*\{','},{')+']')|ConvertFrom-Json);$rendered=@($events|Where-Object{$_.kind-eq'renderer-start' -and $_.requestId-eq$requestId}).Count-gt0}}catch{$rendered=$false};if(-not $rendered){Start-Sleep -Milliseconds 25}}while(-not $rendered -and [DateTime]::UtcNow -lt $until)
+   $progressRenderedBeforeRequest=$false
+   try{if([IO.File]::Exists($rendererEvents) -and [IO.File]::Exists($ownerStatus)){$requestId=((Read-SharedText $ownerStatus)|ConvertFrom-Json).manualRequestId;$eventText=(Read-SharedText $rendererEvents).Trim();$events=@(('['+($eventText-replace'\}\s*\{','},{')+']')|ConvertFrom-Json);$progressRenderedBeforeRequest=@($events|Where-Object{$_.kind-eq'renderer-start' -and $_.requestId-eq$requestId}).Count-gt0}}catch{$progressRenderedBeforeRequest=$false}
    Start-Sleep -Milliseconds 1200
   }
-  [IO.File]::AppendAllText($Log,((@{path=$parts[1];authenticated=$authenticated;status=$code;userAgent=$agent;timestamp=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress)+[Environment]::NewLine))
+  [IO.File]::AppendAllText($Log,((@{path=$parts[1];authenticated=$authenticated;status=$code;userAgent=$agent;progressRenderedBeforeRequest=$progressRenderedBeforeRequest;timestamp=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress)+[Environment]::NewLine))
   if($code -ne 200){$bytes=[Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $code Fixture`r`nContent-Length: 0`r`nConnection: close`r`n`r`n");$stream.Write($bytes,0,$bytes.Length);continue}
   $inputFile=[IO.File]::OpenRead([IO.Path]::Combine($Root,$name));try{$bytes=[Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/octet-stream`r`nContent-Length: $($inputFile.Length)`r`nConnection: close`r`n`r`n");$stream.Write($bytes,0,$bytes.Length);$inputFile.CopyTo($stream);$stream.Flush()}finally{$inputFile.Dispose()}
  } catch {[IO.File]::AppendAllText($Log,((@{error=$_.Exception.GetType().Name}|ConvertTo-Json -Compress)+[Environment]::NewLine))} finally {$stream.Dispose();$client.Dispose()}
@@ -229,6 +241,7 @@ return 0;
     Request-Manual $direct
     Wait-For {(Read-Json $direct.manualReport).status -eq 'current' -and (Read-Json $direct.status).status -eq 'waiting-for-exit'} 'the direct native current result and retained watcher'
     $directUi=Read-Json $direct.manualReport
+    Assert-Check ((Requests '/a.json')[-1].progressRenderedBeforeRequest -eq $true) 'The manual progress window presented its first frame before the update feed received any request'
     Assert-Check ($directUi.visibleTitle -eq "You're up to date." -and $directUi.closeButtonText -eq 'Close' -and $directUi.pointerEventsInjected -and $directUi.statusesRendered -contains 'checking' -and -not $direct.process.HasExited) 'A direct manual check renders progress and up-to-date result, and Close preserves the application and watcher'
     [IO.File]::Delete($delayFlag);$directUiHash=(Get-FileHash -LiteralPath $direct.manualReport).Hash;$directRendererCount=Manual-Renderers $direct
     Close-App $direct;Wait-For {(Read-Json $direct.status).status -eq 'current'} 'direct manual owner automatic exit check';Wait-CompanionExit $a
@@ -259,7 +272,7 @@ return 0;
     Close-App $mixedApp;Start-Sleep -Milliseconds 1200
     Assert-Check ((Requests '/a.json').Count -eq $beforeHostChecks) 'A plugin joining an existing standalone watcher adds its host wait before the standalone app exits'
     $wrongStart=($host1.process.StartTime.ToUniversalTime().Ticks+1).ToString([Globalization.CultureInfo]::InvariantCulture)
-    $null=Invoke-Child (Join-Path $a.target 'heirowUpdater.exe') @('after-exit','--config',(Join-Path $a.target 'heirowUpdater.json'),'--application-pid',$host1.process.Id.ToString(),'--application-start',$wrongStart,'--application-host',$host1.process.Path) 'reject-host-identity' @(1)
+    $null=Invoke-Child (Resolve-FixtureUpdater $a) @('after-exit','--config',(Join-Path $a.target 'heirowUpdater.json'),'--application-pid',$host1.process.Id.ToString(),'--application-start',$wrongStart,'--application-host',$host1.process.Path) 'reject-host-identity' @(1)
     Assert-Check ((Get-Content -LiteralPath (Join-Path $run 'reject-host-identity.stderr.txt') -Raw).Contains('identity changed') -and (Requests '/a.json').Count -eq $beforeHostChecks) 'A mismatched external-host creation time is rejected before any update request'
     Close-App $host1;Start-Sleep -Milliseconds 1200
     Assert-Check ((Requests '/a.json').Count -eq $beforeHostChecks) 'A second instance of the same external host continues to block checking and mutation'
@@ -269,7 +282,7 @@ return 0;
     $beforeMaintenance=(Requests '/a.json').Count
     $stopHost=Start-App $a 'maintenance-stop-host' 'postpone' $true
     Wait-For {(Read-Json $stopHost.status).status -eq 'waiting-for-exit'} 'the host-bound watcher before a polite stop'
-    $stopResult=Invoke-Child (Join-Path $a.target 'heirowUpdater.exe') @('stop','--config',(Join-Path $a.target 'heirowUpdater.json'),'--json') 'polite-stop' | ConvertFrom-Json
+    $stopResult=Invoke-Child (Resolve-FixtureUpdater $a) @('stop','--config',(Join-Path $a.target 'heirowUpdater.json'),'--json') 'polite-stop' | ConvertFrom-Json
     Wait-For {(Read-Json $stopHost.status).status -eq 'stopped'} 'the watcher to honor its root-specific stop event'
     Wait-CompanionExit $a
     Assert-Check ($stopResult.status -eq 'stop-requested' -and -not $stopHost.process.HasExited -and (Requests '/a.json').Count -eq $beforeMaintenance) 'A polite root-specific stop releases the updater without terminating the application host or contacting its feed'

@@ -13,20 +13,34 @@ public sealed class UpdateClient : IDisposable
     private readonly bool allowLoopback;
     private readonly IUpdateTransport? transport;
     private readonly bool requireIncrementalUpdates;
-    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false)
+    private readonly TimeSpan checkTimeout;
+    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false, TimeSpan? checkTimeout = null)
     {
         this.allowLoopback = allowLoopback;
         this.transport = transport;
         this.requireIncrementalUpdates = requireIncrementalUpdates;
+        this.checkTimeout = checkTimeout ?? TimeSpan.FromSeconds(15);
+        if (this.checkTimeout <= TimeSpan.Zero || this.checkTimeout > TimeSpan.FromMinutes(5)) throw new ArgumentOutOfRangeException(nameof(checkTimeout));
         ownsClient = httpClient is null;
         client = httpClient ?? new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
     }
 
-    public async Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken = default)
+    public async Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken = default, IProgress<InstallProgress>? progress = null)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(checkTimeout);
+        try { return await ReadFeedAsync(feedUrl, currentVersion, expectedProductId, progress, deadline.Token); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        { throw new TimeoutException("The update server took too long to respond. Check your connection and try again."); }
+    }
+
+    private async Task<UpdateCheckResult> ReadFeedAsync(string feedUrl, string currentVersion, string expectedProductId, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
         PackageSafety.ValidateId(expectedProductId);
         _ = PackageVersion.Parse(currentVersion);
-        using var response = await GetAsync(SelectTransition(ValidateUrl(feedUrl), currentVersion), 1024 * 1024, null, cancellationToken);
+        progress?.Report(new("check", "Connecting to the publisher's update server", 0, 0));
+        using var response = await GetAsync(SelectTransition(ValidateUrl(feedUrl), currentVersion), 1024 * 1024, progress, cancellationToken);
+        progress?.Report(new("check", "Reading published version information", 0, 0));
         if (response.Content.Headers.ContentLength > 1024 * 1024) throw new InvalidDataException("Update feed is too large.");
         using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var buffer = new MemoryStream();
@@ -36,6 +50,8 @@ public sealed class UpdateClient : IDisposable
             if (buffer.Length + read > 1024 * 1024) throw new InvalidDataException("Update feed is too large.");
             await buffer.WriteAsync(bytes.AsMemory(0, read), cancellationToken);
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report(new("check", "Validating published version information", 0, 0));
         var feed = JsonSerializer.Deserialize<UpdateFeed>(buffer.ToArray(), InstallerJson.Options) ?? throw new InvalidDataException("Update feed is empty.");
         ValidateFeed(feed);
         if (!feed.ProductId.Equals(expectedProductId, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Update feed belongs to a different product.");

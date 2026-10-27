@@ -76,12 +76,29 @@ Credentials remain in environment variables and are sent only to their exact con
                 Secret(configuration.CookieEnvironmentVariable), Secret(configuration.TokenEnvironmentVariable));
             var policy = new UpdaterPolicy { AllowUnsigned = configuration.AllowUnsigned, TrustedPublisherKeySha256 = configuration.TrustedPublisherKeySha256,
                 DownloadDirectory = parsed.Get("download-directory"), Isolated = parsed.Has("isolated"), LogPath = parsed.Get("log") };
-            var progress = new InlineProgress(value => { if (!parsed.Has("silent") && !parsed.Has("background") && !parsed.Has("json")) Console.Error.WriteLine($"[{value.Phase}] {value.Message}"); });
+            var progress = new InlineProgress(value =>
+            {
+                if (parsed.Has("progress-json")) Console.Error.WriteLine(JsonSerializer.Serialize(value));
+                else if (!parsed.Has("silent") && !parsed.Has("background") && !parsed.Has("json")) Console.Error.WriteLine($"[{value.Phase}] {value.Message}");
+            });
             string? lastMeaningfulState = null;
             var appliedVersions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             do
             {
+                progress.Report(new("check", "Reading installed application update information", 0, 0));
                 var targets = Targets(parsed, configuration);
+                if (command == "check")
+                {
+                    var checks = await updater.CheckTargetsAsync(targets, progress, cancellation.Token);
+                    var checkedProducts = checks.Select((check, index) => new { productId = check.ProductId, name = check.Name,
+                        currentVersion = check.CurrentVersion, latestVersion = check.LatestVersion, available = check.Available,
+                        requiresUserAction = check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated,
+                        status = check.Error is not null ? "error" : check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated ? "requires-elevation" : check.Available ? "update-available" : "current", error = check.Error }).ToArray();
+                    await UpdaterSchedule.WriteJsonAsync(parsed.Get("status-file") ?? UpdaterSchedule.LastCheckPath,
+                        new { checkedAt = DateTimeOffset.UtcNow, transport = "SocketJack", products = checkedProducts }, cancellation.Token);
+                    if (!parsed.Has("background")) Print(checkedProducts);
+                    return checks.Any(check => check.Error is not null) ? 1 : 0;
+                }
                 var results = new List<object>(); var failed = false;
                 foreach (var target in targets)
                 {
@@ -337,7 +354,7 @@ Credentials remain in environment variables and are sent only to their exact con
         public List<string> ApplicationArguments { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "progress-json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt"], StringComparer.OrdinalIgnoreCase);
             var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report", "file-size", "base-version", "base-manifest-sha256", "target-manifest-sha256"], StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < args.Length; i++)
             {

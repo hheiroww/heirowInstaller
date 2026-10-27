@@ -43,6 +43,8 @@ internal static class UiResponsivenessSmoke
         try
         {
             Directory.CreateDirectory(output);
+            var startupFramesRendered = game.FramesRendered;
+            if (startupFramesRendered < 1) throw new InvalidOperationException("Package verification began before the first rendered window frame.");
             await game.MainScene.Controller.OpenPackageAsync(args.PackagePath!);
             await Wait(() => game.MainScene.Controller.Manifest is not null && !game.MainScene.Controller.Busy);
             await Task.Delay(1500);
@@ -78,7 +80,7 @@ internal static class UiResponsivenessSmoke
                     p95Milliseconds = values.Length == 0 ? 0 : values[(int)Math.Floor((values.Length - 1) * .95)] };
             }
             var result = new { completed = true, isolated = true, installed = false, globalInput = false, packageChanged = false,
-                aaSamples = 16, filtering = "Anisotropic16x", update = Stats(timings.Updates), draw = Stats(timings.Draws),
+                startupFramesRendered, aaSamples = 16, filtering = "Anisotropic16x", update = Stats(timings.Updates), draw = Stats(timings.Draws),
                 drawIntervals = Stats(timings.DrawIntervals), navigationDispatchMilliseconds = navigation, navigationCompletionMilliseconds = navigationCompletion,
                 progressReports = 100000, progressMilliseconds, progressRebuilds = after.RebuildCount - before.RebuildCount,
                 progressArtworkDecodes = after.ArtworkDecodeCount - before.ArtworkDecodeCount, finalProgress = after.Progress };

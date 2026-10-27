@@ -22,7 +22,7 @@ internal sealed partial class AppController : IDisposable
     internal bool SigningIn { get; private set; }
     internal bool PublisherSignedIn => publisherSession is { } session && session.ExpiresUtc > DateTimeOffset.UtcNow;
     internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username} · expires {publisherSession.ExpiresUtc.ToLocalTime():HH:mm}" : "Sign in to SocketJack to publish, or use publisher credentials from your environment.";
-    internal DesktopSettings Settings { get; }
+    internal DesktopSettings Settings { get; private set; } = new();
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
     internal bool IsMaintenanceWizard => arguments.MaintenanceProductId is not null;
@@ -41,6 +41,7 @@ internal sealed partial class AppController : IDisposable
     internal UpdateCheckResult? Update { get; private set; }
     internal List<ActivityEntry> Activity { get; } = [];
     internal bool Busy { get; private set; }
+    internal bool CheckingUpdates { get; private set; }
     internal bool Failed { get; private set; }
     internal string Status { get; private set; } = "Ready when you are";
     internal string StatusDetail { get; private set; } = "Open a package to install, or build one in the workspace.";
@@ -81,17 +82,21 @@ internal sealed partial class AppController : IDisposable
     {
         this.game = game;
         this.arguments = arguments;
-        Settings = DesktopSettings.Load();
         OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe");
-        if (!IsWizard || IsMaintenanceWizard) RefreshInstalled();
-        if (arguments.MaintenanceProductId is { } maintenanceId)
-        {
-            SelectedProduct = Installed.SingleOrDefault(product => product.Id.Equals(maintenanceId, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException("The application is not installed.");
-            Page = DesktopPage.Install;
-        }
         AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
-        if (!IsWizard) _ = RefreshUpdaterAvailabilityAsync();
+    }
+
+    internal async Task InitializeDesktopAsync()
+    {
+        Begin(IsWizard ? "Preparing setup" : "Loading applications", IsWizard ? "Loading your setup preferences." : "Reading installed applications and preparing the update manager.");
+        try
+        {
+            var settings = Task.Run(DesktopSettings.Load);
+            if (IsWizard) await settings;
+            else await Task.WhenAll(RefreshInstalledAsync(), RefreshUpdaterAvailabilityAsync(), settings);
+            await game.OnUiAsync(() => { Settings = settings.Result; OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe"); End("Ready when you are", "Open a package or check your installed applications for updates."); });
+        }
+        catch (Exception error) { await ErrorAsync("Could not load applications", error); }
     }
 
     internal void Notify() => Changed?.Invoke();
@@ -107,7 +112,7 @@ internal sealed partial class AppController : IDisposable
         if (Busy && page == DesktopPage.Install && Stage == SetupStage.Progress) { Page = page; Notify(); return; }
         Page = page;
         if (page == DesktopPage.Updates) _ = RefreshUpdaterAvailabilityAsync();
-        if (page == DesktopPage.Installed) RefreshInstalled();
+        if (page == DesktopPage.Installed && !Busy) _ = ReloadInstalledAsync();
         Notify();
     }
 
@@ -280,13 +285,13 @@ internal sealed partial class AppController : IDisposable
                         PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token);
                 return await engine.InstallAsync(reader, options, Reporter(), Cancellation!.Token);
             });
+            await RefreshInstalledAsync();
             await game.OnUiAsync(() =>
             {
                 LastReceiptPath = result.ReceiptPath;
                 LastInstallation = result;
                 Stage = SetupStage.Complete;
                 Progress = 1;
-                RefreshInstalled();
                 End(result.RebootRequired ? "Installed · restart required" : "Installation complete", $"{Manifest!.Name} {result.Version} is ready to use.");
                 CloseCompletedChild(result.RebootRequired);
             });
@@ -296,13 +301,22 @@ internal sealed partial class AppController : IDisposable
         catch (Exception error) { await ErrorAsync("Installation stopped", error); }
     }
 
-    internal void RefreshInstalled()
+    internal async Task RefreshInstalledAsync()
     {
-        if (IsWizard && !IsMaintenanceWizard && Manifest is null) { Installed = []; SelectedProduct = null; return; }
-        Installed = InstallerEngine.ListInstalled(arguments.StateRoot);
-        if (IsWizard) Installed = Installed.Where(product => product.Id.Equals(arguments.MaintenanceProductId ?? Manifest!.Id, StringComparison.OrdinalIgnoreCase) &&
+        var productId = IsWizard ? arguments.MaintenanceProductId ?? Manifest?.Id : null;
+        if (IsWizard && productId is null) return;
+        var installed = await Task.Run(() => InstallerEngine.ListInstalled(arguments.StateRoot));
+        if (IsWizard) installed = installed.Where(product => product.Id.Equals(productId, StringComparison.OrdinalIgnoreCase) &&
             (arguments.Scope is null || product.Scope == arguments.Scope)).ToArray();
-        SelectedProduct = Installed.FirstOrDefault(p => p.Id == SelectedProduct?.Id) ?? Installed.FirstOrDefault();
+        await game.OnUiAsync(() => { Installed = installed; SelectedProduct = Installed.FirstOrDefault(p => p.Id == SelectedProduct?.Id) ?? Installed.FirstOrDefault(); Notify(); });
+    }
+
+    internal async Task ReloadInstalledAsync()
+    {
+        if (Busy) return;
+        Begin("Refreshing applications", "Reading installed application information.");
+        try { await RefreshInstalledAsync(); await game.OnUiAsync(() => End("Applications refreshed", $"{Installed.Count} installed applications.")); }
+        catch (Exception error) { await ErrorAsync("Could not read applications", error); }
     }
 
     internal async Task RepairAsync()
@@ -324,7 +338,8 @@ internal sealed partial class AppController : IDisposable
                 await WaitForProductDependencyAsync(product, "repair", Cancellation!.Token);
                 return await engine.RepairAsync(product.Id, OptionsFor(product, "repair"), Reporter(), Cancellation.Token);
             });
-            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } RefreshInstalled(); End("Repair complete", $"Verified and restored {product.Name}."); CloseCompletedChild(result.RebootRequired); });
+            await RefreshInstalledAsync();
+            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } End("Repair complete", $"Verified and restored {product.Name}."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Repair stopped", error); }
     }
@@ -348,7 +363,8 @@ internal sealed partial class AppController : IDisposable
                 await WaitForProductDependencyAsync(product, "uninstall", Cancellation!.Token);
                 return await engine.UninstallAsync(product.Id, OptionsFor(product, "uninstall"), Reporter(), Cancellation.Token);
             });
-            await game.OnUiAsync(() => { Update = null; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } RefreshInstalled(); End("Uninstall complete", $"Removed {product.Name} and its recorded installation changes."); CloseCompletedChild(result.RebootRequired); });
+            await RefreshInstalledAsync();
+            await game.OnUiAsync(() => { Update = null; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } End("Uninstall complete", $"Removed {product.Name} and its recorded installation changes."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Uninstall stopped", error); }
     }
@@ -388,7 +404,8 @@ internal sealed partial class AppController : IDisposable
                 return await ElevatedInstallWorker.InstallAsync(product.PackagePath, engine.Plan(package, options), options,
                     PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token, operation);
             });
-            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } RefreshInstalled(); End(operation == "repair" ? "Repair complete" : "Uninstall complete", product.Name); CloseCompletedChild(result.RebootRequired); });
+            await RefreshInstalledAsync();
+            await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } End(operation == "repair" ? "Repair complete" : "Uninstall complete", product.Name); CloseCompletedChild(result.RebootRequired); });
         }
         catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 1223) { await ErrorAsync("Maintenance canceled", new OperationCanceledException("Administrator approval was canceled.", error)); }
         catch (Exception error) { await ErrorAsync("Maintenance stopped", error); }
@@ -400,10 +417,13 @@ internal sealed partial class AppController : IDisposable
         if (product is null || Busy) return;
         if (string.IsNullOrWhiteSpace(product.UpdateUrl)) { End("No update feed", "This publisher has not supplied an update feed for this application."); return; }
         Begin("Checking for updates", product.Name);
+        CheckingUpdates = true;
         try
         {
             using var client = CreateUpdateClient();
-            var result = await client.CheckAsync(product.UpdateUrl, product.Version, product.Id, Cancellation!.Token);
+            var token = Cancellation!.Token;
+            var reporter = Reporter();
+            var result = await Task.Run(() => client.CheckAsync(product.UpdateUrl, product.Version, product.Id, token, reporter), token);
             await game.OnUiAsync(() => { Update = result; End(result.Available ? $"Update available · {result.Feed.Version}" : "You're up to date", result.Available ? result.Feed.ReleaseNotes : $"{product.Name} {product.Version} is the latest published version."); });
         }
         catch (Exception error) { await ErrorAsync("Update check failed", error); }
@@ -431,7 +451,8 @@ internal sealed partial class AppController : IDisposable
                 result = await DesktopElevatedUpdate.InstallAsync(download, update.Feed, product, OptionsFor(product), Reporter(), Cancellation.Token);
             }
             else result = await client.ApplyAsync(download, update.Feed, OptionsFor(product), Reporter(), Cancellation.Token);
-            await game.OnUiAsync(() => { Update = null; RefreshInstalled(); End(result.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); CloseCompletedChild(result.RebootRequired); });
+            await RefreshInstalledAsync();
+            await game.OnUiAsync(() => { Update = null; End(result.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); CloseCompletedChild(result.RebootRequired); });
         }
         catch (Exception error) { await ErrorAsync("Update stopped", error); }
     }
@@ -502,22 +523,28 @@ internal sealed partial class AppController : IDisposable
 
     public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; verifiedPlanningPackage?.Dispose(); verifiedPlanningPackage = null; DisposeWizardArtwork(); }
 
-    internal void SaveSettings()
+    internal async void SaveSettings()
     {
-        try { Settings.Save(); End("Settings saved", "Your desktop preferences were saved for the next launch."); }
-        catch (Exception error) { _ = ErrorAsync("Could not save settings", error); }
+        if (Busy) return;
+        Begin("Saving preferences", "Writing your desktop preferences.");
+        try { await Task.Run(Settings.Save); await game.OnUiAsync(() => End("Settings saved", "Your desktop preferences were saved for the next launch.")); }
+        catch (Exception error) { await ErrorAsync("Could not save settings", error); }
     }
 
     internal async Task RunUpdaterAsync(params string[] command)
     {
         if (Busy) return;
-        Begin("heirowUpdater", "Connecting to the companion update manager.");
+        Begin(command.FirstOrDefault() == "check" ? "Checking for updates" : "heirowUpdater", "Verifying the companion update manager.");
+        CheckingUpdates = command.FirstOrDefault() == "check";
+        var token = Cancellation!.Token;
+        var reporter = Reporter();
         try
         {
             var updater = await Task.Run(ResolveUpdater);
             if (!File.Exists(updater)) throw new FileNotFoundException("Install or repair heirowInstaller with optional updates enabled to restore its verified heirowUpdater.");
             var start = new ProcessStartInfo(updater) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(updater)! };
             foreach (var item in command) start.ArgumentList.Add(item);
+            start.ArgumentList.Add("--progress-json");
             if (command.FirstOrDefault() == "update")
             {
                 start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -525,17 +552,20 @@ internal sealed partial class AppController : IDisposable
             }
             if (arguments.StateRoot is not null) { start.ArgumentList.Add("--state-root"); start.ArgumentList.Add(arguments.StateRoot); }
             using var process = Process.Start(start) ?? throw new InvalidOperationException("The companion updater did not start.");
+            // Checking cannot mutate installations. Cancel only our owned check process.
+            using var stopCheck = CheckingUpdates ? token.Register(() => { try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { } }) : default;
             var standardOutput = process.StandardOutput.ReadToEndAsync();
-            var standardError = process.StandardError.ReadToEndAsync();
+            var standardError = ReadUpdaterProgressAsync(process, reporter);
             await process.WaitForExitAsync();
             var output = await standardOutput;
             var error = await standardError;
+            token.ThrowIfCancellationRequested();
+            await RefreshInstalledAsync();
             await game.OnUiAsync(() =>
             {
                 UpdaterOutput = FormatUpdaterOutput(output, error);
                 if (string.IsNullOrWhiteSpace(UpdaterOutput)) UpdaterOutput = process.ExitCode == 0 ? "Operation completed successfully." : $"The updater returned exit code {process.ExitCode}.";
                 if (UpdaterOutput.Length > 128 * 1024) UpdaterOutput = UpdaterOutput[..(128 * 1024)];
-                RefreshInstalled();
                 End(process.ExitCode == 0 ? "Updater operation complete" : "Updater needs attention", process.ExitCode == 0 ? "Review the companion updater result below." : $"Exit code {process.ExitCode}. Review the updater result for details.");
                 Failed = process.ExitCode != 0;
                 Notify();
@@ -543,6 +573,22 @@ internal sealed partial class AppController : IDisposable
             });
         }
         catch (Exception error) { await ErrorAsync("Updater unavailable", error); }
+    }
+
+    private static async Task<string> ReadUpdaterProgressAsync(Process process, IProgress<InstallProgress> progress)
+    {
+        var errors = new System.Text.StringBuilder();
+        while (await process.StandardError.ReadLineAsync() is { } line)
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<InstallProgress>(line) is { Phase: not null, Message: not null } value)
+                { progress.Report(value); continue; }
+            }
+            catch (JsonException) { }
+            if (errors.Length < 128 * 1024) errors.AppendLine(line);
+        }
+        return errors.ToString();
     }
 
     internal void Cancel()
@@ -665,7 +711,7 @@ internal sealed partial class AppController : IDisposable
             "uninstall" => "Removing application files",
             "complete" => MaintenanceOperation == "uninstall" ? "Uninstall complete" : MaintenanceOperation == "repair" ? "Repair complete" : "Installation complete",
             _ => "Installing " + Manifest!.Name
-        } : value.Phase;
+        } : value.Phase switch { "check" or "check-complete" => "Checking for updates", _ => value.Phase };
         StatusDetail = IsWizard ? value.Phase.ToLowerInvariant() switch
         {
             "verify" => "Checking your application's installation files.",
@@ -675,7 +721,7 @@ internal sealed partial class AppController : IDisposable
             "applications" => "The apps using this installation have closed. Setup is continuing.",
             "complete" => MaintenanceOperation == "uninstall" ? "The application has been removed." : "Your application is ready to use.",
             _ => "Applying this application's installation changes."
-        } : value.Message;
+        } : value.Total > 0 && value.Phase is "check" or "check-complete" ? $"{value.Completed}/{value.Total} applications checked · {value.Message}" : value.Message;
         foreach (var item in values) AddActivity(item.Phase, item.Message);
         ProgressChanged?.Invoke();
     });
@@ -684,14 +730,14 @@ internal sealed partial class AppController : IDisposable
     {
         ClearRunningApplicationsDialog(); runningApplicationsCanceled = false;
         Cancellation?.Dispose(); Cancellation = new CancellationTokenSource();
-        Busy = true; Failed = false; Progress = 0; Status = title; StatusDetail = detail;
+        Busy = true; CheckingUpdates = false; Failed = false; Progress = 0; Status = title; StatusDetail = detail;
         AddActivity(title, detail); Notify();
     }
 
     private void End(string title, string detail)
     {
         ClearRunningApplicationsDialog();
-        Busy = false; Failed = false; Status = title; StatusDetail = detail;
+        Busy = false; CheckingUpdates = false; Failed = false; Status = title; StatusDetail = detail;
         AddActivity(title, detail); Notify();
     }
 
@@ -705,7 +751,7 @@ internal sealed partial class AppController : IDisposable
     private Task ErrorAsync(string title, Exception error) => game.OnUiAsync(() =>
     {
         ClearRunningApplicationsDialog();
-        Busy = false; Failed = error is not OperationCanceledException;
+        Busy = false; CheckingUpdates = false; Failed = error is not OperationCanceledException;
         Status = error is OperationCanceledException ? "Operation canceled" : title;
         StatusDetail = runningApplicationsCanceled ? "The operation was canceled before changing application files. You can try again when you are ready." : error.Message;
         if (runningApplicationsCanceled && Stage == SetupStage.Progress) Stage = SetupStage.Review;

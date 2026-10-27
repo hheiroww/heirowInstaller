@@ -17,6 +17,7 @@ internal static class DesktopSmoke
         var probes = new List<(Process Process, string Directory)>();
         try
         {
+            Require(game.FramesRendered > 0, "The desktop rendered before reading installation state and starting background work");
             Directory.CreateDirectory(fixture);
             var probeSource = Environment.GetEnvironmentVariable("HEIROWINSTALLER_SMOKE_APPLICATION") ?? throw new InvalidOperationException("Build RunningApplicationProbe and set HEIROWINSTALLER_SMOKE_APPLICATION to its published executable before running native acceptance.");
             probeSource = Path.GetFullPath(probeSource);

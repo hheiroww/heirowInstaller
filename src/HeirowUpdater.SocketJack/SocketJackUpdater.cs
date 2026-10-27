@@ -76,27 +76,52 @@ public sealed class SocketJackUpdater : IDisposable
     {
         client = new(allowLoopback, transport: new SocketJackUpdateTransport(credentialOrigin, session), requireIncrementalUpdates: requireIncrementalUpdates);
     }
-    public async Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken = default)
+    public async Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken = default, IProgress<InstallProgress>? progress = null)
     {
-        var update = await client.CheckAsync(target.FeedUrl, target.CurrentVersion, target.ProductId, cancellationToken);
+        var update = await client.CheckAsync(target.FeedUrl, target.CurrentVersion, target.ProductId, cancellationToken, progress);
         RequireFileUpdate(target, update); return update;
     }
 
     public async Task<IReadOnlyList<UpdaterCheck>> CheckAllAsync(string? stateRoot = null, CancellationToken cancellationToken = default)
     {
-        var results = new List<UpdaterCheck>();
-        foreach (var installed in InstallerEngine.ListInstalled(stateRoot).Where(x => !string.IsNullOrWhiteSpace(x.UpdateUrl)))
+        var installed = await Task.Run(() => InstallerEngine.ListInstalled(stateRoot).Where(x => !string.IsNullOrWhiteSpace(x.UpdateUrl)).ToArray(), cancellationToken);
+        var results = new UpdaterCheck[installed.Length];
+        await Parallel.ForEachAsync(Enumerable.Range(0, installed.Length), new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken }, async (index, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var result = new UpdaterCheck { ProductId = installed.Id, Name = installed.Name, CurrentVersion = installed.Version };
+            var product = installed[index];
+            var result = new UpdaterCheck { ProductId = product.Id, Name = product.Name, CurrentVersion = product.Version };
             try
             {
-                result.Update = await CheckAsync(UpdaterTarget.FromInstalled(installed, stateRoot), cancellationToken);
+                result.Update = await CheckAsync(UpdaterTarget.FromInstalled(product, stateRoot), token);
+                result.LatestVersion = result.Update.Feed.Version; result.Available = result.Update.Available;
+            }
+            catch (Exception error) when (error is not OperationCanceledException) { result.Error = error.Message; }
+            results[index] = result;
+        });
+        return results;
+    }
+
+    /// <summary>Checks up to four feeds concurrently, preserving input order and reporting each completion.</summary>
+    public async Task<IReadOnlyList<UpdaterCheck>> CheckTargetsAsync(IReadOnlyList<UpdaterTarget> targets,
+        IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        var results = new UpdaterCheck[targets.Count];
+        var completed = 0;
+        var reportLock = new object();
+        await Parallel.ForEachAsync(Enumerable.Range(0, targets.Count), new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken }, async (index, token) =>
+        {
+            var target = targets[index];
+            var result = new UpdaterCheck { ProductId = target.ProductId, Name = target.Name, CurrentVersion = target.CurrentVersion };
+            lock (reportLock) progress?.Report(new("check", "Checking " + target.Name, completed, targets.Count));
+            try
+            {
+                result.Update = await CheckAsync(target, token);
                 result.LatestVersion = result.Update.Feed.Version; result.Available = result.Update.Available;
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { result.Error = ex.Message; }
-            results.Add(result);
-        }
+            results[index] = result;
+            lock (reportLock) progress?.Report(new("check-complete", target.Name + (result.Error is not null ? ": check failed" : result.Available ? ": update available" : ": up to date"), ++completed, targets.Count));
+        });
         return results;
     }
 

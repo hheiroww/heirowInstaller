@@ -31,6 +31,9 @@ internal sealed partial class InstallerScene : Scene
     private readonly HashSet<string> usedArtwork = new(StringComparer.OrdinalIgnoreCase);
     private TextElement? statusTitle, statusDetail, progressPercent, progressDetail;
     private RectangleElement? progressBar;
+    private RectangleElement? busyProgress;
+    private TextElement? busyElapsed;
+    private double busySeconds;
     private bool activityDirty;
     private long activityRefresh;
     private int RailWidth => Controller.IsWizard ? 248 : 222;
@@ -70,6 +73,19 @@ internal sealed partial class InstallerScene : Scene
         // Register the replacement before base.Tick processes the scene queues;
         // drawing a tree queued after that point would produce an empty frame.
         RefreshLayoutIfNeeded();
+        if (Controller.Busy)
+        {
+            busySeconds += gameTime.ElapsedGameTime.TotalSeconds;
+            if (busyProgress is not null)
+            {
+                var fraction = Controller.Progress;
+                busyProgress.Size = new(fraction > 0 ? Math.Max(8, (BodyWidth - 30) * (float)fraction) : (BodyWidth - 30) * .18f, 3);
+                busyProgress.Position = new(Left + 15 + (fraction > 0 ? 0 : (BodyWidth - 30) * .82f * (float)((Math.Sin(busySeconds * 3) + 1) / 2)), Height - 29);
+                busyProgress.Margin = new((int)busyProgress.Position.X, (int)busyProgress.Position.Y, 0, 0);
+            }
+            if (busyElapsed is not null) busyElapsed.Text = $"{busySeconds:0}s elapsed";
+        }
+        else busySeconds = 0;
         base.Tick(gameTime);
     }
 
@@ -78,6 +94,7 @@ internal sealed partial class InstallerScene : Scene
         RebuildCount++;
         statusTitle = statusDetail = progressPercent = progressDetail = null;
         progressBar = null;
+        busyProgress = null; busyElapsed = null;
         usedArtwork.Clear();
         var previousRoot = root;
         var previousControls = controls.ToArray();
@@ -256,8 +273,13 @@ internal sealed partial class InstallerScene : Scene
         var y = Height - 82;
         Box(Left, y, BodyWidth, 59, Theme.Surface, 10, Controller.Failed ? Theme.Danger : Theme.Border);
         Box(Left + 15, y + 17, 7, 7, Controller.Failed ? Theme.Danger : Controller.Busy ? Theme.Orange : Theme.Lime, 4, Color.Transparent);
-        statusTitle = Text(Controller.Status, Left + 33, y + 8, BodyWidth - 50, 22, 10, Controller.Failed ? Theme.Danger : Theme.Text, true);
+        statusTitle = Text(Controller.Status, Left + 33, y + 8, BodyWidth - (Controller.Busy ? 170 : 50), 22, 10, Controller.Failed ? Theme.Danger : Theme.Text, true);
         statusDetail = Text(Controller.StatusDetail, Left + 33, y + 33, BodyWidth - 50, 20, 8.5f, Theme.Muted);
+        if (Controller.Busy)
+        {
+            busyElapsed = Text($"{busySeconds:0}s elapsed", Width - 160, y + 8, 110, 22, 9, Theme.Muted);
+            busyProgress = Box(Left + 15, Height - 29, (BodyWidth - 30) * .18f, 3, Theme.Lime, 1, Color.Transparent);
+        }
     }
 
     private void RefreshProgress()

@@ -76,7 +76,9 @@ heirowUpdater uses **SocketJack.Net.HttpClient** from the published `SocketJack`
 
 The setup provisions its updater automatically; users do not install the authoring tool. The common maintenance executable is also pooled without retaining a separate full Setup per application. Older app-local profiles remain readable for migration.
 
-Advanced command-line and explicitly scheduled checks remain available:
+The desktop window renders before it reads application state or starts update work. Checks run asynchronously with animated progress, elapsed time, per-application completion counts, and cancellation. Check-all requests run up to four feeds concurrently; each feed has a 15-second deadline including redirects and its response body. Installer downloads keep their separate, longer timeout. Manual app checks wait for the progress window's first rendered frame before requesting the feed.
+
+Advanced command-line and explicitly scheduled checks remain available. Add `--progress-json` to stream newline-delimited progress JSON on standard error while preserving the result JSON on standard output:
 
 ```powershell
 heirowUpdater check --all

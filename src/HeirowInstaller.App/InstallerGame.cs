@@ -18,7 +18,10 @@ internal sealed partial class InstallerGame : Game
     internal InstallerScene MainScene { get; private set; } = null!;
     private SpriteBatch spriteBatch = null!;
     private int drawCount;
+    internal int FramesRendered => drawCount;
     private bool automaticCapture;
+    private bool startupStarted;
+    internal Task? StartupCompanion { get; private set; }
     private NavigationCapture? navigationCapture;
 
     public InstallerGame(AppArguments arguments)
@@ -67,6 +70,16 @@ internal sealed partial class InstallerGame : Game
         manager.AddScene("installer", MainScene);
         manager.ActiveScene = MainScene;
         MainScene.Rebuild();
+    }
+
+    private async Task StartContentAsync()
+    {
+        await MainScene.Controller.InitializeDesktopAsync();
+        await OnUiAsync(StartInitialOperation);
+    }
+
+    private void StartInitialOperation()
+    {
         if (arguments.PerformanceSmokeDirectory is not null)
             _ = UiResponsivenessSmoke.RunAsync(this, arguments);
         else if (arguments.MaintenanceOperation is not null && arguments.WizardSmokeDirectory is null)
@@ -112,6 +125,14 @@ internal sealed partial class InstallerGame : Game
 
     protected override void Update(GameTime gameTime)
     {
+        // Game.Run has presented the initial window before any package, state or network checks start.
+        if (!startupStarted && drawCount > 0)
+        {
+            startupStarted = true;
+            if (!MainScene.Controller.IsWizard && !arguments.Isolated && arguments.SmokeDirectory is null && arguments.SelfUpdateSmokeFeed is null && arguments.CapturePath is null)
+                StartupCompanion = Task.Run(() => global::SocketJack.HeirowUpdaterBootstrap.StartAfterExit());
+            _ = StartContentAsync();
+        }
         var started = Performance?.BeginUpdate();
         // Progress and background completions cannot drain an unbounded queue
         // before the next input/render tick. Preserve FIFO and yield each frame.

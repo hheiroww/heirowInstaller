@@ -6,6 +6,7 @@ namespace HeirowUpdater.SocketJack;
 /// <summary>Uses the public SocketJack networking client for each HTTP request. Redirect decisions stay in UpdateClient.</summary>
 public sealed class SocketJackUpdateTransport : IUpdateTransport
 {
+    private static readonly object clientLifetime = new();
     private readonly Uri? credentialOrigin;
     private readonly Func<ApplicationSessionSnapshot> session;
 
@@ -32,7 +33,8 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
             FileOptions.Asynchronous | FileOptions.DeleteOnClose | FileOptions.SequentialScan);
         try
         {
-            using var client = new global::SocketJack.Net.HttpClient { Timeout = TimeSpan.FromSeconds(30), MaxRedirects = 0 };
+            using var lease = new ClientLease();
+            var client = lease.Client;
             client.DefaultHeaders["User-Agent"] = $"heirowUpdater/{typeof(SocketJackUpdateTransport).Assembly.GetName().Version} SocketJack/2026.10.24";
             client.DefaultHeaders["Accept-Encoding"] = "identity";
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -66,6 +68,18 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
 
     private static bool SameOrigin(Uri a, Uri b) => a.Scheme.Equals(b.Scheme, StringComparison.OrdinalIgnoreCase) &&
         a.IdnHost.Equals(b.IdnHost, StringComparison.OrdinalIgnoreCase) && a.Port == b.Port;
+
+    // The pinned SocketJack version starts/stops global counter threads during client registration.
+    // Serialize that short lifetime transition; the asynchronous network transfers remain concurrent.
+    private sealed class ClientLease : IDisposable
+    {
+        internal global::SocketJack.Net.HttpClient Client { get; }
+        internal ClientLease()
+        {
+            lock (clientLifetime) Client = new() { Timeout = TimeSpan.FromSeconds(30), MaxRedirects = 0 };
+        }
+        public void Dispose() { lock (clientLifetime) Client.Dispose(); }
+    }
 
     private sealed class LimitedDestination(Stream destination, long maximumBytes, IProgress<InstallProgress>? progress, bool leaveOpen) : Stream
     {

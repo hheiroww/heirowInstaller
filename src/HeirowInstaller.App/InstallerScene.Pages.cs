@@ -9,7 +9,7 @@ internal sealed partial class InstallerScene
 {
     private void BuildInstalled()
     {
-        Action("installed.refresh", "Refresh", Width - 149, 145, 115, () => { Controller.RefreshInstalled(); Controller.Notify(); }, enabled: !Controller.Busy);
+        Action("installed.refresh", "Refresh", Width - 149, 145, 115, () => _ = Controller.ReloadInstalledAsync(), enabled: !Controller.Busy);
         Text($"{Controller.Installed.Count} APPLICATION{(Controller.Installed.Count == 1 ? "" : "S")}", Left, 158, BodyWidth - 140, 22, 8.5f, Theme.Muted, true);
         if (Controller.Installed.Count == 0)
         {
@@ -175,6 +175,7 @@ internal sealed partial class InstallerScene
         var available = File.Exists(Controller.UpdaterPath);
         Action("updates.check", "Check all applications", Left, 317, 218, () => _ = Controller.RunUpdaterAsync("check", "--all", "--json"), true, available && !Controller.Busy);
         Action("updates.apply", "Install available updates", Left + 233, 317, 228, () => _ = Controller.RunUpdaterAsync("update", "--all", "--json"), enabled: available && !Controller.Busy, accent: Theme.Orange);
+        if (Controller.CheckingUpdates) Action("updates.cancel", "Cancel check", Left + 476, 317, 143, Controller.Cancel);
         Action("updates.enable", "Enable background checks", Left, 375, 232, () => _ = Controller.RunUpdaterAsync("enable", "--interval-minutes", "60"), enabled: available && !Controller.Busy);
         Action("updates.disable", "Disable checks", Left + 247, 375, 168, () => _ = Controller.RunUpdaterAsync("disable"), enabled: available && !Controller.Busy);
         Action("updates.status", "Schedule status", Left + 430, 375, 169, () => _ = Controller.RunUpdaterAsync("status", "--json"), enabled: available && !Controller.Busy);

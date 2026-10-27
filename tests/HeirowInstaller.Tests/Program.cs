@@ -66,6 +66,8 @@ internal sealed partial class AcceptanceSuite
             ,("shared GUI maintenance pooling strips application overlays and reuses only verified immutable prefixes", SharedMaintenanceHosts)
             ,("actual native watcher processes receive the current app cookie and explicit sign-out without a browser or credential persistence", NativeSessionRelay)
             ,("generic CLI, check-all, apply and handoff enforce the installed signed file-update policy before any full-installer download", GenericFileUpdatePolicy)
+            ,("update checks cancel stalled headers and bodies at their deadline and preserve user cancellation", UpdateCheckDeadlines)
+            ,("update checks run four feeds concurrently, isolate failures and report ordered completion counts", ConcurrentUpdateChecks)
         };
         if (filter is not null)
         {
