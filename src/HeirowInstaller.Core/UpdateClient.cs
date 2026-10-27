@@ -14,18 +14,24 @@ public sealed class UpdateClient : IDisposable
     private readonly IUpdateTransport? transport;
     private readonly bool requireIncrementalUpdates;
     private readonly TimeSpan checkTimeout;
-    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false, TimeSpan? checkTimeout = null)
+    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false)
+        : this(TimeSpan.FromSeconds(15), allowLoopback, httpClient, transport, requireIncrementalUpdates) { }
+
+    public UpdateClient(TimeSpan checkTimeout, bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false)
     {
         this.allowLoopback = allowLoopback;
         this.transport = transport;
         this.requireIncrementalUpdates = requireIncrementalUpdates;
-        this.checkTimeout = checkTimeout ?? TimeSpan.FromSeconds(15);
+        this.checkTimeout = checkTimeout;
         if (this.checkTimeout <= TimeSpan.Zero || this.checkTimeout > TimeSpan.FromMinutes(5)) throw new ArgumentOutOfRangeException(nameof(checkTimeout));
         ownsClient = httpClient is null;
         client = httpClient ?? new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
     }
 
-    public async Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken = default, IProgress<InstallProgress>? progress = null)
+    public Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken = default)
+        => CheckAsync(feedUrl, currentVersion, expectedProductId, cancellationToken, null);
+
+    public async Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken, IProgress<InstallProgress>? progress)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(checkTimeout);

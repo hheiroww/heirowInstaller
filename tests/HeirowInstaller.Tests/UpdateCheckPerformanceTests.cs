@@ -8,6 +8,9 @@ internal sealed partial class AcceptanceSuite
 {
     private async Task UpdateCheckDeadlines()
     {
+        True(typeof(UpdateClient).GetConstructor([typeof(bool), typeof(HttpClient), typeof(IUpdateTransport), typeof(bool)]) is not null);
+        True(typeof(UpdateClient).GetMethod(nameof(UpdateClient.CheckAsync), [typeof(string), typeof(string), typeof(string), typeof(CancellationToken)]) is not null);
+        True(typeof(SocketJackUpdater).GetMethod(nameof(SocketJackUpdater.CheckAsync), [typeof(UpdaterTarget), typeof(CancellationToken)]) is not null);
         var headers = new StalledFeedTransport();
         using (var client = new UpdateClient(transport: headers, checkTimeout: TimeSpan.FromMilliseconds(150)))
         {
@@ -73,6 +76,17 @@ internal sealed partial class AcceptanceSuite
             True(results[2].Error is not null); True(results.Where((_, index) => index != 2).All(x => x.Error is null && !x.Available), string.Join("; ", results.Select(x => x.ProductId + ": " + x.Error)));
             Equal("1,2,3,4,5,6", string.Join(',', progress.Where(x => x.Phase == "check-complete").Select(x => x.Completed)));
             True(progress.All(x => x.Total == 6));
+            var cli = new ProcessStartInfo(FindUpdaterCli()) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            var cliArea = Area("update-check-progress");
+            foreach (var argument in new[] { "check", "--feed", targets[0].FeedUrl, "--product-id", targets[0].ProductId, "--current-version", "1",
+                "--state-root", cliArea, "--status-file", Path.Combine(cliArea, "status.json"), "--allow-loopback", "--json", "--progress-json" }) cli.ArgumentList.Add(argument);
+            using var process = Process.Start(cli)!;
+            var output = process.StandardOutput.ReadToEndAsync(); var diagnostics = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            Equal(0, process.ExitCode);
+            using (var json = JsonDocument.Parse(await output)) Equal("current", json.RootElement[0].GetProperty("status").GetString()!);
+            var messages = (await diagnostics).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => JsonSerializer.Deserialize<InstallProgress>(line)!).ToArray();
+            True(messages.Any(x => x.Phase == "check-complete" && x.Completed == 1 && x.Total == 1));
             using var canceled = new CancellationTokenSource(); canceled.Cancel();
             await Throws<OperationCanceledException>(() => updater.CheckTargetsAsync(targets, cancellationToken: canceled.Token));
         }

@@ -76,7 +76,10 @@ public sealed class SocketJackUpdater : IDisposable
     {
         client = new(allowLoopback, transport: new SocketJackUpdateTransport(credentialOrigin, session), requireIncrementalUpdates: requireIncrementalUpdates);
     }
-    public async Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken = default, IProgress<InstallProgress>? progress = null)
+    public Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken = default)
+        => CheckAsync(target, cancellationToken, null);
+
+    public async Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken, IProgress<InstallProgress>? progress)
     {
         var update = await client.CheckAsync(target.FeedUrl, target.CurrentVersion, target.ProductId, cancellationToken, progress);
         RequireFileUpdate(target, update); return update;
