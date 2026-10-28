@@ -26,6 +26,7 @@ internal sealed partial class AcceptanceSuite
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "heirowInstaller-tests-" + Guid.NewGuid().ToString("N"));
     private int passed;
+    private static int assertionCount;
     public async Task<int> RunAsync(string? filter = null)
     {
         Directory.CreateDirectory(root);
@@ -68,6 +69,10 @@ internal sealed partial class AcceptanceSuite
             ,("generic CLI, check-all, apply and handoff enforce the installed signed file-update policy before any full-installer download", GenericFileUpdatePolicy)
             ,("update checks cancel stalled headers and bodies at their deadline and preserve user cancellation", UpdateCheckDeadlines)
             ,("update checks run four feeds concurrently, isolate failures and report ordered completion counts", ConcurrentUpdateChecks)
+            ,("version catalog compares the active published pointer numerically and pages history without installer executables", VersionCatalogComparison)
+            ,("version catalog rejects wrong identity, malformed metadata, failed authorization, redirects and oversized responses", VersionCatalogValidation)
+            ,("version catalog deadlines cancel stalled headers and bodies and preserve caller cancellation", VersionCatalogCancellation)
+            ,("version catalog SocketJack checks use only the supplied session and never forward it through redirects", VersionCatalogSocketJack)
         };
         if (filter is not null)
         {
@@ -78,8 +83,9 @@ internal sealed partial class AcceptanceSuite
         {
             foreach (var test in cases)
             {
+                var initialAssertions = Volatile.Read(ref assertionCount);
                 await test.Test(); passed++;
-                Console.WriteLine("PASS " + test.Name);
+                Console.WriteLine($"PASS {test.Name} ({Volatile.Read(ref assertionCount) - initialAssertions} assertions)");
             }
             Console.WriteLine($"Passed {passed}/{cases.Length} integration tests. No existing applications, services, or registry keys were modified.");
             return 0;
@@ -1210,10 +1216,10 @@ internal sealed partial class AcceptanceSuite
         var manifestPath = Path.Combine(area, name + ".json"); File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, InstallerJson.Options));
         var output = Path.Combine(area, name + ".hinst"); PackageBuilder.Build(manifestPath, source, output, new() { SigningKeyPath = signingKey }); return output;
     }
-    private static void True(bool condition, string? message = null) { if (!condition) throw new Exception("Assertion failed." + (message is null ? "" : " " + message)); }
-    private static void Equal<T>(T expected, T actual) { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new Exception($"Expected {expected}, got {actual}."); }
+    private static void True(bool condition, string? message = null) { if (!condition) throw new Exception("Assertion failed." + (message is null ? "" : " " + message)); Interlocked.Increment(ref assertionCount); }
+    private static void Equal<T>(T expected, T actual) { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new Exception($"Expected {expected}, got {actual}."); Interlocked.Increment(ref assertionCount); }
     private static async Task Throws<T>(Func<Task> action) where T : Exception
-    { try { await action(); } catch (T) { return; } throw new Exception("Expected exception " + typeof(T).Name); }
+    { try { await action(); } catch (T) { Interlocked.Increment(ref assertionCount); return; } throw new Exception("Expected exception " + typeof(T).Name); }
     private static string FindUpdaterCli()
     {
         var directory = AppContext.BaseDirectory;

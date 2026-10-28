@@ -92,6 +92,8 @@ trusted update helper include that host and all its instances in their waits.
 
 ## Manual checks
 
+Apps that own their update status UI should use the code-only `SocketJackVersionCatalogClient.CheckAsync` operation described in [the SDK guide](sdk.md#version-checks-without-installer-executables). Set an immediate busy indicator, supply the actual installed version and current in-memory account session, then show the returned `Current`, `UpdateAvailable` or `Ahead` result. This small catalog request does not require or launch an updater/installer executable, and it does not download an installation payload. Account or network errors stay visible as failures. Starting an actual update remains a separate explicit action.
+
 `CheckForUpdates()` starts a check immediately with native progress and a visible
 result. A current application reports that it is up to date; a newer release
 offers **Update now** and **Postpone 24 hours**. Check failures remain visible so
@@ -104,7 +106,7 @@ Normal close requests preserve an application's own save prompts. A kept-open
 app returns to retry/cancel. Dismissing a current-version result keeps the
 application running and preserves its later automatic check after exit.
 
-For an app-owned status label, use the read-only JSON command:
+Existing integrations can also use the read-only JSON command below when a companion executable is available:
 
 ```text
 heirowUpdater.exe check-for-updates --config heirowUpdater.json --json --no-prompt

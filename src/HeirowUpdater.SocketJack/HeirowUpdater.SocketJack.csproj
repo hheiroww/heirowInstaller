@@ -1,7 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework><Description>SocketJack networking transport for heirowUpdater.</Description></PropertyGroup>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>SocketJack networking transport for heirowUpdater.</Description>
+    <SocketJackVersion Condition="'$(SocketJackVersion)' == ''">[2026.10.24]</SocketJackVersion>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
-    <PackageReference Include="SocketJack" Version="[2026.10.24]" />
+    <PackageReference Include="SocketJack" Version="$(SocketJackVersion)" Condition="'$(SocketJackFacadeProject)' == ''" />
+    <ProjectReference Include="$(SocketJackFacadeProject)" Condition="'$(SocketJackFacadeProject)' != '' and Exists('$(SocketJackFacadeProject)')" />
   </ItemGroup>
+  <Target Name="ValidateSocketJackFacadeProject" BeforeTargets="ResolveProjectReferences" Condition="'$(SocketJackFacadeProject)' != ''">
+    <Error Condition="!Exists('$(SocketJackFacadeProject)')" Text="The supplied SocketJackFacadeProject does not exist." />
+  </Target>
 </Project>

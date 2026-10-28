@@ -6,9 +6,9 @@ namespace HeirowUpdater.SocketJack;
 /// <summary>Uses the public SocketJack networking client for each HTTP request. Redirect decisions stay in UpdateClient.</summary>
 public sealed class SocketJackUpdateTransport : IUpdateTransport
 {
-    private static readonly object clientLifetime = new();
+    private static readonly SemaphoreSlim clientLifetime = new(1, 1);
     private readonly Uri? credentialOrigin;
-    private readonly Func<ApplicationSessionSnapshot> session;
+    private readonly Func<(string? Cookie, string? BearerToken)> session;
 
     public SocketJackUpdateTransport(Uri? credentialOrigin = null, string? cookie = null, string? bearerToken = null)
     {
@@ -18,22 +18,25 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
             (credentialOrigin.Scheme != "https" && !(credentialOrigin.Scheme == "http" && credentialOrigin.IsLoopback))))
             throw new ArgumentException("Credential origin must use HTTPS.", nameof(credentialOrigin));
         this.credentialOrigin = credentialOrigin;
-        var snapshot = new ApplicationSessionSnapshot(cookie, bearerToken);
-        session = () => snapshot;
+        ApplicationSessionSnapshot.ValidateValue(cookie);
+        ApplicationSessionSnapshot.ValidateValue(bearerToken);
+        session = () => (cookie, bearerToken);
     }
 
     internal SocketJackUpdateTransport(Uri credentialOrigin, Func<ApplicationSessionSnapshot> session)
-        : this(credentialOrigin) => this.session = session;
+        : this(credentialOrigin) => this.session = () => { var snapshot = session(); return (snapshot.Cookie, snapshot.BearerToken); };
 
     public async Task<HttpResponseMessage> GetAsync(Uri uri, long maximumResponseBytes, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
         if (uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0) throw new ArgumentException("Unsupported update URL.");
-        var temporary = Path.Combine(Path.GetTempPath(), "heirowUpdater-network-" + Guid.NewGuid().ToString("N") + ".tmp");
-        var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 131072,
-            FileOptions.Asynchronous | FileOptions.DeleteOnClose | FileOptions.SequentialScan);
+        // Small catalog responses stay in memory. Large downloads retain bounded disk streaming.
+        Stream file = maximumResponseBytes <= 64 * 1024 ? new MemoryStream() : new FileStream(
+            Path.Combine(Path.GetTempPath(), "heirowUpdater-network-" + Guid.NewGuid().ToString("N") + ".tmp"),
+            FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.DeleteOnClose | FileOptions.SequentialScan);
         try
         {
-            using var lease = new ClientLease();
+            await using var lease = await ClientLease.CreateAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             var client = lease.Client;
             client.DefaultHeaders["User-Agent"] = $"heirowUpdater/{typeof(SocketJackUpdateTransport).Assembly.GetName().Version} SocketJack/2026.10.24";
             client.DefaultHeaders["Accept-Encoding"] = "identity";
@@ -71,14 +74,22 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
 
     // The pinned SocketJack version starts/stops global counter threads during client registration.
     // Serialize that short lifetime transition; the asynchronous network transfers remain concurrent.
-    private sealed class ClientLease : IDisposable
+    private sealed class ClientLease : IAsyncDisposable
     {
         internal global::SocketJack.Net.HttpClient Client { get; }
-        internal ClientLease()
+        private ClientLease(global::SocketJack.Net.HttpClient client) => Client = client;
+        internal static async Task<ClientLease> CreateAsync(CancellationToken token)
         {
-            lock (clientLifetime) Client = new() { Timeout = TimeSpan.FromSeconds(30), MaxRedirects = 0 };
+            await clientLifetime.WaitAsync(token).ConfigureAwait(false);
+            try { token.ThrowIfCancellationRequested(); return new(new() { Timeout = TimeSpan.FromSeconds(30), MaxRedirects = 0 }); }
+            finally { clientLifetime.Release(); }
         }
-        public void Dispose() { lock (clientLifetime) Client.Dispose(); }
+        public async ValueTask DisposeAsync()
+        {
+            await clientLifetime.WaitAsync().ConfigureAwait(false);
+            try { Client.Dispose(); }
+            finally { clientLifetime.Release(); }
+        }
     }
 
     private sealed class LimitedDestination(Stream destination, long maximumBytes, IProgress<InstallProgress>? progress, bool leaveOpen) : Stream
