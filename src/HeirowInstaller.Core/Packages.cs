@@ -17,6 +17,10 @@ public static class PackageBuilder
         PackageSafety.EnsureNoReparsePoints(sourceDirectory);
         var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath), InstallerJson.Options)
                        ?? throw new InvalidDataException("Manifest is empty.");
+        manifest.LegalDocuments = LegalDocumentRules.PrepareForCreation(manifest.Id, options?.LegalDocuments is { } suppliedLegal
+            ? new() { PrivacyPolicy = suppliedLegal.PrivacyPolicy ?? manifest.LegalDocuments?.PrivacyPolicy,
+                TermsAndConditions = suppliedLegal.TermsAndConditions ?? manifest.LegalDocuments?.TermsAndConditions }
+            : manifest.LegalDocuments);
         if (manifest.UpdateCompanion is { RuntimeMode: null } companion) companion.RuntimeMode = "shared";
         if (manifest.UpdateCompanion is { RuntimeMode: "shared", UpdateMode: null } fileUpdater && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             fileUpdater.UpdateMode = "files";
@@ -242,7 +246,11 @@ public static class BundleBuilder
         var output = Path.GetFullPath(outputExePath);
         if (output.Equals(launcher, StringComparison.OrdinalIgnoreCase) || output.Equals(package, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Bundle output must differ from its inputs.");
-        using (var reader = PackageReader.Open(package)) reader.VerifyAsync().GetAwaiter().GetResult();
+        using (var reader = PackageReader.Open(package))
+        {
+            LegalDocumentRules.RequireForCreation(reader.Manifest);
+            reader.VerifyAsync().GetAwaiter().GetResult();
+        }
         PackageSafety.EnsureNoReparsePoints(output);
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         var temporary = output + "." + Guid.NewGuid().ToString("N") + ".tmp";

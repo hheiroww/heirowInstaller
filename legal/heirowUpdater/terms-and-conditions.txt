@@ -1,0 +1,30 @@
+heirowUpdater - Terms and Conditions
+Effective: 2026-10-28
+Last updated: 2026-10-28
+
+APPLICATION TERMS
+
+heirowUpdater retains the software licenses distributed with the heirowInstaller project, including applicable MIT and third-party notices. These hosted-service terms do not replace or narrow those rights.
+
+An installed application can configure the optional companion for its declared publisher and update feed. Review the application and publisher before applying an update. Update now authorizes applying the selected verified transition after required app/host instances close; Postpone does not authorize automatic installation. Machine-wide changes can require the operating system's administrator approval.
+
+File-level verification and transactional recovery reduce installation errors but do not guarantee uninterrupted operation, compatibility of every release or recovery from every hardware/software failure. Keep backups of important application data. The application's license, Terms and Privacy Policy, the publisher's release conditions and the shared SocketJack service terms apply to the respective features you use.
+
+SHARED SERVICE CONDITIONS
+
+SocketJack is operated by heirow. For SocketJack-hosted accounts, publishing, storage, collaboration and delivery, also read https://socketjack.com/terms/ and https://socketjack.com/privacy/. Those documents describe account security, acceptable use, data processing, permissions, availability, ending access and verified requests. A shared account does not automatically grant publisher, beta, administrator or another application's permissions.
+
+Provide information and content you are entitled to use. Do not impersonate others, distribute malicious files, evade authorization or quotas, misuse private information or interfere with the service. Protect your account and signing credentials. Optional providers, storage, sharing, AI and update features have their own controls; reading these documents does not enable them.
+
+No unspecified payment is authorized by downloading, reading these terms or creating an account. If a paid feature is offered, its price and purchase terms must be shown separately. Third-party services and software have their own agreements. Development features are provided as available, subject to applicable license terms; nothing here excludes rights or responsibilities that applicable law does not permit to be excluded.
+
+You may stop using a feature, revoke available sharing/provider access, sign out or contact admin@socketjack.com about account access and deletion. Security, abuse prevention, applicable obligations or service maintenance can require restricting hosted access. Local files, downloaded copies, retained security/support records and backups are subject to their separate controls and lifecycles.
+
+We publish revisions with a date. Where a material change needs a new agreement, it must be presented through an appropriate service flow. A previous acknowledgement is not acceptance of undisclosed future terms. Privacy notices describe data practices and are not blanket consent to unrelated processing.
+
+CONTACT
+
+For questions about these terms, content, privacy or account requests, contact heirow at admin@socketjack.com. Include the relevant app and username. Do not send passwords, session cookies, private keys or recovery codes.
+
+Privacy Policy: https://socketjack.com/heirowInstaller/PrivacyPolicy/heirowUpdater
+Terms and Conditions: https://socketjack.com/heirowInstaller/TermsAndConditions/heirowUpdater

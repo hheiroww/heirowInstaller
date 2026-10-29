@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)][string]$Output,
     [string]$Launcher,
     [string]$SigningKey,
+    [string]$LegalDocuments,
     [string]$Updater,
     [switch]$UpdaterDefaultSelected,
     [ValidateSet('win-x64','win-x86','win-arm64')][string]$Runtime = 'win-x64',
@@ -25,6 +26,7 @@ if ([IO.Path]::GetExtension($Output) -eq '.exe') {
     if ($ApplicationProject) { $arguments += @('--project',[IO.Path]::GetFullPath($ApplicationProject)) }
     if ($Launcher) { $arguments += @('--launcher',[IO.Path]::GetFullPath($Launcher)) }
     if ($SigningKey) { $arguments += @('--sign-key',[IO.Path]::GetFullPath($SigningKey)) }
+    if ($LegalDocuments) { $arguments += @('--legal-documents',[IO.Path]::GetFullPath($LegalDocuments)) }
     if ($Updater) { $arguments += @('--updater',[IO.Path]::GetFullPath($Updater)) }
     if ($UpdaterDefaultSelected) { $arguments += '--updater-default' }
     if ($Framework) { $arguments += @('--framework',$Framework) }
@@ -40,6 +42,7 @@ $package = if ([IO.Path]::GetExtension($Output) -eq '.exe') { [IO.Path]::ChangeE
 if ([IO.Path]::GetExtension($package) -ne '.hinst') { throw 'Output must end in .hinst or .exe.' }
 $arguments = @('pack',[IO.Path]::GetFullPath($Manifest),'--source',[IO.Path]::GetFullPath($SourceDirectory),'--output',$package)
 if ($SigningKey) { $arguments += @('--sign-key',[IO.Path]::GetFullPath($SigningKey)) }
+if ($LegalDocuments) { $arguments += @('--legal-documents',[IO.Path]::GetFullPath($LegalDocuments)) }
 & $Cli @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Package build failed.' }
 & $Cli verify $Output

@@ -31,6 +31,7 @@ public sealed class PackageManifest
     public string? UpdateUrl { get; set; }
     public string? Homepage { get; set; }
     public string? LicenseFile { get; set; }
+    public PackageLegalDocuments? LegalDocuments { get; set; }
     public List<PackageFeature> Features { get; set; } = [];
     public List<PayloadFile> Payload { get; set; } = [];
     public List<RegistryDefinition> Registry { get; set; } = [];
@@ -227,6 +228,7 @@ public sealed class BackendRegistrationDefinition
 public sealed class PackageBuildOptions
 {
     public string? SigningKeyPath { get; set; }
+    public PackageLegalDocuments? LegalDocuments { get; set; }
 }
 
 public sealed class InstallOptions

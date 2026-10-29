@@ -44,6 +44,7 @@ public static class IncrementalUpdateBuilder
             throw new InvalidDataException("Incremental output cannot overwrite an input or signing key.");
         using var oldPackage = PackageReader.Open(oldSignedPackage);
         using var newPackage = PackageReader.Open(newSignedPackage);
+        LegalDocumentRules.RequireForCreation(newPackage.Manifest);
         oldPackage.VerifySignature(requireSignature: true);
         newPackage.VerifySignature(oldPackage.PublisherKeySha256, requireSignature: true);
         await oldPackage.VerifyAsync(cancellationToken: cancellationToken);

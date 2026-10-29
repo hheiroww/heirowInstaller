@@ -18,6 +18,8 @@ if (Test-Path -LiteralPath $OutputDirectory) { throw 'Wizard acceptance requires
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 $clearEnvironment = @('HEIROWUPDATER_TOKEN','HEIROWUPDATER_COOKIE','SOCKETJACK_DOWNLOAD_TOKEN','SOCKETJACK_DOWNLOAD_COOKIE','SOCKETJACK_PUBLISHER_TOKEN','SOCKETJACK_PUBLISHER_COOKIE','HEIROWINSTALLER_SIGNING_KEY_PATH')
 function Invoke-OwnedProcess([string]$image,[string[]]$arguments,[string]$log,[hashtable]$environment=@{}) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $arguments = Add-TestLegalArguments $image $arguments
     $start = [Diagnostics.ProcessStartInfo]::new($image)
     $start.UseShellExecute = $false
     $start.WorkingDirectory = Split-Path $image -Parent

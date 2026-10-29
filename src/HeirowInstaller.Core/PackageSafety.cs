@@ -66,6 +66,7 @@ public static partial class PackageSafety
         if (string.IsNullOrWhiteSpace(manifest.Name) || string.IsNullOrWhiteSpace(manifest.Publisher))
             throw new InvalidDataException("Package name and publisher are required.");
         _ = PackageVersion.Parse(manifest.Version);
+        LegalDocumentRules.Validate(manifest.LegalDocuments);
         if (manifest.Scope is not ("user" or "machine")) throw new InvalidDataException("Scope must be user or machine.");
         var featureIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var feature in manifest.Features)

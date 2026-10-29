@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HeirowInstaller.Publishing;
+using HeirowInstaller.Core;
 
 var passed = 0;
 void Check(bool condition, string description)
@@ -40,7 +41,13 @@ try
     var body = new byte[4 * 1024 * 1024 + 513];
     new Random(17).NextBytes(body);
     var package = Path.Combine(root, "test.hinst");
-    await File.WriteAllBytesAsync(package, body);
+    var source = Path.Combine(root, "source"); Directory.CreateDirectory(source);
+    await File.WriteAllBytesAsync(Path.Combine(source, "fixture.bin"), body);
+    var manifestPath = Path.Combine(root, "fixture.json");
+    await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(new PackageManifest
+    { Id = "test.product", Name = "Publisher fixture", Publisher = "Fixture", LegalDocuments = LegalFixture.For("test.product") }, InstallerJson.Options));
+    PackageBuilder.Build(manifestPath, source, package);
+    body = await File.ReadAllBytesAsync(package);
     var expectedHash = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
 
     var uploadId = Guid.NewGuid().ToString("N");
@@ -109,15 +116,8 @@ try
 
     var delta = Path.Combine(root, "application-update.hupd");
     File.Copy(package, delta);
-    var deltaServer = ServeOnceAsync(listener, request =>
-    {
-        using var metadata = JsonDocument.Parse(request.Body);
-        Check(metadata.RootElement.GetProperty("filename").GetString() == "application-update.hupd", "Signed incremental updates use the same bounded publisher upload protocol");
-        return (403, "", null);
-    });
-    try { await client.PublishAsync(delta); throw new Exception("Denied incremental upload accepted."); }
-    catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Forbidden, "Incremental publication retains real publisher authorization"); }
-    await deltaServer;
+    try { await client.PublishAsync(delta); throw new Exception("A renamed full package was accepted as an incremental update."); }
+    catch (InvalidDataException) { Check(true, "A malformed incremental package is rejected before upload; actual signed transition publishing is covered by CLI checks"); }
 
     var redirectServer = ServeOnceAsync(listener, _ => (302, "", "https://other.example/collect"));
     try { await client.PublishAsync(package); throw new Exception("Publisher redirect was followed."); }

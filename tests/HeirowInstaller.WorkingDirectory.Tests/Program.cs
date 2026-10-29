@@ -141,7 +141,7 @@ sealed class Fixture : IDisposable
         File.WriteAllText(Path.Combine(app, ".working-directory-probe"), "heirowInstaller working directory acceptance\n");
         if (shared) File.Copy(Path.Combine(fixtures, "heirowUpdater.exe"), Path.Combine(source, "heirowUpdater.exe"));
         var manifest = new PackageManifest { Id = "test.working-directory", Name = "Owned working-directory probe", Publisher = "Fixture", Version = "1.0", Scope = "user",
-            EntryPoint = "App/WorkingDirectoryProbe.exe", LaunchWorkingDirectory = working, UpdateUrl = "https://updates.example.invalid/feed.json" };
+            EntryPoint = "App/WorkingDirectoryProbe.exe", LaunchWorkingDirectory = working, UpdateUrl = "https://updates.example.invalid/feed.json", LegalDocuments = LegalFixture.For("test.working-directory") };
         if (shared)
         {
             manifest.Features = [new() { Id = "updates", Default = true }];

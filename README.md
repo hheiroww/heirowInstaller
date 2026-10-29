@@ -8,6 +8,8 @@ heirowInstaller combines a Project-Z desktop setup experience with a reusable .N
 
 [Product and publisher](https://socketjack.com/heirowInstaller/) · [Releases](https://github.com/hheiroww/heirowInstaller/releases) · [Compatibility](docs/compatibility.md)
 
+New installers include the application's actual **Privacy Policy** and **Terms and Conditions** in the signed package. Type or paste them in the desktop or publisher editor, load a saved draft, or import text files. Both texts and their public URLs remain visible in the installer. [Authoring and publishing legal documents](docs/legal-documents.md) · [Toolkit Privacy Policy](https://socketjack.com/heirowInstaller/PrivacyPolicy/heirowinstaller) · [Toolkit Terms and Conditions](https://socketjack.com/heirowInstaller/TermsAndConditions/heirowinstaller).
+
 ![heirowInstaller native desktop](assets/screenshots/desktop.png)
 
 ## Projects

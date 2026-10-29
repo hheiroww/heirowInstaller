@@ -6,6 +6,20 @@
   "publisher": "Example publisher",
   "description": "A small native package for testing installation, repair, upgrade, and removal.",
   "scope": "user",
+  "legalDocuments": {
+    "privacyPolicy": {
+      "url": "https://example.invalid/hello/privacy",
+      "fileName": "privacy-policy.txt",
+      "mediaType": "text/plain",
+      "content": "This example package contains static demonstration text files. It installs them locally and does not include an application that collects or transmits personal data. Installer records are created locally for repair and removal. This notice describes this example only."
+    },
+    "termsAndConditions": {
+      "url": "https://example.invalid/hello/terms",
+      "fileName": "terms-and-conditions.txt",
+      "mediaType": "text/plain",
+      "content": "This is an installer demonstration package. Use it to test installation, repair and removal in an isolated environment. Replace these example documents and URLs with your own application's actual documents before distributing a different product."
+    }
+  },
   "installDirectory": "{LocalAppData}/Programs/heirowInstaller/Hello",
   "features": [
     { "id": "core", "name": "Core files", "description": "The example readme.", "required": true },

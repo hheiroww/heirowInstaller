@@ -4,6 +4,7 @@ param([ValidateSet('Debug','Release')][string]$Configuration = 'Release', [strin
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 foreach ($project in @(
+    'tests/HeirowInstaller.Legal.Tests/HeirowInstaller.Legal.Tests.csproj',
     'tests/HeirowInstaller.Tests/HeirowInstaller.Tests.csproj',
     'tests/HeirowInstaller.Incremental.Tests/HeirowInstaller.Incremental.Tests.csproj',
     'tests/HeirowInstaller.Publishing.Tests/HeirowInstaller.Publishing.Tests.csproj',

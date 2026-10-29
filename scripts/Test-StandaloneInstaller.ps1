@@ -21,6 +21,8 @@ $state = Join-Path $OutputDirectory 'state'; $target = Join-Path $OutputDirector
 $checks = [Collections.Generic.List[string]]::new()
 function Assert-Check([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message }; $checks.Add($Message); Write-Host "PASS $Message" }
 function Invoke-Child([string]$Executable,[string[]]$Arguments,[switch]$RecipientEnvironment) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Executable $Arguments
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute=$false; $start.CreateNoWindow=$true; $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.WorkingDirectory=$recipient
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }

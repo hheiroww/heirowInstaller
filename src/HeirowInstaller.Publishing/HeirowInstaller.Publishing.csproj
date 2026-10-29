@@ -3,4 +3,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Description>Publisher client for heirowInstaller packages and update feeds.</Description>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+  </ItemGroup>
 </Project>

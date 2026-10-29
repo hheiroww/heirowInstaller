@@ -1,0 +1,31 @@
+heirowUpdater - Privacy Policy
+Effective: 2026-10-28
+Last updated: 2026-10-28
+
+UPDATE INFORMATION AND LOCAL STATE
+
+heirowUpdater is an optional update companion configured by an installed application. Applications can reuse a shared installed runtime rather than each storing a complete updater executable. The per-app configuration and installed receipt bind the application, installation directory, current release, publisher/feed, selected features and integrity information.
+
+The companion tracks the configured app's relevant process identity and waits for applicable application/host instances to exit before offering or applying an update. It checks release metadata, and an available update offers Update now or Postpone. Local postponement preferences, receipts, cached packages, staging/transaction records and logs support update choice, verification, repair and interrupted-update recovery. They can contain app paths, versions, file checksums, process identifiers and technical errors. They are not a scan of unrelated documents for advertising.
+
+NETWORK AND AUTHENTICATION
+
+Checking or downloading contacts the configured release publisher, which receives ordinary request/connection information and product/release selectors. SocketJack-protected requests can use an immutable snapshot of the application's current authorized session. Credential handling is restricted to the declared trusted origin and same-user update handoff; session secrets are not part of public legal documents, command arguments or application package configuration.
+
+Choosing Update now downloads signed compressed update data and metadata describing old and new files. The updater verifies the intended product, base, publisher and payload before applying a transition. Postponement does not authorize unattended installation. Browser approval can be offered when the normal account session requires sign-in; it does not grant publisher or administrator permissions.
+
+The updater does not need to upload the application's projects, recordings, inspected values or user documents to compare release versions. The installed application's own network, diagnostics and data-sharing features are covered by that application's policy. An independently configured publisher or download host has its own practices.
+
+RETENTION AND CONTROLS
+
+The application exposes its optional update setting and manual checks. Disabling the option stops that configured companion behavior; it does not uninstall the application or delete hosted account data. Shared runtime cleanup, repair caches and per-app receipts have their own maintenance lifecycle. Local update state can remain for integrity checks or recovery; there is no promise that closing a prompt erases it all.
+
+SHARED SERVICE, RETENTION AND YOUR CHOICES
+
+When you use SocketJack-hosted features, the shared account and website practices at https://socketjack.com/privacy/ also apply. They explain identity providers, cookies, account security, service providers, usage accounting, operational records and requests. The operator is heirow, through SocketJack. Hosting, delivery and providers you select process information needed for those features. Processing can occur in the countries where those services operate.
+
+Portal request logs and visitor analytics are currently pruned after 30 days, with capacity limits that can remove older records sooner. Account records, saved files, messages, release history, support records, usage accounting and backups have separate lifecycles. There is no single automatic deletion deadline for all of them. Signing out, closing an app or uninstalling software does not delete hosted records, files outside the installation directory or other people's copies.
+
+Use the relevant sharing, deletion, account and provider controls. You can request access, correction, deletion or information about retained records at admin@socketjack.com. Include the app name and relevant username; do not send passwords, tokens or recovery codes. We may need to verify control of the account. Applicable rights and limitations depend on your location and the information involved. Backup, security and legal records can remain where needed; received or downloaded copies outside our control cannot be recalled.
+
+We update this page's date when these practices change. Publishing a new notice does not turn on optional features or establish consent to a new use. Review the choices shown by the feature you use.

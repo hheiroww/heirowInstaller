@@ -20,7 +20,7 @@ async Task Throws<T>(Func<Task> action, string description) where T : Exception
     try { await action(); } catch (T) { Check(true, description); return; }
     throw new InvalidOperationException("Expected " + typeof(T).Name + ": " + description);
 }
-PackageManifest Manifest() => new() { Id = "process-safety-fixture", Name = "Desktop acceptance app", Publisher = "Isolated test", Version = "1.0.0", EntryPoint = "RunningApplicationProbe.exe" };
+PackageManifest Manifest() => new() { Id = "process-safety-fixture", Name = "Desktop acceptance app", Publisher = "Isolated test", Version = "1.0.0", EntryPoint = "RunningApplicationProbe.exe", LegalDocuments = LegalFixture.For("process-safety-fixture") };
 RunningApplicationTarget Target(Probe app) => RunningApplicationTarget.FromManifest(Manifest(), app.Directory);
 try
 {

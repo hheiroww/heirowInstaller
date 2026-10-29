@@ -1,0 +1,6 @@
+<Project>
+  <Import Project="../Directory.Build.props" />
+  <ItemGroup Condition="$([System.String]::Copy('$(MSBuildProjectName)').StartsWith('HeirowInstaller.'))">
+    <Compile Include="$(MSBuildThisFileDirectory)Shared/LegalFixture.cs" Link="LegalFixture.cs" />
+  </ItemGroup>
+</Project>

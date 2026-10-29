@@ -34,6 +34,8 @@ function Assert-Check([bool]$Condition,[string]$Message) {
     Write-Host "PASS $Message"
 }
 function Invoke-Tool([string]$Executable,[string[]]$Arguments,[switch]$AllowFailure) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Executable $Arguments
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true

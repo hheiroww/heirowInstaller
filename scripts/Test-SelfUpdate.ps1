@@ -35,6 +35,8 @@ New-Item -ItemType Directory -Path $runDirectory,$sandbox,$public -Force | Out-N
 
 function Assert-Check([bool]$Condition,[string]$Description) { if (-not $Condition) { throw $Description }; $checks.Add($Description) }
 function Invoke-Child([string]$Executable,[string[]]$Arguments,[string]$Name,[int[]]$SuccessCodes=@(0,3010)) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Executable $Arguments
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute=$false; $start.CreateNoWindow=$true; $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.WorkingDirectory=$runDirectory
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }

@@ -26,7 +26,7 @@ internal static class CliIncrementalPublishingChecks
         {
             var source = Path.Combine(directory, "source-" + version); Directory.CreateDirectory(source);
             File.WriteAllBytes(Path.Combine(source, "common.bin"), unchanged); File.WriteAllText(Path.Combine(source, "app.bin"), "version " + version);
-            var manifest = new PackageManifest { FormatVersion = 2, Id = product, Name = "CLI incremental fixture", Publisher = "Fixture", Version = version, EntryPoint = "app.bin" };
+            var manifest = new PackageManifest { FormatVersion = 2, Id = product, Name = "CLI incremental fixture", Publisher = "Fixture", Version = version, EntryPoint = "app.bin", LegalDocuments = LegalFixture.For(product) };
             var path = Path.Combine(directory, version + ".json"); File.WriteAllText(path, JsonSerializer.Serialize(manifest, InstallerJson.Options));
             packages[version] = Path.Combine(directory, version + ".hinst");
             PackageBuilder.Build(path, source, packages[version], new() { SigningKeyPath = keyPath });
@@ -121,7 +121,7 @@ internal static class CliIncrementalPublishingChecks
         var protectedSource = Path.Combine(directory, "protected-source"); Directory.CreateDirectory(Path.Combine(protectedSource, "private"));
         File.WriteAllText(Path.Combine(protectedSource, "private", "worker.dll"), "inert remote fixture component, never loaded");
         File.WriteAllText(Path.Combine(protectedSource, "bootstrap.dll"), "inert public bootstrap fixture, never loaded");
-        var protectedManifest = new PackageManifest { Id = "cli.protected.fixture", Name = "Protected draft fixture", Version = "1.0.0", Publisher = "Fixture" };
+        var protectedManifest = new PackageManifest { Id = "cli.protected.fixture", Name = "Protected draft fixture", Version = "1.0.0", Publisher = "Fixture", LegalDocuments = LegalFixture.For("cli.protected.fixture") };
         protectedManifest.Modules["SocketJackSecurityLoader"] = JsonSerializer.SerializeToElement(new
         {
             formatVersion = 1, hostedSigning = true,

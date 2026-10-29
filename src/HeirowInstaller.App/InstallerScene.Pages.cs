@@ -113,7 +113,12 @@ internal sealed partial class InstallerScene
         });
         Text("RELEASE NOTES", Left, 490, BodyWidth, 22, 8.5f, Theme.Muted, true);
         Field("workspace.notes", Controller.ReleaseNotes, Left, 520, BodyWidth, value => Controller.ReleaseNotes = value, true, 52);
-        Text(Controller.PublisherAccount, Left, 581, BodyWidth, 20, 9, Theme.Muted);
+        Text(Controller.PublisherAccount, Left, 581, BodyWidth - 205, 20, 9, Theme.Muted);
+        Action("workspace.legal", "Privacy & terms", Width - 218, 579, 184, () =>
+        {
+            showLegalEditor = true; showPackageLegal = false; legalTextPage = 0; Controller.Notify();
+            _ = Controller.LoadLegalDraftAsync(false);
+        }, enabled: !Controller.Busy);
         Action("workspace.build", Controller.OutputPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? "Build setup  →" : "Build package  →", Left, BodyBottom - 48, 192, () => _ = Controller.BuildAsync(), true, !Controller.Busy);
         Action("workspace.publish", "Publish release", Left + 206, BodyBottom - 48, 170, () => _ = Controller.PublishAsync(), enabled: !Controller.Busy, accent: Theme.Orange);
         Action("workspace.test", "Open built installer", Width - 220, BodyBottom - 48, 186, () => _ = Controller.OpenPackageAsync(Controller.BuiltPackagePath ?? Controller.OutputPath), enabled: !Controller.Busy && File.Exists(Controller.BuiltPackagePath ?? Controller.OutputPath));

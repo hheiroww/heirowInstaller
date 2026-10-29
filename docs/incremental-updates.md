@@ -1,5 +1,7 @@
 # Signed file updates
 
+A new target package must include both actual legal documents. An existing policy-free signed base remains valid; the existing signed target manifest carries the new Privacy Policy, Terms and Conditions, URLs and content integrity. No extra HUPD entries are introduced. [Legal document requirements](legal-documents.md).
+
 New native packages can opt into `updateMode: "files"`. Their updater requests
 `fromVersion=<installed version>&updateProtocol=hupd1` on the configured HTTPS
 feed, preserving its other query parameters. A conflicting or duplicated

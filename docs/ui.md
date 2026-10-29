@@ -1,5 +1,7 @@
 # Native desktop application
 
+The **Build & publish → Privacy & terms** editor accepts typed or pasted text and optional file import for both required documents. **Load saved** autofills a per-product publisher draft; **Save draft** preserves authoring text without changing a signed installer. Rebuild after edits. Application wizards show **Privacy & terms**, including each public URL and the actual signed document text. [Contract and authoring](legal-documents.md).
+
 `src/HeirowInstaller.App` is a native Project-Z application. It uses the exact
 published `ProjectZ` 2026.10.23.2 package, MonoGame's DX12 backend, Project-Z vector
 text and native Project-Z controls. It contains no browser or WPF view. The

@@ -1205,7 +1205,7 @@ internal sealed partial class AcceptanceSuite
     }
 
     private string Area(string name) { var path = Path.Combine(root, name); Directory.CreateDirectory(path); return path; }
-    private static PackageManifest Manifest(string id, string version) => new() { Id = id, Name = "Isolated integration fixture", Version = version, Publisher = "SocketJack test fixture", Scope = "user" };
+    private static PackageManifest Manifest(string id, string version) => new() { Id = id, Name = "Isolated integration fixture", Version = version, Publisher = "SocketJack test fixture", Scope = "user", LegalDocuments = LegalFixture.For(id) };
     private static InstallOptions Options(string area, string target) => new() { TargetDirectory = target, StateRoot = Path.Combine(area, "state"), Isolated = true, RegisterProduct = false, Launch = false };
     private static string Build(string area, string name, PackageManifest manifest, Dictionary<string, string> files, string? signingKey = null)
     {

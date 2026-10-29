@@ -384,7 +384,7 @@ sealed class Fixture : IDisposable
     {
         var configuration = JsonSerializer.Serialize(new LegacyStagingCleanupDefinition { Trees = [Tree] }, InstallerJson.Options);
         if (ExtraConfiguration is not null) configuration = configuration[..configuration.LastIndexOf('}')] + ExtraConfiguration + "}";
-        var manifest = new PackageManifest { Id = Id, Name = "Owned cleanup fixture", Publisher = "Fixture only", Version = "1.0.0", Scope = "user", Payload = [new() { Path = "app.txt" }], Modules = new() { [LegacyStagingCleanupModule.ModuleId] = JsonDocument.Parse(configuration).RootElement.Clone() } };
+        var manifest = new PackageManifest { Id = Id, Name = "Owned cleanup fixture", Publisher = "Fixture only", Version = "1.0.0", Scope = "user", LegalDocuments = LegalFixture.For(Id), Payload = [new() { Path = "app.txt" }], Modules = new() { [LegacyStagingCleanupModule.ModuleId] = JsonDocument.Parse(configuration).RootElement.Clone() } };
         var file = Path.Combine(Root, "manifest.json"); File.WriteAllText(file, JsonSerializer.Serialize(manifest, InstallerJson.Options));
         if (File.Exists(Package)) File.Delete(Package);
         PackageBuilder.Build(file, Path.Combine(Root, "payload"), Package, new() { SigningKeyPath = signed ? Path.Combine(Root, "test-key.pem") : null });

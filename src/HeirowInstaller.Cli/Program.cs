@@ -30,6 +30,14 @@ heirowInstaller — modular Windows installation and publishing
   import-exe <original.exe> --id <id> --name <name> --version <version> --publisher <publisher> --install-args <json-array> --output <package.hinst>
   publish <package.hinst> [--publisher <https-origin>] [--token-env <name>|--cookie-env <name>|--github-oidc] [--wait-for-activation] [--resume-upload <id>] [--sealed-delivery|--protected-preparation]
   publisher-status|catalog [--publisher <https-origin>]
+  publisher-legal <product-id> [--publisher <https-origin>] [--token-env <name>]
+  publisher-legal-save <product-id> --legal-documents <json> [--token-env <name>]
+
+New installers require legalDocuments.privacyPolicy and .termsAndConditions, including both texts.
+Creation options: --legal-documents <json>, --privacy-policy-file <utf8.txt|md>,
+  --terms-and-conditions-file <utf8.txt|md>, --privacy-policy-url <https-url>,
+  --terms-and-conditions-url <https-url>, --autofill-legal (saved publisher draft).
+Files are optional: authoring JSON and the desktop/publisher editors also accept typed or pasted text.
 
 Maintenance options: --silent, --no-launch, --launch, --log <path>, --state-root <directory>,
   --allow-downgrade, --no-register, --trust-key <sha256>, --require-signature.
@@ -69,7 +77,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
             switch (command.ToLowerInvariant())
             {
                 case "pack":
-                    Print(PackageBuilder.Build(Subject(), parsed.Require("source"), parsed.Require("output"), new() { SigningKeyPath = parsed.Get("sign-key") })); break;
+                    Print(PackageBuilder.Build(Subject(), parsed.Require("source"), parsed.Require("output"), await CreationOptionsAsync(parsed, Subject(), cancellation.Token))); break;
                 case "bundle":
                     BundleBuilder.Build(parsed.Require("launcher"), Subject(), parsed.Require("output"));
                     Print(new { output = Path.GetFullPath(parsed.Require("output")), sha256 = PackageSafety.HashFile(parsed.Require("output")) }); break;
@@ -78,6 +86,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                     {
                         SourceDirectory = parsed.Get("source"), ApplicationProjectPath = parsed.Get("project"), LauncherPath = parsed.Get("launcher"),
                         SigningKeyPath = parsed.Get("sign-key"), UpdateCompanionExecutablePath = parsed.Get("updater"),
+                        LegalDocuments = (await CreationOptionsAsync(parsed, Subject(), cancellation.Token)).LegalDocuments,
                         UpdaterDefaultSelected = parsed.Has("updater-default") ? true : null,
                         Configuration = parsed.Get("configuration") ?? "Release", Runtime = parsed.Get("runtime") ?? "win-x64", Framework = parsed.Get("framework")
                     }, progress, cancellation.Token)); break;
@@ -87,6 +96,12 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                         Configuration = parsed.Get("configuration") ?? "Release", Architecture = parsed.Get("arch") ?? "x64", Restore = !parsed.Has("skip-restore"),
                         AdditionalArguments = parsed.CompilerArguments, Extensions = parsed.Extensions, Sources = parsed.SourceFiles,
                         BindPaths = parsed.BindPaths, IncludeDirectories = parsed.IncludeDirectories, LocalizationFiles = parsed.LocalizationFiles };
+                    if (Path.GetExtension(parsed.Require("output")).ToLowerInvariant() is ".msi" or ".msp" or ".exe")
+                    {
+                        build.ProductId = parsed.Require("id");
+                        build.LegalDocuments = LegalDocumentRules.PrepareForCreation(build.ProductId,
+                            (await CreationOptionsAsync(parsed, null, cancellation.Token)).LegalDocuments);
+                    }
                     foreach (var define in parsed.Defines)
                     {
                         var separator = define.IndexOf('=');
@@ -164,9 +179,9 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                     Print(result); return result.RebootRequired ? 3010 : 0;
                 }
                 case "import-msi":
-                    Print(LegacyImporter.ImportMsi(Subject(), parsed.Require("output"), parsed.Get("id"), parsed.Get("name"), parsed.Get("version"), parsed.Get("publisher"), parsed.Get("scope") ?? "machine", new() { SigningKeyPath = parsed.Get("sign-key") })); break;
+                    Print(LegacyImporter.ImportMsi(Subject(), parsed.Require("output"), parsed.Get("id"), parsed.Get("name"), parsed.Get("version"), parsed.Get("publisher"), parsed.Get("scope") ?? "machine", await CreationOptionsAsync(parsed, null, cancellation.Token))); break;
                 case "import-exe":
-                    Print(ImportExecutable(Subject(), parsed)); break;
+                    Print(ImportExecutable(Subject(), parsed, await CreationOptionsAsync(parsed, null, cancellation.Token))); break;
                 case "publish":
                     Print(await PublishingCommands.PublishAsync(Subject(), new Uri(parsed.Get("publisher") ?? "https://socketjack.com"),
                         parsed.Has("github-oidc"), parsed.Has("wait-for-activation"), options, parsed.Has("allow-loopback"),
@@ -176,6 +191,12 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                     using (var publisher = Publisher(parsed)) Print(await publisher.GetStatusAsync(cancellation.Token)); break;
                 case "catalog":
                     using (var publisher = Publisher(parsed)) Print(await publisher.GetCatalogAsync(cancellation.Token)); break;
+                case "publisher-legal":
+                    using (var publisher = Publisher(parsed)) Print(await publisher.GetLegalDocumentsAsync(Subject(), cancellation.Token)); break;
+                case "publisher-legal-save":
+                    using (var publisher = Publisher(parsed))
+                        Print(await publisher.SaveLegalDocumentsAsync(Subject(), await ReadLegalDefinitionsAsync(parsed.Require("legal-documents"), cancellation.Token), cancellation.Token));
+                    break;
                 default: throw new ArgumentException("Unknown command: " + command + ". Use --help.");
             }
             return 0;
@@ -223,7 +244,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         }
         return new(new Uri(args.Get("credential-origin") ?? "https://socketjack.com"), Secret("cookie-env"), Secret("token-env"));
     }
-    private static PackageManifest ImportExecutable(string input, Arguments args)
+    private static PackageManifest ImportExecutable(string input, Arguments args, PackageBuildOptions buildOptions)
     {
         input = Path.GetFullPath(input);
         if (!input.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("import-exe requires an .exe installer.");
@@ -240,9 +261,41 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
             Directory.CreateDirectory(temporary);
             var path = Path.Combine(temporary, "manifest.json");
             File.WriteAllText(path, JsonSerializer.Serialize(manifest, InstallerJson.Options));
-            return PackageBuilder.Build(path, Path.GetDirectoryName(input)!, args.Require("output"), new() { SigningKeyPath = args.Get("sign-key") });
+            return PackageBuilder.Build(path, Path.GetDirectoryName(input)!, args.Require("output"), buildOptions);
         }
         finally { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); }
+    }
+    private static async Task<PackageLegalDocuments> ReadLegalDefinitionsAsync(string path, CancellationToken token)
+    {
+        if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidDataException("Legal document authoring JSON exceeds 1 MiB.");
+        using var json = JsonDocument.Parse(await File.ReadAllTextAsync(path, token));
+        var value = json.RootElement.TryGetProperty("legalDocuments", out var nested) ? nested : json.RootElement;
+        return value.Deserialize<PackageLegalDocuments>(InstallerJson.Options) ?? throw new InvalidDataException("Legal document authoring JSON is empty.");
+    }
+    private static async Task<PackageBuildOptions> CreationOptionsAsync(Arguments args, string? manifestPath, CancellationToken token)
+    {
+        var result = new PackageBuildOptions { SigningKeyPath = args.Get("sign-key") };
+        if (args.Get("legal-documents") is { } definitions) result.LegalDocuments = await ReadLegalDefinitionsAsync(definitions, token);
+        var privacyFile = args.Get("privacy-policy-file"); var termsFile = args.Get("terms-and-conditions-file");
+        if (privacyFile is null && termsFile is null && !args.Has("autofill-legal")) return result;
+        var id = args.Get("id");
+        if (manifestPath is not null)
+            id = JsonSerializer.Deserialize<PackageManifest>(await File.ReadAllTextAsync(manifestPath, token), InstallerJson.Options)?.Id;
+        if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("Supply --id when importing legal files or saved legal drafts without an application manifest.");
+        var defaults = LegalDocumentRules.CreateDraft(id);
+        result.LegalDocuments ??= new();
+        if (args.Has("autofill-legal"))
+        {
+            using var publisher = Publisher(args);
+            var saved = await publisher.GetLegalDocumentsAsync(id, token);
+            result.LegalDocuments.PrivacyPolicy ??= saved.LegalDocuments?.PrivacyPolicy;
+            result.LegalDocuments.TermsAndConditions ??= saved.LegalDocuments?.TermsAndConditions;
+        }
+        if (privacyFile is not null) result.LegalDocuments.PrivacyPolicy = await LegalDocumentRules.ImportFileAsync(privacyFile,
+            args.Get("privacy-policy-url") ?? result.LegalDocuments.PrivacyPolicy?.Url ?? defaults.PrivacyPolicy!.Url, token);
+        if (termsFile is not null) result.LegalDocuments.TermsAndConditions = await LegalDocumentRules.ImportFileAsync(termsFile,
+            args.Get("terms-and-conditions-url") ?? result.LegalDocuments.TermsAndConditions?.Url ?? defaults.TermsAndConditions!.Url, token);
+        return result;
     }
     private static void Print<T>(T value) => Console.WriteLine(JsonSerializer.Serialize(value, InstallerJson.Options));
     private sealed class InlineProgress(Action<InstallProgress> report) : IProgress<InstallProgress> { public void Report(InstallProgress value) => report(value); }
@@ -260,8 +313,8 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         public List<string> LocalizationFiles { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation", "sealed-delivery", "protected-preparation"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base", "resume-upload"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation", "sealed-delivery", "protected-preparation", "autofill-legal"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base", "resume-upload", "legal-documents", "privacy-policy-file", "terms-and-conditions-file", "privacy-policy-url", "terms-and-conditions-url"], StringComparer.OrdinalIgnoreCase);
             var repeated = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) { ["compiler-arg"] = CompilerArguments, ["extension"] = Extensions,
                 ["define"] = Defines, ["source-file"] = SourceFiles, ["bind-path"] = BindPaths, ["include"] = IncludeDirectories, ["localization"] = LocalizationFiles };
             for (var i = 0; i < args.Length; i++)

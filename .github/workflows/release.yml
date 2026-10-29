@@ -31,7 +31,7 @@ jobs:
           $keyPath = Join-Path $env:RUNNER_TEMP 'heirowinstaller-signing.private.pem'
           try {
             [IO.File]::WriteAllText($keyPath, $env:HINST_SIGNING_KEY)
-            ./scripts/Build.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -SigningKey $keyPath
+            ./scripts/Build.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -SigningKey $keyPath -LegalDocuments ./legal/heirowinstaller/legal-documents.json
           } finally {
             if (Test-Path -LiteralPath $keyPath) { Remove-Item -LiteralPath $keyPath -Force }
           }

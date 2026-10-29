@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][string]$Output,
     [string]$Wix = 'wix',
     [string]$MsBuild,
+    [string]$ProductId,
+    [string]$LegalDocuments,
     [ValidateSet('x86','x64','arm64')][string]$Architecture = 'x64',
     [string[]]$Extension = @(),
     [string[]]$Define = @(),
@@ -18,6 +20,8 @@ if (-not $Cli) { $Cli = Join-Path $projectRoot 'src/HeirowInstaller.Cli/bin/Rele
 if (-not (Test-Path -LiteralPath $Cli)) { throw 'Build the CLI or pass the portable published CLI with -Cli.' }
 $arguments = @('compile',[IO.Path]::GetFullPath($InputPath),'--output',[IO.Path]::GetFullPath($Output),'--wix',$Wix,'--arch',$Architecture)
 if ($MsBuild) { $arguments += @('--msbuild',$MsBuild) }
+if ($ProductId) { $arguments += @('--id',$ProductId) }
+if ($LegalDocuments) { $arguments += @('--legal-documents',[IO.Path]::GetFullPath($LegalDocuments)) }
 foreach ($value in $Extension) { $arguments += @('--extension',$value) }
 foreach ($value in $Define) { $arguments += @('--define',$value) }
 foreach ($value in $BindPath) { $arguments += @('--bind-path',$value) }

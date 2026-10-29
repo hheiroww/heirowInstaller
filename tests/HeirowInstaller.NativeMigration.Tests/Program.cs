@@ -475,7 +475,7 @@ sealed class Fixture : IDisposable
         return PackageReader.Open(output);
     }
     private static void BuildPackage(PackageManifest manifest, string source, string output, string key)
-    { var json = output + ".json"; File.WriteAllText(json, JsonSerializer.Serialize(manifest, InstallerJson.Options)); PackageBuilder.Build(json, source, output, new() { SigningKeyPath = key }); }
+    { manifest.LegalDocuments ??= LegalFixture.For(manifest.Id); var json = output + ".json"; File.WriteAllText(json, JsonSerializer.Serialize(manifest, InstallerJson.Options)); PackageBuilder.Build(json, source, output, new() { SigningKeyPath = key }); }
     internal void Guard()
     {
         if (Path.GetDirectoryName(Path.GetFullPath(Root)) != Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) ||

@@ -6,6 +6,7 @@ param(
     [string]$Version,
     [string]$OutputDirectory,
     [string]$SigningKey,
+    [string]$LegalDocuments,
     [string]$CertificateThumbprint,
     [string]$PackageCache,
     [string]$PreviousPackage,
@@ -13,6 +14,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
+if (-not $LegalDocuments) { $LegalDocuments = Join-Path $projectRoot 'legal/heirowinstaller/legal-documents.json' }
+$LegalDocuments = [IO.Path]::GetFullPath($LegalDocuments)
+if (-not (Test-Path -LiteralPath $LegalDocuments -PathType Leaf)) { throw 'Supply the actual heirowInstaller Privacy Policy and Terms and Conditions as legal document JSON.' }
 $sourceCommit = (& git -C $projectRoot rev-parse --verify HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'Build from the committed heirowInstaller repository so release provenance can be recorded.' }
 if (-not $Version) { $Version = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version }
@@ -67,6 +71,14 @@ foreach ($publishedDirectory in @($appDirectory,$cliDirectory,$updaterDirectory)
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $payloadDirectory 'LICENSE')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination (Join-Path $payloadDirectory 'THIRD-PARTY-NOTICES.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'publishers') -Destination (Join-Path $payloadDirectory 'publishers') -Recurse -Force
+foreach ($ownApp in @('heirowinstaller','heirowUpdater')) {
+    $legalSource = Join-Path $projectRoot ("legal/" + $ownApp)
+    $legalTarget = Join-Path $payloadDirectory ("legal/" + $ownApp)
+    New-Item -ItemType Directory -Path $legalTarget -Force | Out-Null
+    foreach ($document in @('privacy-policy.txt','terms-and-conditions.txt','legal-documents.json')) {
+        Copy-Item -LiteralPath (Join-Path $legalSource $document) -Destination (Join-Path $legalTarget $document)
+    }
+}
 $packageCacheRoot = if ($PackageCache) { [IO.Path]::GetFullPath($PackageCache) } elseif ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget/packages' }
 $noticesDirectory = Join-Path $payloadDirectory 'ThirdParty'
 New-Item -ItemType Directory -Path $noticesDirectory -Force | Out-Null
@@ -101,7 +113,7 @@ $manifestPath = Join-Path $OutputDirectory 'installer.json'
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
 $package = Join-Path $OutputDirectory "heirowInstaller-$Version.hinst"
 $setup = Join-Path $OutputDirectory "heirowInstaller-$Version-Setup.exe"
-$packArguments = @('pack',$manifestPath,'--source',$payloadDirectory,'--output',$package)
+$packArguments = @('pack',$manifestPath,'--source',$payloadDirectory,'--output',$package,'--legal-documents',$LegalDocuments)
 if ($SigningKey) { $packArguments += @('--sign-key',[IO.Path]::GetFullPath($SigningKey)) }
 & $cli @packArguments
 if ($LASTEXITCODE -ne 0) { throw 'Self-package build failed.' }

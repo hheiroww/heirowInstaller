@@ -466,6 +466,7 @@ internal sealed partial class AppController : IDisposable
         {
             var signingKey = Environment.GetEnvironmentVariable("HEIROWINSTALLER_SIGNING_KEY_PATH");
             signingKey = string.IsNullOrWhiteSpace(signingKey) ? null : signingKey;
+            var legal = await LegalForBuildAsync(manifest);
             PackageManifest result;
             if (output.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
@@ -476,11 +477,12 @@ internal sealed partial class AppController : IDisposable
                 {
                     SourceDirectory = project ? null : source, ApplicationProjectPath = project ? source : null,
                     LauncherPath = Environment.GetEnvironmentVariable("HEIROWINSTALLER_LAUNCHER_PATH") ?? Environment.ProcessPath,
-                    SigningKeyPath = signingKey, UpdateCompanionExecutablePath = string.IsNullOrEmpty(updater) ? null : updater
+                    SigningKeyPath = signingKey, UpdateCompanionExecutablePath = string.IsNullOrEmpty(updater) ? null : updater,
+                    LegalDocuments = legal
                 }, Reporter(), Cancellation.Token);
                 result = built.Manifest;
             }
-            else result = await Task.Run(() => PackageBuilder.Build(manifest, source, output, new() { SigningKeyPath = signingKey }));
+            else result = await Task.Run(() => PackageBuilder.Build(manifest, source, output, new() { SigningKeyPath = signingKey, LegalDocuments = legal }));
             await game.OnUiAsync(() => { BuiltPackagePath = Path.GetFullPath(output); End(signingKey is null ? "Installer built and verified" : "Signed installer built and verified", $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes"); });
         }
         catch (Exception error) { await ErrorAsync("Build failed", error); }
@@ -496,7 +498,12 @@ internal sealed partial class AppController : IDisposable
             var token = PublisherSignedIn ? publisherSession!.AccessToken : Environment.GetEnvironmentVariable("SOCKETJACK_PUBLISHER_TOKEN");
             var cookie = PublisherSignedIn ? null : Environment.GetEnvironmentVariable("SOCKETJACK_PUBLISHER_COOKIE");
             if (string.IsNullOrWhiteSpace(token) && string.IsNullOrWhiteSpace(cookie)) throw new InvalidOperationException("Sign in as an authorized SocketJack publisher, or supply SOCKETJACK_PUBLISHER_TOKEN or SOCKETJACK_PUBLISHER_COOKIE through your environment. Credentials are never saved in the project or desktop settings.");
-            using (var reader = PackageReader.Open(path)) await reader.VerifyAsync(cancellationToken: Cancellation!.Token);
+            await Task.Run(async () =>
+            {
+                using var reader = PackageReader.Open(path);
+                RequireMatchingLegalDraft(reader.Manifest);
+                await reader.VerifyAsync(cancellationToken: Cancellation!.Token);
+            }, Cancellation!.Token);
             using var publisher = new PublisherClient(new Uri("https://socketjack.com"), bearerToken: token, sessionCookie: cookie);
             await publisher.PublishAsync(path, Cancellation!.Token, ReleaseNotes);
             await game.OnUiAsync(() => End("Release published", "SocketJack accepted your verified package and generated its update feed."));

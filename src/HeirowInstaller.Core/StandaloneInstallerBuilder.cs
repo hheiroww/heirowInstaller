@@ -18,6 +18,7 @@ public sealed class StandaloneBuildOptions
     public string Configuration { get; set; } = "Release";
     public string Runtime { get; set; } = "win-x64";
     public string? Framework { get; set; }
+    public PackageLegalDocuments? LegalDocuments { get; set; }
 }
 
 public sealed class StandaloneBuildResult
@@ -46,6 +47,10 @@ public static class StandaloneInstallerBuilder
             (options.SigningKeyPath is { } key && outputPath.Equals(Path.GetFullPath(key), StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Installer output must differ from the launcher, manifest, and signing key.");
         var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath), InstallerJson.Options) ?? throw new InvalidDataException("Application manifest is empty.");
+        manifest.LegalDocuments = LegalDocumentRules.PrepareForCreation(manifest.Id, options.LegalDocuments is { } suppliedLegal
+            ? new() { PrivacyPolicy = suppliedLegal.PrivacyPolicy ?? manifest.LegalDocuments?.PrivacyPolicy,
+                TermsAndConditions = suppliedLegal.TermsAndConditions ?? manifest.LegalDocuments?.TermsAndConditions }
+            : manifest.LegalDocuments);
         PackageSafety.EnsureNoReparsePoints(outputPath);
         var work = Path.Combine(Path.GetTempPath(), "heirowInstaller-build-" + Guid.NewGuid().ToString("N"));
         var payload = Path.Combine(work, "payload"); Directory.CreateDirectory(payload);

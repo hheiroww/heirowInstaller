@@ -1,0 +1,33 @@
+heirowInstaller - Privacy Policy
+Effective: 2026-10-28
+Last updated: 2026-10-28
+
+BUILDING AND INSTALLING
+
+heirowInstaller reads the manifest, selected payload files, source document files and release settings needed to create an installer. Building processes filenames, sizes, checksums, product/version information, features, prerequisites, registry/service/shortcut definitions and the Terms and Privacy Policy content you provide. A built package contains the selected payload and its signed metadata, including those legal documents. Local build input is not automatically public merely because a package was built.
+
+Installing, updating, repairing or removing software reads installed state and applies the package's declared operations. Local receipts, integrity information, repair caches, logs and optional updater configuration support those actions. They can include app names, paths, versions, process/resource information and technical errors. Installer maintenance state and independent application/user data have different lifecycles; uninstalling is not a promise to erase all user data, logs or recovery material.
+
+PUBLISHING AND PUBLIC LEGAL DOCUMENTS
+
+Signing in to a SocketJack publisher uses your authorized account, publisher permissions and protected session information. Uploading sends the selected package, release notes and product/release metadata to SocketJack for validation, storage and distribution. Retained releases, metadata and upload/staging data are included in the account's storage accounting. Interrupted uploads and release history follow the service's retention and cleanup behavior rather than disappearing when the browser closes.
+
+Terms and Privacy Policy content can be typed, pasted, imported from a supported text file or autofilled from the app's saved documents. Publishing requires both documents. Their content is included in the signed package. Public hosted document pages display the published content and associated app/publisher attribution even if installer download access is restricted. Do not put credentials, private customer information or confidential application details in public legal documents or release notes.
+
+Changing saved document drafts does not rewrite an already signed or published immutable package. A release must contain the documents that it presents; a changed document can require rebuilding and signing a new package through the authorized authoring flow. Older release copies can retain the document version they originally contained.
+
+UPDATES, AUTHENTICATION AND SUPPORT
+
+A version-only check contacts the publisher's product catalog; installed/current version comparison can occur locally without launching an installer. Downloads contact the release service. Protected SocketJack downloads use the active account session and the registered authorization flow when a session must be renewed. Credentials do not belong in manifests, release notes or legal document content.
+
+The optional shared heirowUpdater runtime and its per-application configuration have the additional notice at https://socketjack.com/heirowInstaller/PrivacyPolicy/heirowUpdater. Support submissions contain the text and attachments you choose to send. Independent app publishers are responsible for accurately describing their own applications; the presence of a policy document is not an audit or certification of its claims.
+
+SHARED SERVICE, RETENTION AND YOUR CHOICES
+
+When you use SocketJack-hosted features, the shared account and website practices at https://socketjack.com/privacy/ also apply. They explain identity providers, cookies, account security, service providers, usage accounting, operational records and requests. The operator is heirow, through SocketJack. Hosting, delivery and providers you select process information needed for those features. Processing can occur in the countries where those services operate.
+
+Portal request logs and visitor analytics are currently pruned after 30 days, with capacity limits that can remove older records sooner. Account records, saved files, messages, release history, support records, usage accounting and backups have separate lifecycles. There is no single automatic deletion deadline for all of them. Signing out, closing an app or uninstalling software does not delete hosted records, files outside the installation directory or other people's copies.
+
+Use the relevant sharing, deletion, account and provider controls. You can request access, correction, deletion or information about retained records at admin@socketjack.com. Include the app name and relevant username; do not send passwords, tokens or recovery codes. We may need to verify control of the account. Applicable rights and limitations depend on your location and the information involved. Backup, security and legal records can remain where needed; received or downloaded copies outside our control cannot be recalled.
+
+We update this page's date when these practices change. Publishing a new notice does not turn on optional features or establish consent to a new use. Review the choices shown by the feature you use.

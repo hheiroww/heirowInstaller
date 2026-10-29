@@ -60,6 +60,8 @@ function Assert-Check([bool]$Condition,[string]$Description) {
     $checks.Add($Description)
 }
 function Invoke-FixtureProcess([string]$Executable,[string[]]$Arguments,[string]$Name,[int[]]$SuccessCodes = @(0,3010)) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Executable $Arguments
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true

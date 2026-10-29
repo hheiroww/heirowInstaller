@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace HeirowInstaller.Core;
 
@@ -11,6 +12,8 @@ public sealed class WixBuildOptions
     public string? MsBuildExecutable { get; set; }
     public string Configuration { get; set; } = "Release";
     public string Architecture { get; set; } = "x64";
+    public string? ProductId { get; set; }
+    public PackageLegalDocuments? LegalDocuments { get; set; }
     public string? WorkingDirectory { get; set; }
     public bool Restore { get; set; } = true;
     public List<string> Sources { get; set; } = [];
@@ -31,6 +34,8 @@ public sealed class WixBuildResult
     public string Sha256 { get; set; } = "";
     public List<string> OutputFiles { get; set; } = [];
     public long ElapsedMilliseconds { get; set; }
+    public string? LegalDocumentsPath { get; set; }
+    public bool LegalDocumentsEmbedded => false;
 }
 
 public sealed class WixBuildException(int exitCode, string diagnostics) : IOException($"The WiX build backend exited with code {exitCode}.{System.Environment.NewLine}{diagnostics}")
@@ -52,6 +57,11 @@ public static class WixCompiler
             throw new ArgumentException("compile requires a .wxs source or .wixproj project.");
         var kind = Path.GetExtension(outputPath).ToLowerInvariant() switch
         { ".msi" => "Package", ".msm" => "Module", ".msp" => "Patch", ".exe" => "Bundle", ".wixlib" => "Library", _ => throw new ArgumentException("WiX output must be .msi, .msm, .msp, .exe, or .wixlib.") };
+        if (kind is "Package" or "Patch" or "Bundle")
+        {
+            PackageSafety.ValidateId(options.ProductId ?? "");
+            LegalDocumentRules.RequireForCreation(new() { LegalDocuments = options.LegalDocuments });
+        }
         if (options.Architecture is not ("x86" or "x64" or "arm64")) throw new ArgumentException("WiX architecture must be x86, x64, or arm64.");
         if (inputPath.Equals(outputPath, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Compiler output must differ from its input.");
         if (project && options.Sources.Count + options.Extensions.Count + options.BindPaths.Count + options.IncludeDirectories.Count + options.LocalizationFiles.Count > 0)
@@ -119,6 +129,17 @@ public static class WixCompiler
             if (!File.Exists(stagedOutput)) throw new IOException("The backend reported success but did not produce the requested output: " + Path.GetFileName(outputPath));
             PackageSafety.EnsureNoReparsePoints(stagedOutput);
             var result = new WixBuildResult { InputPath = inputPath, OutputPath = outputPath, Sha256 = PackageSafety.HashFile(stagedOutput) };
+            if (kind is "Package" or "Patch" or "Bundle")
+            {
+                // The external compiler's signed MSI/Burn artifact is unchanged. This is an explicit intermediate,
+                // not an embedded-document claim. Import/wrap it to publish a signed heirowInstaller package.
+                await File.WriteAllTextAsync(stagedOutput + ".legal.json", JsonSerializer.Serialize(new
+                {
+                    productId = options.ProductId, legalDocuments = options.LegalDocuments,
+                    embedded = false, requiresManagedWrapper = true
+                }, InstallerJson.Options), cancellationToken);
+                result.LegalDocumentsPath = outputPath + ".legal.json";
+            }
             // Detached cabinets and symbols remain beside the compiled artifact; original project files are never rewritten.
             foreach (var file in Directory.EnumerateFiles(stage, "*", SearchOption.TopDirectoryOnly).Order(StringComparer.OrdinalIgnoreCase))
             {

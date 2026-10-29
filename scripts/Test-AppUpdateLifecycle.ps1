@@ -29,6 +29,8 @@ $secret = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::
 $prefixMarker = Join-Path $run 'untrusted-prefix-executed.txt'
 function Assert-Check([bool]$Condition, [string]$Description) { if (-not $Condition) { throw $Description }; $checks.Add($Description) }
 function Invoke-Child([string]$Exe, [string[]]$Arguments, [string]$Name, [int[]]$ExpectedCodes = @(0,3010)) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Exe $Arguments
     $start = [Diagnostics.ProcessStartInfo]::new($Exe); $start.UseShellExecute = $false; $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true; $start.WorkingDirectory = $run
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }

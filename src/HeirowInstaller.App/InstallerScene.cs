@@ -24,6 +24,12 @@ internal sealed partial class InstallerScene : Scene
     private int activityPage;
     private bool confirmUninstall;
     private bool showLicense;
+    private bool showLegalEditor;
+    private bool showPackageLegal;
+    private bool legalPrivacy = true;
+    private int legalTextPage;
+    private RectangleElement? legalBusyIndicator;
+    private float legalBusyX, legalBusyY, legalBusyWidth;
     private bool showWizardDetails;
     internal int ArtworkDecodeCount { get; private set; }
     internal int RebuildCount { get; private set; }
@@ -84,6 +90,11 @@ internal sealed partial class InstallerScene : Scene
                 busyProgress.Margin = new((int)busyProgress.Position.X, (int)busyProgress.Position.Y, 0, 0);
             }
             if (busyElapsed is not null) busyElapsed.Text = $"{busySeconds:0}s elapsed";
+            if (legalBusyIndicator is not null)
+            {
+                legalBusyIndicator.Position = new(legalBusyX + legalBusyWidth * .82f * (float)((Math.Sin(busySeconds * 3) + 1) / 2), legalBusyY);
+                legalBusyIndicator.Margin = new((int)legalBusyIndicator.Position.X, (int)legalBusyIndicator.Position.Y, 0, 0);
+            }
         }
         else busySeconds = 0;
         base.Tick(gameTime);
@@ -95,6 +106,7 @@ internal sealed partial class InstallerScene : Scene
         statusTitle = statusDetail = progressPercent = progressDetail = null;
         progressBar = null;
         busyProgress = null; busyElapsed = null;
+        legalBusyIndicator = null;
         usedArtwork.Clear();
         var previousRoot = root;
         var previousControls = controls.ToArray();
@@ -119,6 +131,7 @@ internal sealed partial class InstallerScene : Scene
             BuildStatus();
             if (confirmUninstall) BuildUninstallConfirmation();
             if (showLicense) BuildLicense();
+            if (showLegalEditor || showPackageLegal) BuildLegalDocuments();
             if (showWizardDetails) BuildWizardDetails();
             if (Controller.RunningApplicationsDialog is not null) BuildRunningApplicationsDialog();
             AddElement(root);

@@ -254,7 +254,7 @@ await Test("wrong feed manifest binding and opaque legacy backends are refused",
     var legacySource = Path.Combine(fixture.Root, "legacy-source"); Directory.CreateDirectory(legacySource); File.WriteAllText(Path.Combine(legacySource, "original.msi"), "fixture database bytes only");
     foreach (var version in new[] { "1.0.0", "2.0.0" })
     {
-        var manifest = new PackageManifest { Id = "opaque.fixture", Name = "Opaque fixture", Publisher = "Fixture", Version = version, LegacyMsi = new() { PayloadPath = "original.msi" } };
+        var manifest = new PackageManifest { Id = "opaque.fixture", Name = "Opaque fixture", Publisher = "Fixture", Version = version, LegalDocuments = LegalFixture.For("opaque.fixture"), LegacyMsi = new() { PayloadPath = "original.msi" } };
         var file = Path.Combine(fixture.Root, "legacy-" + version + ".json"); File.WriteAllText(file, JsonSerializer.Serialize(manifest, InstallerJson.Options));
         PackageBuilder.Build(file, legacySource, Path.Combine(fixture.Root, "legacy-" + version + ".hinst"), new() { SigningKeyPath = fixture.Key });
     }
@@ -434,7 +434,7 @@ sealed class PackageFixture : IDisposable
             var files = new List<PayloadFile> { new() { Source = "common.dat", Path = "common.dat" }, new() { Source = "app.bin", Path = "app.bin" }, new() { Source = "addon.bin", Path = "addon.bin", Feature = "addon" } };
             if (version == "1.0.0") { File.WriteAllText(Path.Combine(directory, "removed.txt"), "old owned file"); files.Add(new() { Source = "removed.txt", Path = "removed.txt" }); }
             else { Directory.CreateDirectory(Path.Combine(directory, "new")); File.WriteAllText(Path.Combine(directory, "new", "created.txt"), "new owned file"); files.Add(new() { Source = "new/created.txt", Path = "new/created.txt" }); }
-            var manifest = new PackageManifest { Id = Id, Name = "Isolated incremental fixture", Version = version, Publisher = "Fixture", EntryPoint = "app.bin", Payload = files, Features = [new() { Id = "addon", Name = "Optional addon", Default = false }] };
+            var manifest = new PackageManifest { Id = Id, Name = "Isolated incremental fixture", Version = version, Publisher = "Fixture", EntryPoint = "app.bin", LegalDocuments = LegalFixture.For(Id), Payload = files, Features = [new() { Id = "addon", Name = "Optional addon", Default = false }] };
             if (components)
             {
                 manifest.InstallationRoots = [new() { Id = "vst3", KnownFolder = "commonFiles64", RelativeDirectory = "VST3/IncrementalFixture.vst3" }];

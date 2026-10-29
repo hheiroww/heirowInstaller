@@ -59,6 +59,8 @@ function Finish-Owned([object]$Owned, [int[]]$Codes = @(0, 3010)) {
     return $output
 }
 function Invoke-Owned([string]$Executable, [string[]]$Arguments, [string]$Name) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Executable $Arguments
     $owned = Start-Owned $Executable $Arguments $Name; Finish-Owned $owned
 }
 function Install-Fixture([string]$Name) {

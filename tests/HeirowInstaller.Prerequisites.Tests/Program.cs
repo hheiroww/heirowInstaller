@@ -90,7 +90,7 @@ try
         Check(!await WindowsIntegration.InstallPrerequisitesAsync(installed, plan, temporary, options, null, default), "Read-only local runtime detection skips installer execution before the isolated guard");
     }
     var source = Path.Combine(temporary, "package-source"); Directory.CreateDirectory(source); File.WriteAllText(Path.Combine(source, "prerequisite.exe"), "inert signed-payload fixture, never executed");
-    var authoring = new PackageManifest { Id = "prerequisite.format.fixture", Name = "Prerequisite format fixture", Publisher = "Fixture", Version = "1.0.0",
+    var authoring = new PackageManifest { Id = "prerequisite.format.fixture", Name = "Prerequisite format fixture", Publisher = "Fixture", Version = "1.0.0", LegalDocuments = LegalFixture.For("prerequisite.format.fixture"),
         Prerequisites = [new() { Id = "desktop.fixture", Name = "Desktop10", Detection = dotnet, Executable = "prerequisite.exe" }] };
     var json = Path.Combine(temporary, "format.json"); File.WriteAllText(json, JsonSerializer.Serialize(authoring, InstallerJson.Options));
     var packagePath = Path.Combine(temporary, "format.hinst"); PackageBuilder.Build(json, source, packagePath);

@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)][string]$OutputDirectory,
     [string]$SigningKey,
     [string]$Updater,
+    [Parameter(Mandatory)][string]$LegalDocumentsDirectory,
     [string[]]$ProductId
 )
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,8 @@ foreach ($product in $products) {
     if ($ProductId -and $product.id -notin $ProductId) { continue }
     if ($product.id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$' -or $product.version -notmatch '^\d+(\.\d+){0,3}$') { throw 'Unsafe product ID/version in inventory.' }
     if ($product.kind -notin @('msi','exe')) { throw "Unsupported installer kind: $($product.kind)" }
+    $legalDocuments = Join-Path ([IO.Path]::GetFullPath($LegalDocumentsDirectory)) ($product.id + '.json')
+    if (-not (Test-Path -LiteralPath $legalDocuments -PathType Leaf)) { throw "Supply this application's actual Privacy Policy and Terms and Conditions: $legalDocuments" }
     if ($Updater -and (-not $product.entryPoint -or -not $product.installDirectory)) { throw "App-local updates require the reviewed application root and entryPoint: $($product.id)" }
     if ($Updater -and $product.kind -eq 'exe' -and -not $product.maintenanceRegistration) { throw "App-local updates require the executable backend's exact maintenanceRegistration: $($product.id)" }
     $source = Get-Item -LiteralPath $product.sourcePath -ErrorAction Stop
@@ -68,7 +71,7 @@ foreach ($product in $products) {
     $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
     $package = Join-Path $directory "$($product.id)-$($product.version).hinst"
     $setup = Join-Path $directory "$($product.id)-$($product.version)-heirowInstaller-Setup.exe"
-    $packArguments = @('pack',$manifestPath,'--source',$payloadDirectory,'--output',$package)
+    $packArguments = @('pack',$manifestPath,'--source',$payloadDirectory,'--output',$package,'--legal-documents',$legalDocuments)
     if ($SigningKey) { $packArguments += @('--sign-key',[IO.Path]::GetFullPath($SigningKey)) }
     Write-Host "Packaging $($product.name) $($product.version)"
     & $Cli @packArguments *> (Join-Path $directory 'pack.log')

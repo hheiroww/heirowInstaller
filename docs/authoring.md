@@ -1,5 +1,7 @@
 # Application installer authoring
 
+New creation requires both actual [Privacy Policy and Terms and Conditions](legal-documents.md). Type or paste the text, import UTF-8 files, or load a saved publisher draft. The signed package contains both texts and public URLs; rebuilding is required after edits.
+
 A distributed application setup can be one `.exe` containing its installer runtime and verified payload. The recipient does not need an installed copy of heirowInstaller, the .NET SDK, or the WiX compiler. The application's own native prerequisites still need to be embedded or authored explicitly.
 
 The application entry point is protected by a running-application consent step. Declare exact `affectedResources` for external plugin binaries so their hosts can be listed safely before maintenance; see [running applications](running-applications.md) for authoring and SDK callbacks.

@@ -58,7 +58,7 @@ static async Task LifecycleAsync(string root, Action<bool, string> check)
             .Concat(delegated ? new Dictionary<string, object?> { ["outerPublisherPin"] = outerPin ?? pin } : []).ToDictionary(x => x.Key, x => x.Value));
     var manifest = new PackageManifest
     {
-        Id = "test.securityloader.delivery", Name = "Encrypted delivery fixture", Publisher = "Test fixture", Version = "1.0.0", Scope = "user",
+        Id = "test.securityloader.delivery", Name = "Encrypted delivery fixture", Publisher = "Test fixture", Version = "1.0.0", Scope = "user", LegalDocuments = LegalFixture.For("test.securityloader.delivery"),
         Payload = new[] { "critical.sjsl", "bootstrap.json", "bootstrap.sig", "bootstrap.pub" }.Select(p => new PayloadFile { Source = "SecurityLoader/" + p, Path = "SecurityLoader/" + p }).ToList(),
         Modules = new() { ["SocketJackSecurityLoader"] = Descriptor(componentDigest) }
     };

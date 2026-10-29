@@ -49,7 +49,10 @@ internal sealed partial class InstallerScene
         };
         if (Controller.IsMaintenanceWizard) subtitle = Controller.Stage == SetupStage.Complete ? "Choose Finish to close setup." :
             Controller.Stage == SetupStage.Progress ? "Keep this window open while setup finishes." : "Only this application's installation will be changed.";
-        Text(subtitle, Left + 1, 83, BodyWidth - 2, 27, 10.5f, Theme.Muted);
+        Text(subtitle, Left + 1, 83, BodyWidth - (Controller.Manifest?.LegalDocuments is null ? 2 : 195), 27, 10.5f, Theme.Muted);
+        if (Controller.Manifest?.LegalDocuments is not null)
+            Action("wizard.legal", "Privacy & terms", Width - 213, 75, 179, () =>
+            { showPackageLegal = true; showLegalEditor = false; legalTextPage = 0; Controller.Notify(); });
         Box(Left, 120, BodyWidth, 1, Theme.Border, 0, Color.Transparent);
     }
 

@@ -1,5 +1,7 @@
 # Modular installer and updater SDK
 
+New `PackageBuilder`, standalone, imported-installer, bundle and incremental-target creation requires `PackageManifest.LegalDocuments`. Supply both actual texts through `PackageLegalDocuments`; `LegalDocumentRules.PrepareForCreation` computes their UTF-8 size and SHA256. [The legal document contract](legal-documents.md) covers text/file input, saved publisher drafts and legacy compatibility.
+
 The public .NET projects can be referenced independently. The native UI is a consumer of the same Core API used by the CLI.
 
 ```csharp

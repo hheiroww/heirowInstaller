@@ -1,0 +1,32 @@
+heirowInstaller - Terms and Conditions
+Effective: 2026-10-28
+Last updated: 2026-10-28
+
+APPLICATION TERMS
+
+heirowInstaller and its open-source components retain the software licenses shipped with them, including the project's MIT license. These hosted-service terms do not replace or narrow the rights granted by those licenses.
+
+Publish only software, assets, release notes and legal documents you are entitled and authorized to distribute. Keep signing credentials private and use the correct publisher identity. You are responsible for the accuracy of your app's Terms and Privacy Policy, its declared installation behavior, the selected payload and any third-party notices. Merely including documents is not a legal, security or privacy certification.
+
+New installer creation and publication require both Terms and Privacy Policy content. You can type, paste or import supported text, and reuse saved app documents. Documents included in a signed release are part of that release; editing a saved draft does not rewrite an immutable published package. Public hosted legal pages are intended to be read without sign-in. Review them before publishing confidential or personal information.
+
+Publisher access, product authorization, storage limits, validation, signatures and protected-download permissions continue to apply. An upload is not published until the service reports completion. Maintain backups and verify releases before promoting downloads. End-user applications remain subject to their own licenses and policies.
+
+SHARED SERVICE CONDITIONS
+
+SocketJack is operated by heirow. For SocketJack-hosted accounts, publishing, storage, collaboration and delivery, also read https://socketjack.com/terms/ and https://socketjack.com/privacy/. Those documents describe account security, acceptable use, data processing, permissions, availability, ending access and verified requests. A shared account does not automatically grant publisher, beta, administrator or another application's permissions.
+
+Provide information and content you are entitled to use. Do not impersonate others, distribute malicious files, evade authorization or quotas, misuse private information or interfere with the service. Protect your account and signing credentials. Optional providers, storage, sharing, AI and update features have their own controls; reading these documents does not enable them.
+
+No unspecified payment is authorized by downloading, reading these terms or creating an account. If a paid feature is offered, its price and purchase terms must be shown separately. Third-party services and software have their own agreements. Development features are provided as available, subject to applicable license terms; nothing here excludes rights or responsibilities that applicable law does not permit to be excluded.
+
+You may stop using a feature, revoke available sharing/provider access, sign out or contact admin@socketjack.com about account access and deletion. Security, abuse prevention, applicable obligations or service maintenance can require restricting hosted access. Local files, downloaded copies, retained security/support records and backups are subject to their separate controls and lifecycles.
+
+We publish revisions with a date. Where a material change needs a new agreement, it must be presented through an appropriate service flow. A previous acknowledgement is not acceptance of undisclosed future terms. Privacy notices describe data practices and are not blanket consent to unrelated processing.
+
+CONTACT
+
+For questions about these terms, content, privacy or account requests, contact heirow at admin@socketjack.com. Include the relevant app and username. Do not send passwords, session cookies, private keys or recovery codes.
+
+Privacy Policy: https://socketjack.com/heirowInstaller/PrivacyPolicy/heirowInstaller
+Terms and Conditions: https://socketjack.com/heirowInstaller/TermsAndConditions/heirowInstaller

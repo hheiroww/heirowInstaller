@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
+using HeirowInstaller.Core;
 
 namespace HeirowInstaller.Publishing;
 
@@ -83,6 +84,22 @@ public sealed partial class PublisherClient : IDisposable
         // Hash and upload the same open file, denying writers while it is read.
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (file.Length == 0) throw new InvalidDataException("Package is empty.");
+        // The server independently validates opaque sealed delivery after its existing trusted preparation flow.
+        // Ordinary packages are checked before any hash/upload, on a worker rather than the publisher UI thread.
+        if (sealedProduct is null)
+            await Task.Run(() =>
+            {
+                if (Path.GetExtension(path).Equals(".hupd", StringComparison.OrdinalIgnoreCase))
+                {
+                    using var update = IncrementalUpdateReader.Open(path);
+                    LegalDocumentRules.RequireForCreation(update.TargetManifest);
+                }
+                else
+                {
+                    using var package = PackageReader.Open(path);
+                    LegalDocumentRules.RequireForCreation(package.Manifest);
+                }
+            }, cancellationToken).ConfigureAwait(false);
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken)).ToLowerInvariant();
         file.Position = 0;
         // Keep failed/cancelled uploads resumable until the server's bounded expiry.
@@ -221,5 +238,7 @@ public sealed class PublishedRelease
     public long? UploadedSize { get; set; }
     public string? ReceiptId { get; set; }
     public string? Status { get; set; }
+    public string? PrivacyPolicyUrl { get; set; }
+    public string? TermsAndConditionsUrl { get; set; }
     public bool Activated => string.Equals(Status, "activated", StringComparison.Ordinal);
 }

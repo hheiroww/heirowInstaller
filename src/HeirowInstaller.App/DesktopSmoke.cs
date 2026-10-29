@@ -6,7 +6,7 @@ using Button = ProjectZ.Shared.Drawing.UI.Input.Button;
 
 namespace HeirowInstaller.App;
 
-internal static class DesktopSmoke
+internal static partial class DesktopSmoke
 {
     internal static async Task RunAsync(InstallerGame game, string directory)
     {
@@ -41,6 +41,7 @@ internal static class DesktopSmoke
                 Description = "An isolated package used to verify the native installer workflow.",
                 EntryPoint = "application/RunningApplicationProbe.exe",
                 LicenseFile = "LICENSE.txt",
+                LegalDocuments = LegalSmokeDocuments(),
                 Features = [new() { Id = "core", Name = "Application files", Description = "Required application components.", Required = true }, new() { Id = "docs", Name = "Documentation", Description = "Optional reference files.", Default = true }],
                 Payload = [new() { Source = "hello.txt", Path = "hello.txt", Feature = "core" }, new() { Source = "readme.txt", Path = "readme.txt", Feature = "docs" }, new() { Source = "LICENSE.txt", Path = "LICENSE.txt", Feature = "core" }]
             };
