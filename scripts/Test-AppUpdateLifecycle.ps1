@@ -56,6 +56,10 @@ function Manual-Events([object]$Session) {
     return @(('['+($text -replace '\}\s*\{','},{')+']')|ConvertFrom-Json)
 }
 function Manual-Renderers([object]$Session) { return @(Manual-Events $Session|Where-Object{$_.kind -eq 'renderer-start'}).Count }
+function Download-Opens([object]$Session) {
+    if(-not(Test-Path -LiteralPath $Session.downloadOpens)){return ,@()}
+    return ,@([IO.File]::ReadAllLines($Session.downloadOpens)|Where-Object{$_})
+}
 function Resolve-FixtureUpdater([object]$Fixture) {
     $profile=Read-Json (Join-Path $Fixture.target 'heirowUpdater.json')
     if(-not $profile){throw 'The fixture updater profile is missing.'}
@@ -68,7 +72,7 @@ function Resolve-FixtureUpdater([object]$Fixture) {
     return $runtime
 }
 function Requests([string]$Path) { @((Get-Content -LiteralPath (Join-Path $run 'requests.jsonl') -ErrorAction SilentlyContinue) | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.path -eq $Path }) }
-function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpone', [bool]$Hosted = $false, [bool]$WithoutWatcher = $false, [bool]$FaultedFeedback = $false) {
+function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpone', [bool]$Hosted = $false, [bool]$WithoutWatcher = $false, [bool]$FaultedFeedback = $false, [bool]$BrowserOpenFails = $false) {
     $ready = Join-Path $run "$Session.ready.json"; $gate = Join-Path $run "$Session.exit.flag"; $manual = Join-Path $run "$Session.manual.flag"
     $status = Join-Path $run "$Session.status.json"; $capture = Join-Path $run "$Session.prompt.png"; $promptReport = Join-Path $run "$Session.prompt.json"
     $choiceFile=Join-Path $run "$Session.choice.txt";[IO.File]::WriteAllText($choiceFile,$Choice)
@@ -88,12 +92,14 @@ function Start-App([object]$Fixture, [string]$Session, [string]$Choice = 'postpo
     $start.Environment['HEIROWUPDATER_TEST_MANUAL_CAPTURE'] = Join-Path $run "$Session.manual.png"
     $start.Environment['HEIROWUPDATER_TEST_MANUAL_REPORT'] = Join-Path $run "$Session.manual.json"
     $start.Environment['HEIROWUPDATER_TEST_MANUAL_EVENTS'] = Join-Path $run "$Session.manual-events.jsonl"
+    $start.Environment['HEIROWUPDATER_TEST_DOWNLOAD_OPEN'] = Join-Path $run "$Session.download-opens.txt"
+    if($BrowserOpenFails){$start.Environment['HEIROWUPDATER_TEST_DOWNLOAD_FAIL']='1'}
     if($WithoutWatcher){$start.Environment['FIXTURE_DISABLE_UPDATER']='1'}
     if($FaultedFeedback){$start.Environment['HEIROWUPDATER_TEST_MANUAL_FAIL_CHILD']='1'}
     $start.Environment['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = Join-Path $run 'bundle-extraction'
     $process = [Diagnostics.Process]::Start($start); $apps.Add($process)
     Wait-For { Test-Path -LiteralPath $ready } "the direct $Session application bootstrap" 30
-    return [pscustomobject]@{process=$process;ready=$ready;gate=$gate;manual=$manual;status=$status;capture=$capture;promptReport=$promptReport;choiceFile=$choiceFile;manualReport=(Join-Path $run "$Session.manual.json");manualEvents=(Join-Path $run "$Session.manual-events.jsonl")}
+    return [pscustomobject]@{process=$process;ready=$ready;gate=$gate;manual=$manual;status=$status;capture=$capture;promptReport=$promptReport;choiceFile=$choiceFile;manualReport=(Join-Path $run "$Session.manual.json");manualEvents=(Join-Path $run "$Session.manual-events.jsonl");downloadOpens=(Join-Path $run "$Session.download-opens.txt")}
 }
 function Close-App([object]$Session) { [IO.File]::WriteAllText($Session.gate, 'exit'); Wait-For { $Session.process.HasExited } 'the exact fixture application to exit' 15 }
 function Confirm-DuplicateWatcher([object]$Fixture, [object]$Session, [string]$Name, [bool]$Hosted = $false) {
@@ -168,7 +174,7 @@ return 0;
             if($version -eq '1.0.0'){$overlay=[Text.Encoding]::UTF8.GetBytes("`nold lifecycle image $runId`n");$file=[IO.File]::Open((Join-Path $source 'FixtureApp.exe'),[IO.FileMode]::Append,[IO.FileAccess]::Write);try{$file.Write($overlay)}finally{$file.Dispose()}}
             Copy-Item -LiteralPath $PublishedUpdaterPath -Destination (Join-Path $source 'heirowUpdater.exe');[IO.File]::WriteAllText((Join-Path $source 'generation.txt'),$version)
             # This lifecycle fixture deliberately exercises legacy full-package feeds; signed file transitions have their own integration suite.
-            $manifest=[ordered]@{formatVersion=1;id=$id;name="Lifecycle app $($tag.ToUpperInvariant())";version=$version;publisher='heirowInstaller acceptance';scope='user';entryPoint='FixtureApp.exe';updateUrl="$origin/$tag.json";features=@(@{id='core';name='Application';required=$true},@{id='updates';name='Optional updates';default=$true});updateCompanion=@{feature='updates';executablePath='heirowUpdater.exe';configurationPath='heirowUpdater.json';mode='after-exit';credentialOrigin=$origin;tokenEnvironmentVariable='HEIROWUPDATER_TOKEN';updateMode='legacy'};payload=@(@{source='FixtureApp.exe';path='FixtureApp.exe';feature='core'},@{source='generation.txt';path='generation.txt';feature='core'},@{source='heirowUpdater.exe';path='heirowUpdater.exe';feature='updates'})}
+            $manifest=[ordered]@{formatVersion=1;id=$id;name="Lifecycle app $($tag.ToUpperInvariant())";version=$version;publisher='heirowInstaller acceptance';homepage='https://socketjack.com/heirowInstaller/#downloads';scope='user';entryPoint='FixtureApp.exe';updateUrl="$origin/$tag.json";features=@(@{id='core';name='Application';required=$true},@{id='updates';name='Optional updates';default=$true});updateCompanion=@{feature='updates';executablePath='heirowUpdater.exe';configurationPath='heirowUpdater.json';mode='after-exit';credentialOrigin=$origin;tokenEnvironmentVariable='HEIROWUPDATER_TOKEN';updateMode='legacy'};payload=@(@{source='FixtureApp.exe';path='FixtureApp.exe';feature='core'},@{source='generation.txt';path='generation.txt';feature='core'},@{source='heirowUpdater.exe';path='heirowUpdater.exe';feature='updates'})}
             $manifestPath=Join-Path $run "$tag-$version.json";[IO.File]::WriteAllText($manifestPath,($manifest|ConvertTo-Json -Depth 9))
             $null=Invoke-LifecycleCli @('pack',$manifestPath,'--source',$source,'--output',(Join-Path $run "$tag-$version.hinst"),'--sign-key',$keyPath) "pack-$tag-$version"
         }
@@ -231,6 +237,7 @@ return 0;
     Wait-For {(Requests '/a.json').Count -eq $beforeManualCurrent+1 -and (Read-Json $manualCurrent.status).status -eq 'waiting-for-exit'} 'manual current check returning to app-exit monitoring'
     $currentUi=Read-Json $manualCurrent.manualReport
     Assert-Check ($currentUi.status -eq 'current' -and $currentUi.visibleTitle -eq "You're up to date." -and $currentUi.closeButtonText -eq 'Close' -and $currentUi.pointerEventsInjected -and $currentUi.renderedFrames -gt 0) 'A relayed manual-current check renders the real native up-to-date label and usable Close action'
+    Assert-Check (-not $currentUi.downloadPageOpened -and (Download-Opens $manualCurrent).Count -eq 0) 'A successful manual check never opens the browser recovery page'
     $currentUiHash=(Get-FileHash -LiteralPath $manualCurrent.manualReport).Hash
     $currentRendererCount=Manual-Renderers $manualCurrent
     Assert-Check (-not $manualCurrent.process.HasExited) 'A manual current-version check leaves the application running and its after-exit watcher active'
@@ -257,7 +264,22 @@ return 0;
     Wait-For {(Read-Json $manualError.manualReport).status -eq 'error' -and (Read-Json $manualError.status).status -eq 'waiting-for-exit'} 'the visible error result followed by watcher retention'
     $errorUi=Read-Json $manualError.manualReport
     Assert-Check ($errorUi.visibleTitle -eq 'Updates need your attention.' -and $errorUi.closeButtonText -eq 'Close' -and $errorUi.pointerEventsInjected -and -not $manualError.process.HasExited -and -not([IO.File]::ReadAllText($manualError.manualReport).Contains($secret))) 'A manual network error visibly renders a safe native result and Close preserves the application and watcher'
-    [IO.File]::Delete($errorFlag);Close-App $manualError;Wait-For {(Read-Json $manualError.status).status -eq 'current'} 'the error owner quiet automatic retry';Wait-CompanionExit $a
+    $downloadPage='https://socketjack.com/heirowInstaller/#downloads'
+    Assert-Check ($errorUi.downloadPageOpened -and $errorUi.downloadPage -eq $downloadPage -and $errorUi.visibleMessage.Contains("We opened this app's SocketJack download page.") -and $errorUi.visibleMessage.Contains($downloadPage) -and (Download-Opens $manualError).Count -eq 1 -and (Download-Opens $manualError)[0] -eq $downloadPage) 'A failed manual check opens its signed SocketJack download page once and visibly explains manual recovery'
+    [IO.File]::Delete($errorFlag);Request-Manual $manualError
+    Wait-For {(Read-Json $manualError.manualReport).status -eq 'current' -and (Read-Json $manualError.status).status -eq 'waiting-for-exit'} 'a successful manual retry after the recovered error'
+    Assert-Check ((Read-Json $manualError.manualReport).requestId -ne $errorUi.requestId -and -not(Read-Json $manualError.manualReport).downloadPageOpened -and (Download-Opens $manualError).Count -eq 1) 'A successful retry uses a fresh request and does not reopen the recovery page'
+    Close-App $manualError;Wait-For {(Read-Json $manualError.status).status -eq 'current'} 'the error owner quiet automatic retry';Wait-CompanionExit $a
+    Assert-Check ((Download-Opens $manualError).Count -eq 1) 'The retained watcher does not duplicate the recovery browser launch after application exit'
+
+    [IO.File]::WriteAllText($errorFlag,'one isolated browser-launch failure')
+    $browserError=Start-App $a 'manual-browser-error' 'postpone' $false $false $false $true
+    Wait-For {(Read-Json $browserError.status).status -eq 'waiting-for-exit'} 'the watcher before a browser-launch failure'
+    Request-Manual $browserError
+    Wait-For {(Read-Json $browserError.manualReport).status -eq 'error' -and (Read-Json $browserError.status).status -eq 'waiting-for-exit'} 'the visible recovery result after a browser-launch failure'
+    $browserErrorUi=Read-Json $browserError.manualReport
+    Assert-Check (-not $browserErrorUi.downloadPageOpened -and $browserErrorUi.downloadPage -eq $downloadPage -and $browserErrorUi.visibleMessage.Contains("We couldn't open your browser.") -and $browserErrorUi.visibleMessage.Contains($downloadPage) -and (Download-Opens $browserError).Count -eq 1 -and -not $browserError.process.HasExited) 'A failed browser launch leaves one visible recovery URL and usable Close without retrying every frame'
+    [IO.File]::Delete($errorFlag);Close-App $browserError;Wait-For {(Read-Json $browserError.status).status -eq 'current'} 'the browser-error owner quiet automatic retry';Wait-CompanionExit $a
 
     $cold=Start-App $a 'manual-cold-child-error' 'postpone' $false $true $true
     Request-Manual $cold
@@ -309,7 +331,7 @@ return 0;
     Close-App $b1;Wait-For {(Read-Json $b1.status).status -eq 'postponed'} 'the separate app B Postpone choice'
     Wait-CompanionExit $a;Wait-CompanionExit $b
     $requests=@(Get-Content -LiteralPath (Join-Path $run 'requests.jsonl') | ForEach-Object {$_|ConvertFrom-Json})
-    Assert-Check (@($requests|Where-Object {$_.status -notin @(200,503) -or -not $_.authenticated -or $_.userAgent -notlike '*SocketJack*'}).Count -eq 0 -and @($requests|Where-Object{$_.status -eq 503}).Count -eq 1) 'The actual bootstrap forwards protected-feed authorization through SocketJack, including the one intended isolated error response'
+    Assert-Check (@($requests|Where-Object {$_.status -notin @(200,503) -or -not $_.authenticated -or $_.userAgent -notlike '*SocketJack*'}).Count -eq 0 -and @($requests|Where-Object{$_.status -eq 503}).Count -eq 2) 'The actual bootstrap forwards protected-feed authorization through SocketJack, including the two intended isolated error responses'
     foreach($fixture in $fixtures){if(-not $uninstalled.Contains($fixture.id) -or $fixture.tag -eq 'off'){$null=Invoke-LifecycleCli @('uninstall',$fixture.id,'--silent','--state-root',$fixture.state,'--scope','user') "uninstall-$($fixture.tag)"}}
     Wait-For {@(Get-CimInstance Win32_Process -Filter "Name='heirowUpdater.exe' OR Name='FixtureApp.exe' OR Name='FixtureHost.exe'" | Where-Object {$_.ExecutablePath -and $_.ExecutablePath.StartsWith($run+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)}).Count -eq 0} 'all owned fixture processes to exit' 30
     Assert-Check (@($fixtures|Where-Object {(Test-Path -LiteralPath (Join-Path $_.state "$($_.id)/receipt.json")) -or (Test-Path -LiteralPath (Join-Path $_.target 'FixtureApp.exe'))}).Count -eq 0) 'All unique fixtures uninstall without active receipts or target executables'

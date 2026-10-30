@@ -165,7 +165,8 @@ internal static class NativeUpdatePrompt
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
                     File.WriteAllText(reportPath, JsonSerializer.Serialize(new { framework = "Project-Z", choice = game.Choice.ToString(), applicationRunning = context.ApplicationRunning,
-                        antiAliasing = 16, anisotropicFiltering = 16, pointerEventsInjected = game.Injected, productId = context.Application.ProductId }, HeirowInstaller.Core.InstallerJson.Options));
+                        antiAliasing = 16, anisotropicFiltering = 16, pointerEventsInjected = game.Injected, productId = context.Application.ProductId,
+                        downloadPage = game.DownloadPage, downloadPageOpened = game.DownloadPageOpened, visibleMessage = game.Message }, HeirowInstaller.Core.InstallerJson.Options));
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 completion.SetResult(game.Choice);
@@ -239,7 +240,7 @@ internal static class NativeUpdatePrompt
             ? "Your SocketJack account does not currently have access to this application's updates. Check the publisher's access requirements, then try again from the app."
             : error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized }
                 ? "SocketJack could not authorize this update request. Sign in from the app and check for updates again."
-                : error.Message;
+                : "The automatic update could not finish. Use the SocketJack download page to install the latest version.";
         var context = new ApplicationUpdatePrompt(profile, new() { CurrentVersion = profile.CurrentVersion, Feed = new() { Version = profile.CurrentVersion, ReleaseNotes = message } }, true);
         return ShowAsync(context, null, null, null, token, configurationPath, failure: true);
     }
@@ -251,6 +252,8 @@ internal static class NativeUpdatePrompt
         private readonly ApplicationUpdatePrompt context;
         private readonly string? acceptanceChoice, capturePath;
         private readonly bool authentication, failure;
+        private readonly NativeDownloadRecovery? recovery;
+        private bool recovering;
         private SceneManager manager = null!;
         private PromptScene scene = null!;
         private SpriteBatch batch = null!;
@@ -258,11 +261,18 @@ internal static class NativeUpdatePrompt
         private bool captured;
         internal bool Injected { get; private set; }
         internal ApplicationUpdateChoice Choice { get; private set; } = ApplicationUpdateChoice.Postpone;
+        internal string? DownloadPage => recovery?.Page?.AbsoluteUri;
+        internal bool DownloadPageOpened => recovery?.Opened == true;
+        internal string Message => (string.IsNullOrWhiteSpace(context.Update.Feed.ReleaseNotes)
+            ? "Your publisher has released an update for this application." : context.Update.Feed.ReleaseNotes) +
+            (recovery?.Page is null ? "" : "\n" + (recovery.Notice.Length == 0
+                ? "Opening this app's SocketJack download page…" : recovery.Notice) + "\n" + recovery.Page.AbsoluteUri);
 
         internal PromptGame(ApplicationUpdatePrompt context, string? acceptanceChoice, string? capturePath, bool authentication, bool failure)
         {
             this.context = context; this.acceptanceChoice = acceptanceChoice; this.capturePath = capturePath;
             this.authentication = authentication; this.failure = failure;
+            recovery = failure ? new NativeDownloadRecovery(context.Application) : null;
             Window.Title = context.Application.Name + " update | heirowUpdater";
             Window.AllowUserResizing = false; IsMouseVisible = true; IsFixedTimeStep = true; TargetElapsedTime = TimeSpan.FromSeconds(1d / 60);
             InactiveSleepTime = TimeSpan.FromMilliseconds(40); Content.RootDirectory = "Content";
@@ -270,6 +280,17 @@ internal static class NativeUpdatePrompt
         }
         internal void Enqueue(Action action) => actions.Enqueue(action);
         internal void Choose(ApplicationUpdateChoice choice) { Choice = choice; Exit(); }
+        internal void OpenDownloadPage()
+        {
+            if (recovery is null || recovering) return;
+            recovering = true;
+            _ = OpenAsync();
+            async Task OpenAsync()
+            {
+                await recovery.OpenAsync();
+                Enqueue(() => { recovering = false; captured = false; scene.UpdateMessage(Message); });
+            }
+        }
         protected override void LoadContent()
         {
             batch = new SpriteBatch(GraphicsDevice);
@@ -282,10 +303,11 @@ internal static class NativeUpdatePrompt
         protected override void Update(GameTime time)
         {
             while (actions.TryDequeue(out var action)) action();
+            if (frames > 0 && recovery is { Page: not null, Attempted: false }) OpenDownloadPage();
             manager.Tick(time);
             if (frames > 20 && frames % 20 == 0 && !context.ApplicationRunning && ApplicationProcesses.AnyRunning(Path.Combine(context.Application.InstallDirectory, context.Application.EntryPoint), context.HostExecutable, ApplicationHostRegistry.Paths(context.Application)))
                 Choose(ApplicationUpdateChoice.ApplicationReopened);
-            if (acceptanceChoice is not null && !Injected && frames > 30 && (capturePath is null || captured))
+            if (acceptanceChoice is not null && !Injected && !recovering && frames > 30 && (capturePath is null || captured))
             {
                 Injected = true; var rectangle = scene.Button(acceptanceChoice).Rectangle; var x = rectangle.Center.X; var y = rectangle.Center.Y;
                 manager.InjectMouseMove(x, y, 780, 510); manager.InjectMouseLeftDown(x, y, 780, 510); manager.InjectMouseLeftUp(x, y, 780, 510);
@@ -314,6 +336,8 @@ internal static class NativeUpdatePrompt
         private readonly RectangleElement root;
         private readonly Dictionary<string, Button> buttons = [];
         internal Button Button(string key) => buttons[key];
+        private readonly Textbox notes;
+        internal void UpdateMessage(string message) => notes.Text = message;
         internal PromptScene(SceneManager manager, PromptGame game, ApplicationUpdatePrompt context, bool authentication, bool failure) : base(manager)
         {
             BackgroundColor = Background; EnableDesignTimeControls = false; isCursorVisible = false;
@@ -327,11 +351,12 @@ internal static class NativeUpdatePrompt
             Label(context.Application.Name, 32, 166, 710, 34, 17, Lime, true);
             Label(failure ? "Your installed application is unchanged." : authentication ? "Your SocketJack session needs approval." : context.Application.CurrentVersion + "   →   " + context.Update.Feed.Version, 33, 207, 710, 27, 11, Muted);
             Box(30, 252, 720, 121, Surface);
-            var notes = Add(new Textbox(this) { Position = new(45, 268), Size = new(690, 89), Font = Font(10.5f), ForegroundColor = TextColor,
+            notes = Add(new Textbox(this) { Position = new(45, 268), Size = new(690, 89), Font = Font(10.5f), ForegroundColor = TextColor,
                 BackgroundColor = Surface, BorderThickness = 0, IsReadOnly = true, TextPadding = Vector2.Zero, AcceptsReturn = true, WrapText = true,
-                Text = string.IsNullOrWhiteSpace(context.Update.Feed.ReleaseNotes) ? "Your publisher has released an update for this application." : context.Update.Feed.ReleaseNotes, Padding = new Thickness(0) });
+                Text = game.Message, Padding = new Thickness(0) });
             Label(failure ? "You can check again from the app when you are ready." : authentication ? "Publisher access rules still apply after sign-in." : context.ApplicationRunning ? "If apps are open, you can close them or cancel before installation." : "The app is closed. Your download is verified before installation.", 32, 387, 710, 26, 9.5f, Muted);
             if (!failure) Action("postpone", authentication ? "Later" : "Postpone 24 hours", 31, 435, 218, Muted, false, () => game.Choose(ApplicationUpdateChoice.Postpone));
+            else if (game.DownloadPage is not null) Action("postpone", "Open download page  ↗", 31, 435, 270, Muted, false, game.OpenDownloadPage);
             Action("update", failure ? "Close" : authentication ? "Sign in  ↗" : "Update now  →", 514, 435, 235, failure ? Orange : Lime, true, () => game.Choose(ApplicationUpdateChoice.UpdateNow));
         }
         private static string Font(float points, bool bold = false) => ContentContainer.SystemFontName("Segoe UI", bold ? 600 : 400, points);

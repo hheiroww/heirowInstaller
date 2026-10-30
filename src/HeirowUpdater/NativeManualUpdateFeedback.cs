@@ -203,7 +203,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         }
         return await RunGameAsync(first with { ProductName = configuration.Name, CurrentVersion = configuration.CurrentVersion }, Current,
             choice, Fixture("HEIROWUPDATER_TEST_MANUAL_CAPTURE"), Fixture("HEIROWUPDATER_TEST_MANUAL_REPORT"), path + ".ack.json",
-            Fixture("HEIROWUPDATER_TEST_MANUAL_EVENTS"), stop.Token);
+            Fixture("HEIROWUPDATER_TEST_MANUAL_EVENTS"), stop.Token, configuration);
     }
 
     internal static void TryActivateExisting(UpdateCompanionConfiguration profile, string? requestId)
@@ -255,7 +255,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         "checking" => "Checking the publisher's update feed. You can keep using your application.",
         "current" => "You have the latest available version. No changes were made to your application.",
         "update-staged" => "An update is already prepared. Continue in the update installer to finish or cancel it.",
-        _ => "We couldn't finish checking for updates. Try again from the app. If the issue continues, contact the publisher."
+        _ => "We couldn't finish the automatic update. You can install the latest version from SocketJack."
     };
 
     private sealed record FeedbackState
@@ -283,7 +283,8 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
     }
 
     private static Task<int> RunGameAsync(FeedbackState first, Func<FeedbackState>? readState, string? choice,
-        string? capture, string? report, string? acknowledgementPath, string? fixtureEvents, CancellationToken token)
+        string? capture, string? report, string? acknowledgementPath, string? fixtureEvents, CancellationToken token,
+        UpdateCompanionConfiguration? recoveryProfile = null)
     {
         var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
@@ -300,7 +301,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
                         PackageSafety.EnsureNoReparsePoints(readyPath);
                         File.WriteAllText(readyPath, first.RequestId);
                     }
-                });
+                }, recoveryProfile is null ? null : new NativeDownloadRecovery(recoveryProfile));
                 using var cancellation = token.Register(() => game.Enqueue(game.Exit));
                 game.Run();
                 var acknowledgement = new FeedbackAcknowledgement { RequestId = first.RequestId, Status = game.Status,
@@ -317,6 +318,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
                         requestId = first.RequestId, productId = first.ProductId, statusesRendered = game.StatusesRendered,
                         visibleTitle = acknowledgement.VisibleTitle, closeButtonText = acknowledgement.CloseButtonText,
                         renderedFrames = acknowledgement.FramesRendered, pointerEventsInjected = game.Injected,
+                        visibleMessage = game.VisibleMessage, downloadPage = game.DownloadPage, downloadPageOpened = game.DownloadPageOpened,
                         antiAliasing = 16, anisotropicFiltering = 16 }, InstallerJson.Options));
                 }
                 completion.SetResult(0);
@@ -334,6 +336,8 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         private readonly Func<FeedbackState>? readState;
         private readonly string? choice, capture;
         private readonly Action rendered;
+        private readonly NativeDownloadRecovery? recovery;
+        private bool recovering;
         private FeedbackState state;
         private SceneManager manager = null!;
         private FeedbackScene scene = null!;
@@ -347,12 +351,17 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         internal int RenderedFrames => statusFrames;
         internal string VisibleTitle => scene.Title.Text;
         internal string CloseButtonText => scene.CloseButton.Text;
+        internal string VisibleMessage => state.Message + (state.Status == "error" && recovery?.Page is not null
+            ? "\n" + (recovery.Notice.Length == 0 ? "Opening this app's SocketJack download page…" : recovery.Notice) + "\n" + recovery.Page.AbsoluteUri : "");
+        internal string? DownloadPage => recovery?.Page?.AbsoluteUri;
+        internal bool DownloadPageOpened => recovery?.Opened == true;
         internal bool Injected { get; private set; }
         internal HashSet<string> StatusesRendered { get; } = [];
-        internal FeedbackGame(FeedbackState state, Func<FeedbackState>? readState, string? choice, string? capture, Action rendered)
+        internal FeedbackGame(FeedbackState state, Func<FeedbackState>? readState, string? choice, string? capture, Action rendered, NativeDownloadRecovery? recovery)
         {
             this.state = state; this.readState = readState; this.choice = choice; this.capture = capture;
             this.rendered = rendered;
+            this.recovery = recovery;
             Window.Title = state.ProductName + " | Check for updates | heirowUpdater";
             Window.AllowUserResizing = false; IsMouseVisible = true; IsFixedTimeStep = true; TargetElapsedTime = TimeSpan.FromSeconds(1d / 60);
             InactiveSleepTime = TimeSpan.FromMilliseconds(40); Content.RootDirectory = "Content";
@@ -360,6 +369,17 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
                 PreferMultiSampling = true, SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
         }
         internal void Enqueue(Action action) => actions.Enqueue(action);
+        internal void OpenDownloadPage()
+        {
+            if (recovery is null || recovering) return;
+            recovering = true;
+            _ = OpenAsync();
+            async Task OpenAsync()
+            {
+                await recovery.OpenAsync();
+                Enqueue(() => { recovering = false; captured = false; statusFrames = 0; Rebuild(); });
+            }
+        }
         protected override void LoadContent()
         {
             batch = new SpriteBatch(GraphicsDevice);
@@ -378,9 +398,10 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         {
             if (!firstFrameAcknowledged && frames > 0) { firstFrameAcknowledged = true; rendered(); }
             while (actions.TryDequeue(out var action)) action();
+            if (frames > 0 && state.Status == "error" && recovery is { Page: not null, Attempted: false }) OpenDownloadPage();
             scene.Animate(time.TotalGameTime.TotalSeconds, state.Status == "checking");
             manager.Tick(time);
-            if (choice == "close" && !Injected && (state.Status is "current" or "error" or "update-staged") && frames > 30 && (capture is null || captured))
+            if (choice == "close" && !Injected && !recovering && (state.Status is "current" or "error" or "update-staged") && statusFrames > 30 && (capture is null || captured))
             {
                 Injected = true; var rectangle = scene.CloseButton.Rectangle;
                 manager.InjectMouseMove(rectangle.Center.X, rectangle.Center.Y, 780, 510);
@@ -458,7 +479,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             Box(30, 252, 720, 121, Surface);
             Add(new Textbox(this) { Position = new(45, 268), Size = new(690, 89), Font = Font(10.5f), ForegroundColor = TextColor,
                 BackgroundColor = Surface, BorderThickness = 0, IsReadOnly = true, TextPadding = Vector2.Zero, AcceptsReturn = true,
-                WrapText = true, Padding = new Thickness(0), Text = state.Message });
+                WrapText = true, Padding = new Thickness(0), Text = game.VisibleMessage });
             if (state.Status == "checking")
             {
                 checkingBar = Add(new RectangleElement(this) { Position = new(45, 363), Size = new(140, 3), BackgroundColor = Lime, Padding = new Thickness(0), isMouseBypassEnabled = true });
@@ -469,6 +490,12 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
                 ForegroundColor = Background, BackgroundColor = Lime, BorderThickness = 0, CornerRadius = 8,
                 MouseOverBackgroundColor = Color.Lerp(Lime, Color.White, .12f), MouseDownBackgroundColor = Color.Lerp(Lime, Color.Black, .12f), Padding = new Thickness(12, 6, 12, 6), isAnimated = false });
             CloseButton.MouseLeftClick += _ => game.Exit();
+            if (state.Status == "error" && game.DownloadPage is not null)
+            {
+                var download = Add(new Button(this) { AutoSize = ButtonAutoSize.None, Text = "Open download page  ↗", Position = new(31, 435), Size = new(270, 44), Font = Font(10.5f, true),
+                    ForegroundColor = TextColor, BackgroundColor = Surface, BorderThickness = 1, CornerRadius = 8, Padding = new Thickness(12, 6, 12, 6), isAnimated = false });
+                download.MouseLeftClick += _ => game.OpenDownloadPage();
+            }
         }
         private static string Font(float points, bool bold = false) => ContentContainer.SystemFontName("Segoe UI", bold ? 600 : 400, points);
         private T Add<T>(T element) where T : SceneElement { element.Margin = new Thickness((int)element.Position.X, (int)element.Position.Y, 0, 0); root.Children.Add(element); return element; }

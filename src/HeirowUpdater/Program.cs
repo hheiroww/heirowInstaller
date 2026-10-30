@@ -41,6 +41,7 @@ Credentials remain in environment variables and are sent only to their exact con
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
         string? helperStatusPath = null;
         string? helperLifecycleStatePath = null;
+        string? helperConfigurationPath = null;
         try
         {
             var parsed = new Arguments(args);
@@ -49,6 +50,7 @@ Credentials remain in environment variables and are sent only to their exact con
             if (command == "show-prompt") return await NativeUpdatePrompt.RunChildAsync(parsed, cancellation.Token);
             if (command == "show-manual-feedback") return await NativeManualUpdateFeedback.RunChildAsync(parsed, cancellation.Token);
             if (command == "show-startup-error") return await NativeManualUpdateFeedback.RunStartupErrorAsync(parsed, cancellation.Token);
+            if (command is "apply-bundle" or "apply-incremental") helperConfigurationPath = parsed.Get("lifecycle-config");
             if (command == "apply-bundle") { helperStatusPath = parsed.Get("status-file"); helperLifecycleStatePath = parsed.Get("lifecycle-state"); return await ApplyBundleAsync(parsed, cancellation.Token); }
             if (command == "apply-incremental") return await ApplyIncrementalAsync(parsed, cancellation.Token,
                 (status, state) => { helperStatusPath = status; helperLifecycleStatePath = state; });
@@ -169,6 +171,16 @@ Credentials remain in environment variables and are sent only to their exact con
             {
                 Console.Error.WriteLine(ex.Message);
                 if (args.Contains("--json", StringComparer.OrdinalIgnoreCase)) Print(new { status = "error", error = ex.Message });
+            }
+            if (helperConfigurationPath is not null && !args.Contains("--no-prompt", StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var profile = ApplicationUpdater.ReadConfiguration(helperConfigurationPath, requireEntryPoint: false);
+                    if (!profile.Isolated) await NativeUpdatePrompt.ShowFailureAsync(profile, helperConfigurationPath, ex, cancellation.Token);
+                }
+                catch (Exception recoveryError) when (recoveryError is not OperationCanceledException)
+                { /* Preserve the installation failure if its recovery window cannot start. */ }
             }
             return ex is ArgumentException ? 2 : 1;
         }

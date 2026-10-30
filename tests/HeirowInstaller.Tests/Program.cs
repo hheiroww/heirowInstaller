@@ -73,6 +73,7 @@ internal sealed partial class AcceptanceSuite
             ,("version catalog rejects wrong identity, malformed metadata, failed authorization, redirects and oversized responses", VersionCatalogValidation)
             ,("version catalog deadlines cancel stalled headers and bodies and preserve caller cancellation", VersionCatalogCancellation)
             ,("version catalog SocketJack checks use only the supplied session and never forward it through redirects", VersionCatalogSocketJack)
+            ,("download recovery uses verified SocketJack pages without forwarding credentials or accepting foreign origins", DownloadRecoveryPages)
         };
         if (filter is not null)
         {
