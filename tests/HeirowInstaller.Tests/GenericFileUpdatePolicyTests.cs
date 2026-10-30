@@ -35,12 +35,12 @@ internal sealed partial class AcceptanceSuite
         var stale = JsonSerializer.Deserialize<InstalledProduct>(JsonSerializer.Serialize(product, InstallerJson.Options), InstallerJson.Options)!; stale.Version = "0";
         await Throws<InvalidDataException>(() => Task.Run(() => UpdaterTarget.FromInstalled(stale, install.StateRoot)));
         using var updater = new SocketJackUpdater(allowLoopback: true); // Generic/default constructor intentionally has no app-specific policy flag.
-        await Throws<InvalidDataException>(() => updater.CheckAsync(target));
+        await Throws<MissingIncrementalUpdateException>(() => updater.CheckAsync(target));
         var results = await updater.CheckAllAsync(install.StateRoot); True(results.Single().Error is not null && !results.Single().Available);
         var offered = new UpdateCheckResult { Available = true, CurrentVersion = "1", Feed = feed };
-        await Throws<InvalidDataException>(() => updater.ApplyAsync(target, offered, new() { Isolated = true, DownloadDirectory = Path.Combine(area, "downloads") }));
+        await Throws<MissingIncrementalUpdateException>(() => updater.ApplyAsync(target, offered, new() { Isolated = true, DownloadDirectory = Path.Combine(area, "downloads") }));
         using var self = Process.GetCurrentProcess();
-        await Throws<InvalidDataException>(() => updater.PrepareInstallerHandoffAsync(target, offered, self.Id, self.StartTime.ToUniversalTime().Ticks,
+        await Throws<MissingIncrementalUpdateException>(() => updater.PrepareInstallerHandoffAsync(target, offered, self.Id, self.StartTime.ToUniversalTime().Ticks,
             new() { Isolated = true, DownloadDirectory = Path.Combine(area, "downloads") }));
         var cli = new ProcessStartInfo(FindUpdaterCli()) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var argument in new[] { "check", product.Id, "--state-root", install.StateRoot!, "--allow-loopback", "--json", "--status-file", Path.Combine(area, "cli-status.json") }) cli.ArgumentList.Add(argument);

@@ -505,8 +505,11 @@ internal sealed partial class AppController : IDisposable
                 await reader.VerifyAsync(cancellationToken: Cancellation!.Token);
             }, Cancellation!.Token);
             using var publisher = new PublisherClient(new Uri("https://socketjack.com"), bearerToken: token, sessionCookie: cookie);
-            await publisher.PublishAsync(path, Cancellation!.Token, ReleaseNotes);
-            await game.OnUiAsync(() => End("Release published", "SocketJack accepted your verified package and generated its update feed."));
+            var receipt = await publisher.PublishAsync(path, Cancellation!.Token, ReleaseNotes);
+            await game.OnUiAsync(() => End(receipt.UpdateActivationPending == true ? "Release staged" : "Release published",
+                receipt.UpdateActivationPending == true
+                    ? "Signed file updates are missing for existing versions. Publish those updates, then publish this same package again to activate it."
+                    : "SocketJack accepted your verified package and generated its update feed."));
         }
         catch (Exception error) { await ErrorAsync("Publish failed", error); }
     }

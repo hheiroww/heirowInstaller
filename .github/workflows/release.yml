@@ -26,12 +26,19 @@ jobs:
         shell: pwsh
         env:
           HINST_SIGNING_KEY: ${{ secrets.HINST_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:HINST_SIGNING_KEY)) { throw 'Configure HINST_SIGNING_KEY in the repository secret store before publishing an official release.' }
+          $baselineRoot = Join-Path $env:RUNNER_TEMP 'heirowinstaller-release-baseline'
+          New-Item -ItemType Directory -Path $baselineRoot -Force | Out-Null
+          gh release download --pattern '*.hinst' --dir $baselineRoot
+          if ($LASTEXITCODE -ne 0) { throw 'A signed previous release is required; publishing without an update baseline is blocked.' }
+          $baselines = @(Get-ChildItem -LiteralPath $baselineRoot -Filter '*.hinst' -File)
+          if ($baselines.Count -ne 1) { throw 'The previous release must have exactly one signed full package.' }
           $keyPath = Join-Path $env:RUNNER_TEMP 'heirowinstaller-signing.private.pem'
           try {
             [IO.File]::WriteAllText($keyPath, $env:HINST_SIGNING_KEY)
-            ./scripts/Build.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -SigningKey $keyPath -LegalDocuments ./legal/heirowinstaller/legal-documents.json
+            ./scripts/Build.ps1 -Version ('${{ github.ref_name }}'.Substring(1)) -SigningKey $keyPath -PreviousPackage $baselines[0].FullName -LegalDocuments ./legal/heirowinstaller/legal-documents.json
           } finally {
             if (Test-Path -LiteralPath $keyPath) { Remove-Item -LiteralPath $keyPath -Force }
           }
@@ -43,4 +50,6 @@ jobs:
         run: |
           $version = '${{ github.ref_name }}'.Substring(1)
           $root = "artifacts/release/$version"
-          gh release create '${{ github.ref_name }}' "$root/heirowInstaller-$version-Setup.exe" "$root/heirowInstaller-$version.hinst" "$root/update.json" "$root/SHA256SUMS.txt" --title "heirowInstaller $version" --generate-notes --verify-tag
+          $updates = @(Get-ChildItem -LiteralPath $root -Filter '*.hupd' -File | ForEach-Object FullName)
+          if ($updates.Count -eq 0) { throw 'No signed incremental update was built; release publication is blocked.' }
+          gh release create '${{ github.ref_name }}' "$root/heirowInstaller-$version-Setup.exe" "$root/heirowInstaller-$version.hinst" @updates "$root/update.json" "$root/SHA256SUMS.txt" --title "heirowInstaller $version" --generate-notes --verify-tag

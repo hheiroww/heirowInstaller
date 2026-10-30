@@ -51,8 +51,8 @@ internal static class TrustedPublishingChecks
         var receiptId = Guid.NewGuid().ToString("N");
         const string product = "test.trusted";
         const string version = "2026.10.25.1";
-        object Receipt(string status, string? digest = null) => new { productId = product, version, uploadedPackageSha256 = digest ?? hash, uploadedSize = bytes.Length,
-            sha256 = new string('a', 64), size = bytes.Length + 999, receiptId, status };
+        object Receipt(string status, string? digest = null, bool? updateActivationPending = null) => new { productId = product, version, uploadedPackageSha256 = digest ?? hash, uploadedSize = bytes.Length,
+            sha256 = new string('a', 64), size = bytes.Length + 999, receiptId, status, updateActivationPending };
         var credentials = 0;
         var offset = 257;
         var stages = new Queue<Func<Request, (int, object)>>();
@@ -109,6 +109,38 @@ internal static class TrustedPublishingChecks
         result = await client.PublishFromGitHubActionsAsync(path, product, version, new() { OidcTokenProvider = _ => Task.FromResult("fixture-identity-" + Interlocked.Increment(ref credentials)) });
         await server;
         check(result.Activated, "Exact version and digest replay reuses the existing receipt without uploading bytes");
+
+        foreach (var discoveredDuringPolling in new[] { false, true })
+        {
+            var incomplete = new Queue<Func<Request, (int, object)>>();
+            credentials = 0;
+            incomplete.Enqueue(request => Grant(request, false));
+            incomplete.Enqueue(_ => (200, new { receipt = Receipt("pending", updateActivationPending: discoveredDuringPolling ? null : true) }));
+            if (discoveredDuringPolling)
+                incomplete.Enqueue(request =>
+                {
+                    check(request.Path == "/api/installer/publisher/receipts/" + receiptId, "Trusted activation polls only its bound receipt before learning missing update coverage");
+                    return (200, Receipt("activated", updateActivationPending: true));
+                });
+            server = ServeAsync(listener, incomplete);
+            try
+            {
+                await client.PublishFromGitHubActionsAsync(path, product, version, new()
+                {
+                    OidcTokenProvider = _ => Task.FromResult("fixture-identity-" + Interlocked.Increment(ref credentials)),
+                    WaitForActivation = true, PollInterval = TimeSpan.FromMilliseconds(5), ActivationTimeout = TimeSpan.FromSeconds(1)
+                });
+                throw new Exception("Incomplete update coverage was reported as active.");
+            }
+            catch (InvalidOperationException error)
+            {
+                check(error.Message.Contains("signed file updates", StringComparison.Ordinal) && error.Message.Contains("same full package", StringComparison.Ordinal),
+                    discoveredDuringPolling ? "Trusted activation stops with an actionable coverage error learned during polling" : "Trusted activation stops with an actionable initial coverage error");
+            }
+            await server;
+        }
+        var incompleteActivation = JsonSerializer.Deserialize<PublishedRelease>(JsonSerializer.Serialize(Receipt("activated", updateActivationPending: true)), new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        check(!incompleteActivation.Activated, "A receipt with incomplete update coverage cannot claim activation even when its legacy status says activated");
 
         var invalid = new Queue<Func<Request, (int, object)>>();
         credentials = 0;

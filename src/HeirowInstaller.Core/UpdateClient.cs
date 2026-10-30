@@ -63,9 +63,9 @@ public sealed class UpdateClient : IDisposable
         if (!feed.ProductId.Equals(expectedProductId, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Update feed belongs to a different product.");
         var available = PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(currentVersion)) > 0;
         if (available && feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase) && feed.BaseVersion != currentVersion)
-            throw new InvalidDataException("No signed incremental transition was published for this installed base version.");
+            throw new MissingIncrementalUpdateException(expectedProductId, currentVersion, feed.Version);
         if (available && requireIncrementalUpdates && !feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("This application requires a signed file update; its publisher has not provided a matching incremental package.");
+            throw new MissingIncrementalUpdateException(expectedProductId, currentVersion, feed.Version);
         return new() { Available = available, CurrentVersion = currentVersion, Feed = feed };
     }
 

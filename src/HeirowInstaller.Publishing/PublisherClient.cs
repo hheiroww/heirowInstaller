@@ -238,7 +238,9 @@ public sealed class PublishedRelease
     public long? UploadedSize { get; set; }
     public string? ReceiptId { get; set; }
     public string? Status { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? UpdateActivationPending { get; set; }
     public string? PrivacyPolicyUrl { get; set; }
     public string? TermsAndConditionsUrl { get; set; }
-    public bool Activated => string.Equals(Status, "activated", StringComparison.Ordinal);
+    public bool Activated => string.Equals(Status, "activated", StringComparison.Ordinal) && UpdateActivationPending != true;
 }

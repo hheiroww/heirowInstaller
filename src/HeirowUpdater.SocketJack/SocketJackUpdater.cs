@@ -261,7 +261,7 @@ public sealed class SocketJackUpdater : IDisposable
     private static void RequireFileUpdate(UpdaterTarget target, UpdateCheckResult update)
     {
         if (target.UpdateMode == "files" && update.Available && !update.Feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("This installed application requires signed file updates; a full installer is not an update fallback.");
+            throw new MissingIncrementalUpdateException(target.ProductId, target.CurrentVersion, update.Feed.Version);
     }
     private static string? FindInstaller()
     {

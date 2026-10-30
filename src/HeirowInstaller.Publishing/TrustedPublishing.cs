@@ -82,6 +82,7 @@ public sealed partial class PublisherClient
         async Task<PublishedRelease> FinishAsync(PublishedRelease receipt)
         {
             ValidateReceipt(receipt);
+            if (options.WaitForActivation) RequireUpdateCoverage(receipt);
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             wait.CancelAfter(options.ActivationTimeout);
             try
@@ -94,6 +95,7 @@ public sealed partial class PublisherClient
                     var next = JsonSerializer.Deserialize<PublishedRelease>(await ReadBoundedAsync(response, wait.Token), Json) ?? throw new InvalidDataException("Publisher returned no activation receipt.");
                     ValidateReceipt(next);
                     if (next.ReceiptId != receipt.ReceiptId) throw new InvalidDataException("Publisher changed the activation receipt identity.");
+                    RequireUpdateCoverage(next);
                     receipt = next;
                 }
             }

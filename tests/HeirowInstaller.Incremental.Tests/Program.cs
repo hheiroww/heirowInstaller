@@ -184,7 +184,17 @@ await Test("file mode rejects installer fallback and duplicate/conflicting feed 
     var legacy = new UpdateFeed { ProductId = fixture.Id, Version = "2.0.0", InstallerUrl = "https://updates.example/Setup.exe", Sha256 = fixture.Feed.Sha256, PackageType = "exe" };
     var transport = new FixtureTransport(legacy, fixture.Delta);
     using var client = new UpdateClient(transport: transport, requireIncrementalUpdates: true);
-    await Reject<InvalidDataException>(() => client.CheckAsync("https://updates.example/feed", "1.0.0", fixture.Id), "File-only check accepted an EXE fallback.");
+    try
+    {
+        await client.CheckAsync("https://updates.example/feed?access=fixture-query-secret", "1.0.0", fixture.Id);
+        throw new Exception("File-only check accepted an EXE fallback.");
+    }
+    catch (MissingIncrementalUpdateException error)
+    {
+        Check(error.ProductId == fixture.Id && error.CurrentVersion == "1.0.0" && error.OfferedVersion == "2.0.0", "Missing-transition diagnostic lost the installed and offered identity.");
+        Check(error.Message.Contains("installed version 1.0.0") && error.Message.Contains("Version 2.0.0") && error.Message.Contains("publisher must provide") && error.Message.Contains("download page"), "Missing-transition diagnostic does not explain who must fix it and the user's recovery action.");
+        Check(!error.ToString().Contains("updates.example") && !error.ToString().Contains("fixture-query-secret"), "Missing-transition diagnostic exposed a feed URL or its credentials.");
+    }
     var count = transport.Requests.Count;
     await Reject<InvalidDataException>(() => client.DownloadAsync(legacy, Path.Combine(fixture.Root, "none")), "File-only download fetched Setup.");
     Check(transport.Requests.Count == count, "Rejected fallback still issued a network request.");
@@ -192,6 +202,12 @@ await Test("file mode rejects installer fallback and duplicate/conflicting feed 
         await Reject<InvalidDataException>(() => client.CheckAsync("https://updates.example/feed" + query, "1.0.0", fixture.Id), "Conflicting transition selector was accepted.");
     legacy.Version = "1.0.0";
     Check(!(await client.CheckAsync("https://updates.example/feed", "1.0.0", fixture.Id)).Available, "A current legacy feed became a false update error during a publication transition.");
+    var wrongBase = fixture.Feed;
+    wrongBase.BaseVersion = "0.9.0";
+    using var wrongBaseClient = new UpdateClient(transport: new FixtureTransport(wrongBase, fixture.Delta), requireIncrementalUpdates: true);
+    await Reject<MissingIncrementalUpdateException>(() => wrongBaseClient.CheckAsync("https://updates.example/feed", "1.0.0", fixture.Id), "A different published base did not report the missing exact transition.");
+    var unsafeMetadata = new MissingIncrementalUpdateException(fixture.Id, "1.0.0", "2.0.0+https://updates.example/?access=fixture-query-secret");
+    Check(unsafeMetadata.OfferedVersion == "2.0.0" && !unsafeMetadata.Message.Contains("updates.example") && !unsafeMetadata.Message.Contains("fixture-query-secret"), "Version build metadata leaked arbitrary feed text into the recovery diagnostic.");
     var oldJson = JsonSerializer.Serialize(new UpdateFeed(), InstallerJson.Options);
     Check(!oldJson.Contains("baseVersion") && !oldJson.Contains("baseManifestSha256") && !oldJson.Contains("targetManifestSha256"), "Nullable feed additions changed legacy JSON.");
 });

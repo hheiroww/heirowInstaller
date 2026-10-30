@@ -9,10 +9,14 @@ param(
     [string]$LegalDocuments,
     [string]$CertificateThumbprint,
     [string]$PackageCache,
-    [string]$PreviousPackage,
+    [string[]]$PreviousPackage,
+    [switch]$FirstRelease,
     [switch]$SkipTests
 )
 $ErrorActionPreference = 'Stop'
+if ($SigningKey -and -not $PreviousPackage -and -not $FirstRelease) { throw 'Signed releases require -PreviousPackage so existing installations receive a signed file update. Use -FirstRelease only for an initial release with no installed native baseline.' }
+if ($FirstRelease -and $PreviousPackage) { throw '-FirstRelease cannot be combined with -PreviousPackage.' }
+if ($PreviousPackage -and -not $SigningKey) { throw 'A file update requires the same publisher signing key as both full packages.' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 if (-not $LegalDocuments) { $LegalDocuments = Join-Path $projectRoot 'legal/heirowinstaller/legal-documents.json' }
 $LegalDocuments = [IO.Path]::GetFullPath($LegalDocuments)
@@ -134,16 +138,20 @@ $feed = [ordered]@{productId='heirowinstaller';name='heirowInstaller';publisher=
     sha256=$hash;size=(Get-Item -LiteralPath $setup).Length;packageType='exe';releaseNotes="heirowInstaller $Version";arguments=@('--silent')}
 $feed | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'update.json') -Encoding utf8NoBOM
 $releaseFiles = @($setup,$package,(Join-Path $OutputDirectory 'update.json'))
-if ($PreviousPackage) {
-    if (!$SigningKey) { throw 'A file update requires the same publisher signing key as both full packages.' }
-    $incremental = Join-Path $OutputDirectory "heirowInstaller-$Version.hupd"
-    & $cli build-update $package --base ([IO.Path]::GetFullPath($PreviousPackage)) --output $incremental --sign-key ([IO.Path]::GetFullPath($SigningKey))
+foreach ($baseline in $PreviousPackage) {
+    $baselineMetadata = (& $cli inspect ([IO.Path]::GetFullPath($baseline)) --require-signature | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0 -or !$baselineMetadata.signed -or $baselineMetadata.manifest.id -ne 'heirowinstaller') { throw 'Every update baseline must be a verified signed heirowInstaller package.' }
+    $baseVersion = [string]$baselineMetadata.manifest.version
+    if ($baseVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$') { throw 'The update baseline has an unsafe version.' }
+    $incremental = Join-Path $OutputDirectory "heirowInstaller-$baseVersion-to-$Version.hupd"
+    if (Test-Path -LiteralPath $incremental) { throw 'Use a fresh release directory and unique baseline versions.' }
+    & $cli build-update $package --base ([IO.Path]::GetFullPath($baseline)) --output $incremental --sign-key ([IO.Path]::GetFullPath($SigningKey))
     if ($LASTEXITCODE -ne 0) { throw 'Signed file-update build failed.' }
     & $cli verify-update $incremental
     if ($LASTEXITCODE -ne 0) { throw 'Signed file-update verification failed.' }
     $releaseFiles += $incremental
 }
 $releaseFiles | ForEach-Object { "$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_))" } | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding utf8NoBOM
-$receipt = [ordered]@{version=$Version;sourceCommit=$sourceCommit;setup=$setup;package=$package;launcher=$launcher;cli=$cli;updater=$updater;sha256=$hash;bytes=(Get-Item -LiteralPath $setup).Length}
+$receipt = [ordered]@{version=$Version;sourceCommit=$sourceCommit;setup=$setup;package=$package;launcher=$launcher;cli=$cli;updater=$updater;sha256=$hash;bytes=(Get-Item -LiteralPath $setup).Length;updates=@($releaseFiles | Where-Object { [IO.Path]::GetExtension($_) -eq '.hupd' })}
 $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'build.json') -Encoding utf8NoBOM
 $receipt | ConvertTo-Json

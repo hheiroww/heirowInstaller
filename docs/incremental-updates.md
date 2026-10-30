@@ -9,6 +9,28 @@ selector is rejected. File mode accepts an available `.hupd` transition and
 refuses an installer download as a fallback. Older profiles with no mode keep
 their existing update protocol.
 
+A missing exact-base transition is a publisher coverage failure, including when
+the installation originally migrated from an older installer. The SDK reports
+`MissingIncrementalUpdateException` with the installed and offered versions;
+malformed feeds still raise `InvalidDataException`. No Setup is executed to
+bypass the file-update policy. Provide a signed transition for the exact base,
+or a retained route through intermediate releases, before activating a target.
+
+SocketJack stages a full release when existing native file-update versions lack
+a signed route to it. Upload the missing `.hupd` files, then publish the same
+full package again. A receipt with `updateActivationPending: true` confirms
+staging, not activation; activation waits explain this required action immediately.
+Retain every distributed native baseline, including manually installed builds,
+in the publisher's version inventory. An unregistered local build cannot be
+included in the server's coverage check.
+
+Signed toolkit builds require `scripts/Build.ps1 -PreviousPackage <signed-base>`.
+The parameter accepts multiple baseline packages and emits a separately named
+transition for each. `-FirstRelease` is reserved for an initial release with no
+native baseline. The release workflow downloads the previous signed package
+and refuses publication without a built `.hupd`; the publisher separately checks
+routes from all its registered native file-update versions.
+
 The first installation or an explicitly authored migration still uses a full
 installer. Opaque MSI/executable backends cannot produce or consume file deltas:
 their backend registration and ownership must first be migrated to a native

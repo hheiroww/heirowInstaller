@@ -10,6 +10,7 @@ public sealed partial class PublisherClient
     {
         var limit = timeout ?? TimeSpan.FromMinutes(15); var interval = pollInterval ?? TimeSpan.FromSeconds(2);
         if (limit <= TimeSpan.Zero || limit > TimeSpan.FromHours(1) || interval <= TimeSpan.Zero || interval > TimeSpan.FromMinutes(1)) throw new ArgumentException("Invalid activation wait limits.");
+        RequireUpdateCoverage(receipt);
         if (string.IsNullOrEmpty(receipt.Status)) return receipt;
         if (!Guid.TryParseExact(receipt.ReceiptId, "N", out _)) throw new InvalidDataException("The publication receipt ID is invalid.");
         Validate(receipt);
@@ -28,6 +29,7 @@ public sealed partial class PublisherClient
                     || next.UploadedPackageSha256 != receipt.UploadedPackageSha256 || next.UploadedSize != receipt.UploadedSize
                     || receipt.UploadedPackageSha256 == null && (next.Sha256 != receipt.Sha256 || next.Size != receipt.Size)) throw new InvalidDataException("The activation receipt changed publication identity.");
                 Validate(next);
+                RequireUpdateCoverage(next);
                 current = next;
             }
         }
@@ -38,5 +40,11 @@ public sealed partial class PublisherClient
             if (value.Status is not ("pending" or "activated" or "rejected") || value.Status == "activated" &&
                 (value.Size <= 0 || value.Sha256 is not { Length: 64 } || !value.Sha256.All(Uri.IsHexDigit))) throw new InvalidDataException("Invalid activation receipt.");
         }
+    }
+
+    private static void RequireUpdateCoverage(PublishedRelease receipt)
+    {
+        if (receipt.UpdateActivationPending == true)
+            throw new InvalidOperationException("This release is staged until signed file updates cover the existing native versions. Publish the missing updates, then publish the same full package again to activate it.");
     }
 }

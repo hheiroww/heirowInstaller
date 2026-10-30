@@ -78,12 +78,19 @@ try
         await ServeOnceAsync(listener, request =>
         {
             Check(request.RequestLine == $"POST /api/installer/publisher/uploads/{uploadId}/complete HTTP/1.1", "Publication commits only after all chunks are accepted");
-            return (200, "{\"productId\":\"test.product\",\"version\":\"1.0.0\",\"installerUrl\":\"https://publisher.example/test.hinst\",\"updateUrl\":\"https://publisher.example/update.json\",\"sha256\":\"" + expectedHash + "\",\"size\":" + body.Length + "}", null);
+            return (200, "{\"productId\":\"test.product\",\"version\":\"1.0.0\",\"installerUrl\":\"https://publisher.example/test.hinst\",\"updateUrl\":\"https://publisher.example/update.json\",\"sha256\":\"" + expectedHash + "\",\"size\":" + body.Length + ",\"updateActivationPending\":true}", null);
         });
     });
     var published = await client.PublishAsync(package);
     await uploadServer;
     Check(published.ProductId == "test.product" && published.Sha256 == expectedHash && published.Size == body.Length, "Publication receipt is parsed");
+    Check(published.UpdateActivationPending == true && !published.Activated, "Staged update coverage is not reported as activation");
+    try { await client.WaitForActivationAsync(published); throw new Exception("Missing updates became a successful activation."); }
+    catch (InvalidOperationException error)
+    {
+        Check(error.Message.Contains("signed file updates", StringComparison.Ordinal) && error.Message.Contains("same full package", StringComparison.Ordinal),
+            "Activation wait immediately explains how to complete missing update coverage");
+    }
 
     var statusServer = ServeOnceAsync(listener, request =>
     {
