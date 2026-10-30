@@ -52,6 +52,8 @@ function Assert-Check([bool]$Condition, [string]$Description) {
     $checks.Add($Description)
 }
 function Invoke-Child([string]$Executable, [string[]]$Arguments, [string]$Name) {
+    . (Join-Path $PSScriptRoot 'Test-LegalFixture.ps1')
+    $Arguments = Add-TestLegalArguments $Executable $Arguments
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true; $start.WorkingDirectory = $runDirectory
@@ -100,8 +102,9 @@ try {
                     if ($line.StartsWith('User-Agent:', [StringComparison]::OrdinalIgnoreCase)) { $agent = $line.Substring(11).Trim() }
                 }
             } finally { $reader.Dispose() }
+            $requestPath = if ($parts.Count -gt 1) { $parts[1].Split('?', 2)[0] } else { '' }
             $name = if ($parts.Count -gt 1 -and $parts[0] -eq 'GET') {
-                switch ($parts[1]) { '/update.json' { 'update.json' }; '/fixture.hinst' { 'fixture.hinst' }; default { $null } }
+                switch ($requestPath) { '/update.json' { 'update.json' }; '/fixture.hinst' { 'fixture.hinst' }; default { $null } }
             } else { $null }
             if (-not $name) {
                 $header = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 404 Not Found`r`nContent-Length: 0`r`nConnection: close`r`n`r`n")
@@ -111,7 +114,7 @@ try {
             try {
                 $header = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/octet-stream`r`nContent-Length: $($inputFile.Length)`r`nConnection: close`r`n`r`n")
                 $stream.Write($header, 0, $header.Length); $inputFile.CopyTo($stream); $stream.Flush()
-                [IO.File]::AppendAllText($Log, ((@{ path = $parts[1]; size = $inputFile.Length; userAgent = $agent; timestamp = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress) + [Environment]::NewLine))
+                [IO.File]::AppendAllText($Log, ((@{ path = $requestPath; requestTarget = $parts[1]; size = $inputFile.Length; userAgent = $agent; timestamp = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress) + [Environment]::NewLine))
             } finally { $inputFile.Dispose() }
         } catch { [IO.File]::AppendAllText($Log, ((@{ error = $_.Exception.GetType().Name } | ConvertTo-Json -Compress) + [Environment]::NewLine)) }
         finally { $stream.Dispose(); $client.Dispose() }
@@ -201,6 +204,7 @@ try {
     Assert-Check ((Get-FileHash -LiteralPath $installedUpdater -Algorithm SHA256).Hash.ToLowerInvariant() -eq $publishedHash -and (Get-FileHash -LiteralPath $installedCli -Algorithm SHA256).Hash.ToLowerInvariant() -eq $cliHash -and [IO.File]::ReadAllText((Join-Path $target 'generation.txt')) -eq '1.0.1') 'The helper replaced the old running image with the verified updater, CLI and new payload generation'
     $requests = @(Get-Content -LiteralPath $requestLog | ForEach-Object { $_ | ConvertFrom-Json })
     Assert-Check (@($requests | Where-Object { $_.path -eq '/update.json' -and $_.userAgent -like '*SocketJack*' }).Count -gt 0 -and @($requests | Where-Object { $_.path -eq '/fixture.hinst' -and $_.userAgent -like '*SocketJack*' }).Count -gt 0) 'Both the feed and package traveled through the actual SocketJack transport'
+    Assert-Check (@($requests | Where-Object { $_.path -eq '/update.json' -and $_.requestTarget -like '*fromVersion=1.0.0*' -and $_.requestTarget -like '*updateProtocol=hupd1*' }).Count -gt 0) 'The actual published client selects its installed base while the fixture routes the feed path separately from its query'
     Assert-Check ((Get-FileHash -LiteralPath $PublishedUpdaterPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $publishedHash -and (Get-FileHash -LiteralPath $CliPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $cliHash) 'The supplied published updater and CLI remained byte-for-byte unchanged'
     $null = Invoke-Cli @('uninstall', $productId, '--silent', '--state-root', $state, '--scope', 'user') 'uninstall-updated-fixture'
     Assert-Check (-not (Test-Path -LiteralPath $installedUpdater) -and -not (Test-Path -LiteralPath $installedCli) -and -not (Test-Path -LiteralPath $installedReceipt)) 'The unique fixture uninstalled with no active receipt or target executables remaining'
