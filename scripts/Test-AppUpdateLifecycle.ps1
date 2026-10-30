@@ -266,6 +266,8 @@ return 0;
     Assert-Check ($errorUi.visibleTitle -eq 'Updates need your attention.' -and $errorUi.closeButtonText -eq 'Close' -and $errorUi.pointerEventsInjected -and -not $manualError.process.HasExited -and -not([IO.File]::ReadAllText($manualError.manualReport).Contains($secret))) 'A manual network error visibly renders a safe native result and Close preserves the application and watcher'
     $downloadPage='https://socketjack.com/heirowInstaller/#downloads'
     Assert-Check ($errorUi.downloadPageOpened -and $errorUi.downloadPage -eq $downloadPage -and $errorUi.visibleMessage.Contains("We opened this app's SocketJack download page.") -and $errorUi.visibleMessage.Contains($downloadPage) -and (Download-Opens $manualError).Count -eq 1 -and (Download-Opens $manualError)[0] -eq $downloadPage) 'A failed manual check opens its signed SocketJack download page once and visibly explains manual recovery'
+    Copy-Item -LiteralPath (Join-Path $run 'manual-network-error.manual.png') -Destination (Join-Path $run 'manual-network-error.recovery.png')
+    Copy-Item -LiteralPath $manualError.manualReport -Destination (Join-Path $run 'manual-network-error.recovery.json')
     [IO.File]::Delete($errorFlag);Request-Manual $manualError
     Wait-For {(Read-Json $manualError.manualReport).status -eq 'current' -and (Read-Json $manualError.status).status -eq 'waiting-for-exit'} 'a successful manual retry after the recovered error'
     Assert-Check ((Read-Json $manualError.manualReport).requestId -ne $errorUi.requestId -and -not(Read-Json $manualError.manualReport).downloadPageOpened -and (Download-Opens $manualError).Count -eq 1) 'A successful retry uses a fresh request and does not reopen the recovery page'
