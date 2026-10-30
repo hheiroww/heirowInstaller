@@ -23,6 +23,15 @@ public static class FileTransactionRecovery
     public static async Task<FileTransactionRecoveryResult> RecoverAsync(FileTransactionRecoveryContext context,
         Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? prompt = null,
         bool operationLockHeld = false, CancellationToken cancellationToken = default)
+        => await RecoverCoreAsync(context, prompt, operationLockHeld, cancellationToken, null);
+
+    internal static Task<FileTransactionRecoveryResult> RecoverOwnedAsync(FileTransactionRecoveryContext context, Action recoverVerifiedSdkMetadata,
+        Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? prompt, CancellationToken token)
+        => RecoverCoreAsync(context, prompt, operationLockHeld: true, token, recoverVerifiedSdkMetadata);
+
+    private static async Task<FileTransactionRecoveryResult> RecoverCoreAsync(FileTransactionRecoveryContext context,
+        Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? prompt,
+        bool operationLockHeld, CancellationToken cancellationToken, Action? recoverVerifiedSdkMetadata)
     {
         context.Validate();
         var result = new FileTransactionRecoveryResult();
@@ -54,7 +63,7 @@ public static class FileTransactionRecovery
                     if (!FileTransactionJournal.SameIdentity(owner, context, includeBase: true) || owner.BindingSha256 != context.BindingHash)
                         throw new CryptographicException("Interrupted update ownership differs from the caller's verified base/target file context. Recovery files were preserved.");
                     foreach (var target in context.Applications) await RunningApplications.EnsureClosedAsync(target, prompt, cancellationToken);
-                    var uncertain = events.HasExternalMetadata;
+                    var uncertain = events.HasExternalMetadata && recoverVerifiedSdkMetadata is null;
                     foreach (var operation in events.Files.AsEnumerable().Reverse())
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -72,6 +81,8 @@ public static class FileTransactionRecovery
                                 else Directory.Delete(directory);
                             }
                         }
+                    if (events.HasExternalMetadata && recoverVerifiedSdkMetadata is not null)
+                        recoverVerifiedSdkMetadata();
                     if (uncertain)
                         throw new FileTransactionRecoveryRequiredException("Application files were recovered where ownership was verified. Interrupted external or unverified metadata requires a trusted repair; recovery files remain in " + root);
                     FileTransactionJournal.Append(root, new() { Kind = "rollback-complete" });

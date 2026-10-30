@@ -242,7 +242,8 @@ internal static class WindowsIntegration
         return exit;
     }
 
-    public static void RegisterProduct(InstalledProduct product, string stateRoot, InstallTransaction transaction, PackageManifest manifest)
+    public static void RegisterProduct(InstalledProduct product, string stateRoot, InstallTransaction transaction, PackageManifest manifest,
+        IReadOnlyDictionary<string, object>? preparedValues = null)
     {
         if (!OperatingSystem.IsWindows()) return;
         var path = ArpPath(product.Id);
@@ -250,6 +251,18 @@ internal static class WindowsIntegration
         using (var existing = hive.OpenSubKey(path))
             if (existing is not null && existing.GetValue("HeirowInstallerProductId") as string != product.Id)
                 throw new InvalidOperationException("Another product owns this uninstall registration.");
+        var values = preparedValues ?? ProductRegistrationValues(product, stateRoot, manifest);
+        foreach (var pair in values)
+        {
+            var snapshot = CaptureRegistry(product.Scope, path, pair.Key);
+            transaction.AddRollback(() => { if (OperatingSystem.IsWindows()) RestoreRegistry(snapshot); });
+            using var key = hive.CreateSubKey(path);
+            key.SetValue(pair.Key, pair.Value, pair.Value is int ? RegistryValueKind.DWord : RegistryValueKind.String);
+        }
+    }
+
+    internal static IReadOnlyDictionary<string, object> ProductRegistrationValues(InstalledProduct product, string stateRoot, PackageManifest manifest)
+    {
         var values = new Dictionary<string, object>
         {
             ["DisplayName"] = product.Name, ["DisplayVersion"] = product.Version, ["Publisher"] = product.Publisher,
@@ -262,13 +275,7 @@ internal static class WindowsIntegration
         };
         if (!string.IsNullOrWhiteSpace(manifest.Homepage)) values["URLInfoAbout"] = manifest.Homepage;
         if (manifest.EntryPoint.Length > 0) values["DisplayIcon"] = PackageSafety.UnderRoot(product.InstallDirectory, manifest.EntryPoint);
-        foreach (var pair in values)
-        {
-            var snapshot = CaptureRegistry(product.Scope, path, pair.Key);
-            transaction.AddRollback(() => { if (OperatingSystem.IsWindows()) RestoreRegistry(snapshot); });
-            using var key = hive.CreateSubKey(path);
-            key.SetValue(pair.Key, pair.Value, pair.Value is int ? RegistryValueKind.DWord : RegistryValueKind.String);
-        }
+        return values;
     }
 
     public static void UnregisterProduct(InstalledProduct product, InstallTransaction transaction)

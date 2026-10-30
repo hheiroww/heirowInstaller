@@ -13,6 +13,7 @@ internal sealed class LegacyStagingFileGuard : IDisposable
     private readonly FileStream? stream;
     private readonly FileIdentity identity;
     private bool disposed;
+    private readonly bool allowReadOnlyDirectory;
     internal string Path { get; }
     internal long Size { get; }
     internal string? Sha256 { get; }
@@ -24,12 +25,19 @@ internal sealed class LegacyStagingFileGuard : IDisposable
             throw new IOException("Cannot capture a newly created staging file identity.", new Win32Exception(Marshal.GetLastWin32Error()));
         return Token(information);
     }
+    internal static string CaptureOrdinaryFileIdentity(SafeFileHandle handle)
+    {
+        if (!GetFileInformationByHandle(handle, out var information) || information.Links != 1 ||
+            (information.Attributes & (0x10u | 0x400u | 1u | 0x4000u)) != 0)
+            throw new IOException("A recovery creation is not an ordinary private file.");
+        return Token(information);
+    }
     private static string Token(FileIdentity information) => $"{information.Volume:x8}:{information.IndexHigh:x8}{information.IndexLow:x8}:{information.CreationHigh:x8}{information.CreationLow:x8}";
 
-    private LegacyStagingFileGuard(string path, bool directory, long? size, string? digest)
+    private LegacyStagingFileGuard(string path, bool directory, long? size, string? digest, bool allowReadOnlyDirectory = false)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Guarded legacy staging cleanup requires Windows.");
-        Path = System.IO.Path.GetFullPath(path); IsDirectory = directory;
+        Path = System.IO.Path.GetFullPath(path); IsDirectory = directory; this.allowReadOnlyDirectory = directory && allowReadOnlyDirectory;
         PackageSafety.EnsureNoReparsePoints(Path);
         // Directory handles prevent rename while permitting child enumeration; file handles deny all sharing.
         var nativePath = Path.StartsWith(@"\\?\", StringComparison.Ordinal) ? Path
@@ -40,7 +48,7 @@ internal sealed class LegacyStagingFileGuard : IDisposable
         try
         {
             identity = ReadIdentity();
-            if (((identity.Attributes & 0x10) != 0) != directory || (identity.Attributes & (0x400u | 1u | 0x4000u)) != 0 || (!directory && identity.Links != 1))
+            if (((identity.Attributes & 0x10) != 0) != directory || (identity.Attributes & (0x400u | (this.allowReadOnlyDirectory ? 0u : 1u) | 0x4000u)) != 0 || (!directory && identity.Links != 1))
                 throw new IOException("Legacy cleanup preserves reparse, read-only, encrypted, hard-linked or unexpected items.");
             VerifyFinalPath();
             VerifyStreams();
@@ -58,6 +66,8 @@ internal sealed class LegacyStagingFileGuard : IDisposable
 
     internal static LegacyStagingFileGuard File(string path, long size, string digest) => new(path, false, size, digest);
     internal static LegacyStagingFileGuard Directory(string path) => new(path, true, null, null);
+    // A namespace lease never removes or changes the folder; shell-folder read-only flags are harmless.
+    internal static LegacyStagingFileGuard NamespaceDirectory(string path) => new(path, true, null, null, allowReadOnlyDirectory: true);
     internal void Recheck()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -66,7 +76,7 @@ internal sealed class LegacyStagingFileGuard : IDisposable
         var current = ReadIdentity();
         if (current.Volume != identity.Volume || current.IndexHigh != identity.IndexHigh || current.IndexLow != identity.IndexLow ||
             current.CreationHigh != identity.CreationHigh || current.CreationLow != identity.CreationLow ||
-            ((current.Attributes & 0x10) != 0) != IsDirectory || (current.Attributes & (1u | 0x400u | 0x4000u)) != 0 ||
+            ((current.Attributes & 0x10) != 0) != IsDirectory || (current.Attributes & ((allowReadOnlyDirectory ? 0u : 1u) | 0x400u | 0x4000u)) != 0 ||
             (!IsDirectory && (current.Links != 1 || current.SizeHigh != identity.SizeHigh || current.SizeLow != identity.SizeLow ||
                 current.WriteHigh != identity.WriteHigh || current.WriteLow != identity.WriteLow)))
             throw new IOException("A held legacy staging item changed; cleanup was stopped.");
@@ -118,6 +128,13 @@ internal sealed class LegacyStagingFileGuard : IDisposable
         stream.Position = 0;
         if (new FileInfo(destination).Length != Size || !PackageSafety.HashEquals(PackageSafety.HashFile(destination), Sha256!))
             throw new IOException("A held legacy staging file changed during durable copy.");
+    }
+    internal void CopyDurableTo(FileStream output)
+    {
+        Recheck();
+        if (stream is null || !output.CanWrite) throw new InvalidOperationException("A file backup requires writable output.");
+        stream.Position = 0; stream.CopyTo(output); output.Flush(true); stream.Position = 0;
+        Recheck();
     }
     internal void DeleteAndClose()
     {

@@ -362,7 +362,9 @@ internal static class IncrementalPackageIO
         ValidateJson(manifest);
         var parsed = JsonSerializer.Deserialize<PackageManifest>(manifest, InstallerJson.Options) ?? throw new InvalidDataException("Empty complete manifest.");
         PackageSafety.ValidateManifest(parsed, true);
-        return new(manifest, signature, parsed, VerifySignature(manifest, signature));
+        var key = VerifySignature(manifest, signature);
+        InnoOwnedPolicy.RequirePackageSignature(parsed, key);
+        return new(manifest, signature, parsed, key);
     }
 
     internal static IncrementalPackageMetadata ReadPackageMetadata(string path, string? publisherPin)

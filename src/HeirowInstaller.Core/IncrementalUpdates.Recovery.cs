@@ -85,7 +85,13 @@ public sealed class FileTransactionRecoveryContext
         var stateRoot = Path.GetFullPath(options.StateRoot ?? InstallerEngine.DefaultStateRoot(plan.Scope));
         var installRoot = Path.GetFullPath(plan.InstallDirectory);
         var files = new Dictionary<string, FileRecoveryTarget>(StringComparer.OrdinalIgnoreCase);
-        var oldFiles = previous?.Files.ToDictionary(file => file.Path, StringComparer.OrdinalIgnoreCase) ?? [];
+        // Owned retirement durably removes the entire app/wrapper footprint before native file writes.
+        // Its separate authenticated ledger restores those bytes after native rollback; a native transaction's before-image is absence.
+        var ownedTransition = previous is not null && oldManifest?.LegacyExecutable is not null &&
+            signedTarget.NativeMigration?.Baselines.Any(b => b.Backend == InnoOwnedPolicy.Backend && b.Scope == previous.Scope &&
+                b.FromVersion == previous.Version && PackageSafety.HashEquals(b.FromManifestSha256, baseDigest!)) == true;
+        var oldFiles = ownedTransition ? new Dictionary<string, InstalledFile>(StringComparer.OrdinalIgnoreCase) :
+            previous?.Files.ToDictionary(file => file.Path, StringComparer.OrdinalIgnoreCase) ?? [];
         var newFiles = plan.Files.Where(file => !SharedUpdaterRuntime.IsRuntimePayload(manifest, file.Path)).ToDictionary(file => file.Path, StringComparer.OrdinalIgnoreCase);
         foreach (var path in oldFiles.Keys.Union(newFiles.Keys, StringComparer.OrdinalIgnoreCase))
         {

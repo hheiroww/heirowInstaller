@@ -194,6 +194,31 @@ public sealed class NativeMigrationBaselineDefinition
     public BackendRegistrationDefinition? BurnRegistration { get; set; }
     /// <summary>All application MSI children of this Burn bundle. An explicit empty list declares a chain with no MSI children.</summary>
     public List<string>? BurnMsiProductCodes { get; set; }
+    /// <summary>Exact Inno identity; generated execution media must already be attested by the original signed package.</summary>
+    public InnoMigrationDefinition? Inno { get; set; }
+    /// <summary>Complete same-publisher ownership attestation for a bounded Inno footprint, inline in the signed target.</summary>
+    public InnoOwnedFootprintCatalog? OwnedFootprint { get; set; }
+}
+
+public sealed class InnoMigrationDefinition
+{
+    public string AppId { get; set; } = "";
+    public BackendRegistrationDefinition Registration { get; set; } = new();
+}
+
+/// <summary>
+/// An original publisher's declaration of the complete generated uninstall media for one exact root.
+/// A repair, registry command or a new hash of live files cannot create this authority retroactively.
+/// </summary>
+public sealed class InnoUninstallMediaDefinition
+{
+    public string Provenance { get; set; } = "";
+    public string AppId { get; set; } = "";
+    public string SetupVersion { get; set; } = "";
+    public string InstallDirectory { get; set; } = "";
+    public string ExecutablePath { get; set; } = "";
+    public string DataPath { get; set; } = "";
+    public string? MessagesPath { get; set; }
 }
 
 public sealed class LegacyMsiDefinition
@@ -215,6 +240,7 @@ public sealed class LegacyExecutableDefinition
     public List<string> UninstallArguments { get; set; } = [];
     public List<int> SuccessExitCodes { get; set; } = [0, 3010, 1641];
     public BackendRegistrationDefinition? MaintenanceRegistration { get; set; }
+    public InnoUninstallMediaDefinition? InnoUninstallMedia { get; set; }
 }
 
 public sealed class BackendRegistrationDefinition

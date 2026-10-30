@@ -13,7 +13,7 @@ public sealed class NativeMigrationRepairRequiredException : IOException
     public NativeMigrationRepairRequiredException(string message, Exception? inner = null) : base(message + " The original signed media and migration journal have been preserved for repair.", inner) { }
 }
 
-internal sealed class NativeMigrationSession : IDisposable
+internal sealed partial class NativeMigrationSession : IDisposable
 {
     private const string JournalName = "migration.json", ReceiptName = "original-receipt.json";
     private readonly NativeMigrationBaseline baseline;
@@ -23,8 +23,11 @@ internal sealed class NativeMigrationSession : IDisposable
     private readonly bool alreadyNative;
     private readonly FileStream stageLease;
     private Journal journal;
+    private InnoOwnedRetirement? owned;
     private bool completed;
     internal bool BackendWasRemoved => !alreadyNative && journal.Phase == "removed";
+    internal bool NeedsRestoration => !alreadyNative && !completed && (owned?.NeedsRestoration ?? BackendWasRemoved);
+    internal bool CanFinalizeNativeCommit => owned is not null && alreadyNative;
     private string Media => Path.Combine(directory, "media");
 
     private NativeMigrationSession(NativeMigrationBaseline baseline, INativeMigrationBackend backend, ProductOperationLease lease,
@@ -42,6 +45,7 @@ internal sealed class NativeMigrationSession : IDisposable
         {
             if (previous is { IsMsi: true } or { IsExecutable: true })
                 throw new NativeMigrationRepairRequiredException("A completed migration conflicts with a newly recorded legacy baseline.");
+            if (previous is not null) await RetryCompletedCleanupAsync(previous, backend, lease, progress, token);
             return null;
         }
         var alreadyNative = previous is not null && !previous.IsMsi && !previous.IsExecutable;
@@ -67,7 +71,9 @@ internal sealed class NativeMigrationSession : IDisposable
         lease.Validate(baseline.Product, stateRoot);
         using (var originalInput = new FileStream(baseline.Product.PackagePath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             baseline = baseline with { OriginalPackageSha256 = Convert.ToHexString(await SHA256.HashDataAsync(originalInput, token)) };
-        var bootIdentity = existing is null ? await backend.BootIdentityAsync(token) : existing.BootIdentity;
+        // Owned retirement never queues reboot-time actions and reconciles its complete ledger, not a boot/ARP inference.
+        var bootIdentity = existing?.BootIdentity ?? (baseline.Authorization.Backend == InnoOwnedPolicy.Backend
+            ? "owned-footprint:no-delayed-actions" : await backend.BootIdentityAsync(token));
         Directory.CreateDirectory(directory);
         var leasePath = Path.Combine(directory, "migration-stage.lease"); PackageSafety.EnsureNoReparsePoints(leasePath);
         var stageLease = new FileStream(leasePath, existing is null ? FileMode.CreateNew : FileMode.Open, FileAccess.ReadWrite, FileShare.None);
@@ -90,6 +96,12 @@ internal sealed class NativeMigrationSession : IDisposable
         }
         session = new NativeMigrationSession(baseline, backend, lease, stateRoot, directory, existing, alreadyNative, stageLease);
         session.ValidateJournal();
+        if (baseline.Authorization.Backend == InnoOwnedPolicy.Backend)
+        {
+            var provider = (IInnoOwnedPlatformProvider)backend;
+            session.owned = await Task.Run(() => new InnoOwnedRetirement(baseline, provider.OwnedPlatform(baseline, stateRoot),
+                Path.Combine(directory, "owned-footprint"), existing.OriginalReceiptSha256), token).ConfigureAwait(false);
+        }
         await session.RequireRestartBoundaryAsync(token);
         if (existing.Phase == "preparing")
         {
@@ -109,6 +121,26 @@ internal sealed class NativeMigrationSession : IDisposable
     {
         ValidateJournal(); await RequireRestartBoundaryAsync(token);
         await VerifyMediaAsync(token);
+        if (owned is not null)
+        {
+            if (alreadyNative)
+            {
+                if (backend.Observe(baseline) != NativeBackendState.Absent) throw Repair("The old registration reappeared after native commit.");
+                owned.MarkNativeCommitted(); return;
+            }
+            await EnsureClosedAsync(options, token);
+            if (backend.Observe(baseline) == NativeBackendState.Uncertain) throw Repair("The exact user-only backend scope is ambiguous.");
+            SetPhase("removal-started");
+            try { await owned.RetireAsync(progress, token); }
+            catch
+            {
+                SetPhase(owned.NeedsRestoration ? "repair-required" : owned.Restored ? "restored" : "prepared");
+                throw;
+            }
+            SetPhase("removed");
+            progress?.Report(new("migration", "The complete attested footprint is retired. Installing native files.", 1, 1));
+            return;
+        }
         var state = backend.Observe(baseline);
         if (alreadyNative || journal.Phase == "removed")
         {
@@ -137,6 +169,14 @@ internal sealed class NativeMigrationSession : IDisposable
 
     internal async Task RestoreAsync(InstallOptions options, CancellationToken token)
     {
+        if (owned is not null)
+        {
+            if (!NeedsRestoration) return;
+            await EnsureClosedAsync(options, token); await VerifyMediaAsync(token);
+            await owned.RestoreAsync(null, token);
+            SetPhase(owned.Restored ? "restored" : "prepared");
+            return;
+        }
         if (!BackendWasRemoved || completed) return;
         await EnsureClosedAsync(options, token); await VerifyMediaAsync(token);
         if (backend.Observe(baseline) != NativeBackendState.Absent) throw Repair("The backend changed before rollback; automatic restoration was stopped.");
@@ -154,11 +194,20 @@ internal sealed class NativeMigrationSession : IDisposable
     internal void ConfirmRetired()
     {
         ValidateJournal();
+        if (owned is not null && !alreadyNative) owned.ConfirmRetired();
+        if (owned is not null && alreadyNative && !owned.NativeCommitted) throw Repair("Native recovery lacks its durable footprint commit marker.");
         if (backend.Observe(baseline) != NativeBackendState.Absent)
             throw Repair("The exact legacy backend reappeared before native file changes.");
     }
 
-    internal void Complete(InstalledProduct installed)
+    internal async Task CompleteAsync(InstalledProduct installed, IProgress<InstallProgress>? progress = null, CancellationToken token = default)
+    {
+        if (owned is null) { await CompleteSynchronously(installed); return; }
+        await Task.Run(() => Complete(installed));
+        await CleanupAfterCommitAsync(progress, token);
+    }
+    private Task CompleteSynchronously(InstalledProduct installed) { Complete(installed); return Task.CompletedTask; }
+    private void Complete(InstalledProduct installed)
     {
         lease.Validate(baseline.Product, stateRoot);
         if (installed.IsMsi || installed.IsExecutable || installed.Id != baseline.Product.Id || installed.Scope != baseline.Product.Scope ||
@@ -169,8 +218,21 @@ internal sealed class NativeMigrationSession : IDisposable
         target.VerifySignature(baseline.Product.PublisherKeySha256, requireSignature: true);
         if (!PackageSafety.HashEquals(NativeMigrationValidation.ManifestDigest(target), journal.TargetManifestSha256))
             throw Repair("The committed native receipt differs from this migration.");
+        owned?.MarkNativeCommitted();
+        if (owned is not null) journal.NativePackagePath = installed.PackagePath;
         SetPhase("complete"); completed = true;
-        DeleteVerifiedMedia();
+        if (owned is null) DeleteVerifiedMedia();
+    }
+
+    internal async Task FinalizeNativeCommitAsync(InstalledProduct installed, FileTransactionRecoveryContext context,
+        IProgress<InstallProgress>? progress, CancellationToken token)
+    {
+        if (!CanFinalizeNativeCommit) throw Repair("This is not a late native commit recovery.");
+        progress?.Report(new("migration-recover", "Verifying the already committed native application.", 0, 1));
+        if (!await Task.Run(() => FileTransactionRecovery.TargetIsInstalled(context), token))
+            throw Repair("The recorded native target is incomplete or changed; legacy revival remains forbidden.");
+        await CompleteAsync(installed, progress, token);
+        progress?.Report(new("complete", "The native migration commit was recovered.", 1, 1));
     }
 
     internal void RequireRepair(string message) => SetPhase("repair-required");
@@ -185,6 +247,11 @@ internal sealed class NativeMigrationSession : IDisposable
 
     private async Task RequireRestartBoundaryAsync(CancellationToken token)
     {
+        if (owned is not null)
+        {
+            owned.ValidateOuterPhase(journal.Phase, alreadyNative);
+            return; // No ARP/boot inference can replace the owned per-resource retirement marker.
+        }
         if (journal.Phase is not ("removal-started" or "await-restart" or "restore-started" or "restore-restart" or "repair-required")) return;
         var boot = await backend.BootIdentityAsync(token);
         if (boot == journal.BootIdentity) throw new NativeMigrationRestartRequiredException();
@@ -203,6 +270,33 @@ internal sealed class NativeMigrationSession : IDisposable
     private async Task EnsureClosedAsync(InstallOptions options, CancellationToken token) =>
         await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(baseline.Manifest, baseline.Product.InstallDirectory,
             "migrate", baseline.Product.Features), options.RunningApplicationsPrompt, token);
+
+    internal Task PlanNativeMetadataAsync(IReadOnlyDictionary<string, object>? values, CancellationToken token)
+    {
+        var retirement = owned;
+        return retirement is null ? Task.CompletedTask : Task.Run(() => retirement.PlanNativeMetadata(values), token);
+    }
+    internal Task ValidateWrapperBeforeStopAsync(CancellationToken token)
+    {
+        var retirement = owned;
+        return retirement is null ? Task.CompletedTask : Task.Run(retirement.ValidateWrapperBeforeStop, token);
+    }
+    internal async Task RecoverNativeTransactionsAsync(FileTransactionRecoveryContext context, InstallOptions options, CancellationToken token)
+    {
+        if (owned is null)
+        { await FileTransactionRecovery.RecoverAsync(context, options.RunningApplicationsPrompt, operationLockHeld: true, cancellationToken: token); return; }
+        if (context.TargetManifestSha256 != baseline.TargetManifestSha256 || context.ProductId != baseline.Product.Id ||
+            context.Scope != baseline.Product.Scope || !PackageSafety.HashEquals(context.PublisherKeySha256!, baseline.Product.PublisherKeySha256!) ||
+            !alreadyNative && !PackageSafety.HashEquals(context.BaseManifestSha256 ?? "", baseline.Authorization.FromManifestSha256) ||
+            !Path.GetFullPath(context.InstallDirectory).Equals(Path.GetFullPath(baseline.Product.InstallDirectory), StringComparison.OrdinalIgnoreCase))
+            throw Repair("Native recovery differs from the verified owned migration.");
+        // Target validation forbids every external integration except this explicitly snapshotted SDK ARP key.
+        var metadataRecovered = false;
+        await FileTransactionRecovery.RecoverOwnedAsync(context, () => { owned.RecoverNativeMetadata(); metadataRecovered = true; }, options.RunningApplicationsPrompt, token);
+        // A crash can happen during the owned metadata action before the ordinary file journal records any external metadata.
+        if (!alreadyNative && !owned.NativeCommitted && owned.HasNativeMetadataPlan && !metadataRecovered)
+            await Task.Run(owned.RecoverNativeMetadata, token);
+    }
 
     private Task VerifyMediaAsync(CancellationToken token) => Task.Run(() =>
     {
@@ -282,6 +376,7 @@ internal sealed class NativeMigrationSession : IDisposable
         public string OriginalPackageSha256 { get; set; } = "";
         public string OriginalReceiptSha256 { get; set; } = "";
         public string TargetManifestSha256 { get; set; } = "";
+        public string? NativePackagePath { get; set; }
         public string BootIdentity { get; set; } = "";
         public string Phase { get; set; } = "prepared";
         public int? LastExitCode { get; set; }

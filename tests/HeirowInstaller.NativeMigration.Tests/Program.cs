@@ -24,6 +24,8 @@ if (args is ["--probe-boot"])
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("format 3 is explicit, legacy serialization stays unchanged and unknown formats fail", Format),
+    ("Inno generated-media policy requires original authority and leaves execution disabled", InnoPolicyChecks.Run),
+    ("owned footprint attestation backs up, retires and recovers every resource without executing Inno", InnoOwnedFootprintChecks.Run),
     ("one owned HKCU key shared by both registry views counts once while MSI state and machine ambiguity stay strict", UserRegistryViews),
     ("exact MSI context and current SID authorize scope while ARP placement alone cannot", ExactMsiContextAuthority),
     ("recorded MSI retires under one lock and commits a native receipt", () => Success("msi", "user")),
@@ -54,7 +56,7 @@ var passed = 0;
 try
 {
     foreach (var test in tests) { await test.Run(); passed++; Console.WriteLine("PASS " + test.Name); }
-    Console.WriteLine($"Passed {passed}/{tests.Length} native migration cases. One uniquely marked temporary HKCU fixture key was removed; no real MSI, Burn, application or service was changed.");
+    Console.WriteLine($"Passed {passed}/{tests.Length} native migration cases. No real MSI, Burn, application or service was changed.");
     return 0;
 }
 catch (Exception failure) { Console.Error.WriteLine($"FAIL after {passed}/{tests.Length}: {failure}"); return 1; }

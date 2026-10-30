@@ -22,12 +22,12 @@ internal static class NativeMigrationValidation
                 throw new InvalidDataException("Native migration requires an exact signed baseline digest and scope.");
             if (definition.Backend == "msi")
             {
-                if (!Guid.TryParse(definition.MsiProductCode, out _) || definition.BurnRegistration is not null || definition.BurnMsiProductCodes is not null)
+                if (!Guid.TryParse(definition.MsiProductCode, out _) || definition.BurnRegistration is not null || definition.BurnMsiProductCodes is not null || definition.Inno is not null || definition.OwnedFootprint is not null)
                     throw new InvalidDataException("MSI migration requires its exact ProductCode only.");
             }
             else if (definition.Backend == "burn")
             {
-                if (definition.MsiProductCode is not null || definition.BurnRegistration is not { } registration)
+                if (definition.MsiProductCode is not null || definition.BurnRegistration is not { } registration || definition.Inno is not null || definition.OwnedFootprint is not null)
                     throw new InvalidDataException("Burn migration requires its exact signed registration.");
                 BackendMaintenance.ValidateDefinition(registration, definition.Scope);
                 if (registration.BundleUpgradeCode is null)
@@ -37,7 +37,10 @@ internal static class NativeMigrationValidation
                     definition.BurnMsiProductCodes.Select(Guid.Parse).Distinct().Count() != definition.BurnMsiProductCodes.Count)
                     throw new InvalidDataException("Burn migration must explicitly list its distinct application MSI child ProductCodes, or an explicit empty no-MSI chain.");
             }
-            else throw new InvalidDataException("Native migration supports recorded MSI and Burn installations only.");
+            else if (definition.Backend == "inno")
+                throw new InvalidDataException("Inno native migration is not implemented. Packages declaring this backend cannot be created or published.");
+            else if (definition.Backend == InnoOwnedPolicy.Backend) InnoOwnedPolicy.Validate(manifest, definition);
+            else throw new InvalidDataException("Native migration requires an explicit supported backend and complete authority; original-DAT execution is unsupported.");
         }
         if (manifest.UpdateCompanion is { UpdateMode: not "files" })
             throw new InvalidDataException("A migrated application's optional updater must use file updates.");
@@ -54,6 +57,15 @@ internal static class NativeMigrationValidation
             JsonSerializer.Serialize(signed, InstallerJson.Options) != JsonSerializer.Serialize(target.Manifest, InstallerJson.Options))
             throw new CryptographicException("Migration authority must come from the original signed bytes, not a modified package model.");
         ValidateDefinition(signed);
+        if (previous is not null && signed.NativeMigration?.Baselines.Any(x => x.Backend == InnoOwnedPolicy.Backend) == true)
+        {
+            using var recordedPackage = PackageReader.Open(previous.PackagePath);
+            recordedPackage.VerifySignature(previous.PublisherKeySha256, requireSignature: true);
+            if (recordedPackage.Manifest.Id != previous.Id || recordedPackage.Manifest.Version != previous.Version ||
+                previous.IsMsi != (recordedPackage.Manifest.LegacyMsi is not null) ||
+                previous.IsExecutable != (recordedPackage.Manifest.LegacyExecutable is not null))
+                throw new CryptographicException("The receipt backend flags differ from its original signed package; native ownership cannot be inferred.");
+        }
         var targetLegacy = target.Manifest.LegacyMsi is not null || target.Manifest.LegacyExecutable is not null;
         if (previous is null)
         {
@@ -93,6 +105,33 @@ internal static class NativeMigrationValidation
             if (!previous.IsMsi || previous.IsExecutable || original.Manifest.LegacyMsi is not { } msi ||
                 !SameGuid(previous.MsiProductCode, authorization.MsiProductCode) || !SameGuid(msi.ProductCode, authorization.MsiProductCode))
                 throw new CryptographicException("The recorded MSI ProductCode differs from the signed migration.");
+        }
+        else if (authorization.Backend == InnoOwnedPolicy.Backend)
+        {
+            InnoOwnedPolicy.Bind(original.Manifest, previous, authorization);
+            if (backend is not IInnoOwnedPlatformProvider provider)
+                throw new InvalidOperationException("This internal backend has no journaled ownership platform.");
+            var stateRoot = Path.GetFullPath(options.StateRoot ?? InstallerEngine.DefaultStateRoot(previous.Scope));
+            var provisional = new NativeMigrationBaseline(Clone(previous), Clone(original.Manifest), Clone(authorization), ManifestDigest(target), "");
+            var platform = provider.OwnedPlatform(provisional, stateRoot);
+            var root = PackageSafety.UnderRoot(platform.LocalAppData, authorization.OwnedFootprint!.RootRelativeToLocalAppData);
+            if (platform.IsIsolated != options.Isolated || !root.Equals(Path.GetFullPath(previous.InstallDirectory), StringComparison.OrdinalIgnoreCase) ||
+                options.RegisterProduct == false && previous.RegisteredProduct)
+                throw new InvalidDataException("Owned retirement cannot change the current user/root or disable an existing SDK maintenance identity.");
+            if (previous.RegisteredProduct && !platform.IsIsolated)
+            {
+                if (options.InstallerPath is null) throw new InvalidDataException("A registered owned migration requires its current standalone maintenance host.");
+                StandaloneRuntimeInspector.RequireEmbeddedRuntime(options.InstallerPath);
+            }
+            if (previous.UninstallerPath is { } host)
+            {
+                if (!Path.GetFullPath(host).StartsWith(PackageSafety.UnderRoot(stateRoot, previous.Id) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("The old maintenance host escapes its product cache.");
+                using var cachedHost = PackageReader.Open(host);
+                cachedHost.VerifySignature(previous.PublisherKeySha256, requireSignature: true);
+                if (!PackageSafety.HashEquals(ManifestDigest(cachedHost), authorization.FromManifestSha256))
+                    throw new CryptographicException("The SDK maintenance host differs from the original signed wrapper.");
+            }
         }
         else
         {

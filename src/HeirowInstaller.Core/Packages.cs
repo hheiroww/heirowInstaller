@@ -52,7 +52,9 @@ public static class PackageBuilder
             file.Sha256 = PackageSafety.HashFile(input);
         }
         PackageSafety.ValidateManifest(manifest, true);
+        if (signingKeyPath is null) InnoOwnedPolicy.RequirePackageSignature(manifest, null);
         var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, InstallerJson.Options);
+        if (manifestBytes.Length > IncrementalPackageIO.MaximumManifestBytes) throw new InvalidDataException("Package manifest exceeds its supported size.");
         PackageSafety.EnsureNoReparsePoints(outputPath);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         var temporary = outputPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -75,6 +77,7 @@ public static class PackageBuilder
                     using var rsa = RSA.Create();
                     rsa.ImportFromPem(File.ReadAllText(signingKeyPath));
                     if (rsa.KeySize < 2048) throw new InvalidDataException("RSA signing keys must be at least 2048 bits.");
+                    InnoOwnedPolicy.RequirePackageSignature(manifest, Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())));
                     var signature = new PackageSignature
                     {
                         Algorithm = "RSA-PSS-SHA256",
@@ -149,6 +152,8 @@ public sealed class PackageReader : IDisposable
             using (var buffer = new MemoryStream()) { source.CopyTo(buffer); manifestBytes = buffer.ToArray(); }
             Manifest = JsonSerializer.Deserialize<PackageManifest>(manifestBytes, InstallerJson.Options) ?? throw new InvalidDataException("Empty package manifest.");
             PackageSafety.ValidateManifest(Manifest, true);
+            if (Manifest.NativeMigration?.Baselines.Any(x => x.Backend == InnoOwnedPolicy.Backend) == true)
+                IncrementalPackageIO.ValidateJson(manifestBytes);
             var permitted = new HashSet<string>(Manifest.Payload.Select(x => "payload/" + x.Path), StringComparer.OrdinalIgnoreCase) { "manifest.json", "signature.json" };
             if (entries.Keys.Any(x => !permitted.Contains(x))) throw new InvalidDataException("Package contains undeclared entries.");
             foreach (var file in Manifest.Payload)
@@ -164,6 +169,7 @@ public sealed class PackageReader : IDisposable
                 PublisherKeySha256 = Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
                 VerifySignature();
             }
+            InnoOwnedPolicy.RequirePackageSignature(Manifest, PublisherKeySha256);
         }
         catch { stream.Dispose(); throw; }
     }

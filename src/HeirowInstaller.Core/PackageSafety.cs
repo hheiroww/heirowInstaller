@@ -111,6 +111,7 @@ public static partial class PackageSafety
             manifest.LaunchWorkingDirectory is not null || manifest.Shortcuts.Any(x => x.WorkingDirectory is not null)))
             throw new InvalidDataException("Native backend migration, structured prerequisite detection and explicit working directories require package format 3.");
         NativeMigrationValidation.ValidateDefinition(manifest);
+        InnoMigrationPolicy.ValidateOriginalDeclaration(manifest, requireHashes);
         foreach (var prerequisite in manifest.Prerequisites)
             if (prerequisite.Detection is { } detection) PrerequisiteDetection.Validate(detection);
         if (manifest.LaunchWorkingDirectory is not null) manifest.LaunchWorkingDirectory = NormalizeRelativePath(manifest.LaunchWorkingDirectory);

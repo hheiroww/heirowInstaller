@@ -17,16 +17,23 @@ internal interface INativeMigrationBackend
     Task<int> RestoreAsync(NativeMigrationBaseline baseline, string verifiedMedia, InstallOptions options, CancellationToken token);
 }
 
-internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
+internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend, IInnoOwnedPlatformProvider
 {
+    public IInnoOwnedPlatform OwnedPlatform(NativeMigrationBaseline baseline, string stateRoot)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Owned Inno retirement requires Windows.");
+        return new WindowsInnoOwnedPlatform(baseline.Authorization.OwnedFootprint!, stateRoot);
+    }
     public NativeBackendState ObserveDeclared(NativeMigrationBaselineDefinition definition, bool isolated)
     {
+        if (definition.Backend == "inno") InnoMigrationPolicy.RequireExecutionImplementation();
         if (isolated) throw new InvalidOperationException("Isolated validation cannot inspect a real legacy backend.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Native migration requires Windows.");
         return ObserveWindows(definition, expectedBurnPath: null);
     }
     public NativeBackendState Observe(NativeMigrationBaseline baseline)
     {
+        if (baseline.Authorization.Backend == "inno") InnoMigrationPolicy.RequireExecutionImplementation();
         if (baseline.Product.Isolated) throw new InvalidOperationException("Isolated validation cannot inspect a real legacy backend.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Native migration requires Windows.");
         return ObserveWindows(baseline.Authorization, baseline.Authorization.Backend == "burn" ? baseline.Product.BackendRegistrations.Single().Values["path"] : null);
@@ -37,6 +44,20 @@ internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
     {
         if (definition.Backend == "msi")
             return ObserveMsi(definition.Scope, definition.MsiProductCode!);
+        if (definition.Backend == InnoOwnedPolicy.Backend)
+        {
+            var owned = definition.OwnedFootprint!;
+            using var user = WindowsIntegration.Hive("user", owned.Registration.View);
+            using var key = user.OpenSubKey(owned.Registration.UninstallKey!);
+            foreach (var view in new[] { "registry64", "registry32" })
+            {
+                using var machine = WindowsIntegration.Hive("machine", view);
+                using var other = machine.OpenSubKey(owned.Registration.UninstallKey!);
+                if (other is not null) return NativeBackendState.Uncertain;
+            }
+            return key is null ? NativeBackendState.Absent : NativeBackendState.Installed;
+            // This read-only state never authorizes retirement completion; the dedicated ledger does.
+        }
         var registration = definition.BurnRegistration!;
         using (var hive = WindowsIntegration.Hive(registration.Hive, registration.View))
         using (var root = hive.OpenSubKey(BackendMaintenance.UninstallRoot.TrimEnd('\\')))
@@ -150,6 +171,8 @@ internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
 
     public async Task<int> UninstallAsync(NativeMigrationBaseline baseline, string verifiedMedia, InstallOptions options, CancellationToken token)
     {
+        if (baseline.Authorization.Backend == "inno") InnoMigrationPolicy.RequireExecutionImplementation();
+        if (baseline.Authorization.Backend == InnoOwnedPolicy.Backend) throw new InvalidOperationException("Owned retirement must use its per-resource journal, never external backend execution.");
         if (options.Isolated || baseline.Product.Isolated) throw new InvalidOperationException("Isolated validation cannot retire a real legacy backend.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Native migration requires Windows.");
         var plan = OriginalPlan(baseline);
@@ -169,6 +192,8 @@ internal sealed class WindowsNativeMigrationBackend : INativeMigrationBackend
 
     public async Task<int> RestoreAsync(NativeMigrationBaseline baseline, string verifiedMedia, InstallOptions options, CancellationToken token)
     {
+        if (baseline.Authorization.Backend == "inno") InnoMigrationPolicy.RequireExecutionImplementation();
+        if (baseline.Authorization.Backend == InnoOwnedPolicy.Backend) throw new InvalidOperationException("Owned restoration must use exact before-images, never setup execution.");
         if (options.Isolated || baseline.Product.Isolated) throw new InvalidOperationException("Isolated validation cannot restore a real legacy backend.");
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Native migration requires Windows.");
         options = BackendOptions(baseline, options);

@@ -1,5 +1,11 @@
 # Retiring a recorded MSI or Burn installer
 
+This worktree also contains an uncompiled, untested source implementation of the
+bounded [publisher-attested Inno owned-footprint mode](inno-owned-footprint-design.md).
+No application catalog is enrolled or released. Original-DAT execution
+(`backend: "inno"`) remains rejected; its internal policy groundwork is described
+in [the preparation notes](inno-migration-preparation.md).
+
 A format 3 native package may authorize an exact transition from previously published MSI or Burn packages. It includes the complete native payload and an optional `nativeMigration` declaration. The first native migration uses a newly built standalone setup; subsequent native updates can use `.hupd` files.
 
 One immutable target can list up to 32 published baselines:

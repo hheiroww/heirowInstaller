@@ -185,8 +185,14 @@ public sealed class InstallerEngine
             options.FileRecoveryContext = FileTransactionRecoveryContext.ForInstall(package, plan, previous, options);
         else options.FileRecoveryContext ??= FileTransactionRecoveryContext.ForInstall(package, plan, previous, options);
         options.FileRecoveryContext.ValidateInstalledBase(previous);
-        await FileTransactionRecovery.RecoverAsync(options.FileRecoveryContext, options.RunningApplicationsPrompt,
+        if (migration is not null) await migration.RecoverNativeTransactionsAsync(options.FileRecoveryContext, options, cancellationToken);
+        else await FileTransactionRecovery.RecoverAsync(options.FileRecoveryContext, options.RunningApplicationsPrompt,
             operationLockHeld: true, cancellationToken: cancellationToken);
+        if (migration is { CanFinalizeNativeCommit: true })
+        {
+            await migration.FinalizeNativeCommitAsync(previous!, options.FileRecoveryContext, progress, cancellationToken);
+            return Result(previous!, reboot: false);
+        }
         if (options.CompanionStopAlreadyHandled && previous is null)
             throw new InvalidOperationException("The staged update's application is no longer installed.");
         if (options.CompanionStopAlreadyHandled) ValidateStagedApplication(previous!);
@@ -203,6 +209,7 @@ public sealed class InstallerEngine
             await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
+            if (migration is not null) await migration.ValidateWrapperBeforeStopAsync(cancellationToken);
             if (previous is not null && !options.CompanionStopAlreadyHandled) await StopCompanionAsync(previous, cancellationToken);
             if (migration is not null) await migration.RetireAsync(options, progress, cancellationToken);
             Log(options, $"Installing {package.Manifest.Id} {package.Manifest.Version} to {plan.InstallDirectory}");
@@ -307,7 +314,9 @@ public sealed class InstallerEngine
             else if (!PackageSafety.HashEquals(PackageSafety.HashFile(product.PackagePath), digest)) throw new IOException("Cached package hash mismatch.");
             product.UninstallerPath ??= CacheUninstaller(options, cache, transaction, plan.Scope, package.Manifest) ?? previous?.UninstallerPath;
             product.RegisteredProduct = options.RegisterProduct && !options.Isolated && (!(product.IsMsi || product.IsExecutable) || plan.UpdateCompanionEnabled) && product.UninstallerPath is not null;
-            if (product.RegisteredProduct) WindowsIntegration.RegisterProduct(product, root, transaction, package.Manifest);
+            var registrationValues = product.RegisteredProduct ? WindowsIntegration.ProductRegistrationValues(product, root, package.Manifest) : null;
+            if (migration is not null) await migration.PlanNativeMetadataAsync(registrationValues, cancellationToken);
+            if (product.RegisteredProduct) WindowsIntegration.RegisterProduct(product, root, transaction, package.Manifest, registrationValues);
             else if (previous is { RegisteredProduct: true }) WindowsIntegration.UnregisterProduct(previous, transaction);
             var receiptTemporary = Path.Combine(txRoot, "new-receipt.json");
             await File.WriteAllTextAsync(receiptTemporary, JsonSerializer.Serialize(product, InstallerJson.Options), cancellationToken);
@@ -315,7 +324,7 @@ public sealed class InstallerEngine
             if (OperatingSystem.IsWindows() && machineState is not null) MachineStateSecurity.ValidateExistingRoot(root);
             transaction.Commit();
             nativeCommitted = true;
-            migration?.Complete(product);
+            if (migration is not null) await migration.CompleteAsync(product, progress, cancellationToken);
             progress?.Report(new("complete", "Installation completed", 1, 1));
             Log(options, $"Installed {product.Id} {product.Version}; reboot required: {reboot}");
             if (options.Launch && package.Manifest.EntryPoint.Length > 0)
@@ -347,7 +356,7 @@ public sealed class InstallerEngine
                     migration?.RequireRepair("Native rollback was incomplete.");
                     throw new AggregateException("Installation rollback requires repair; recovery data was preserved.", failure, rollbackFailure);
                 }
-                if (migration is { BackendWasRemoved: true })
+                if (migration is { NeedsRestoration: true })
                 {
                     try { await migration.RestoreAsync(options, CancellationToken.None); }
                     catch (Exception restoreFailure)
@@ -433,10 +442,11 @@ public sealed class InstallerEngine
         if (product.Scope == "machine" && !IsElevated && !product.Isolated) throw new UnauthorizedAccessException("Uninstall requires administrator privileges.");
         var root = Path.GetDirectoryName(Path.GetDirectoryName(product.ReceiptPath))!;
         using var machineState = GuardProductState(product, options);
-        using var operationLock = AcquireLock(root, product.Id);
+        using var operationLock = new ProductOperationLease(root, product.Id, product.Scope, product.Isolated, AcquireLock(root, product.Id));
         cancellationToken.ThrowIfCancellationRequested();
         product = ReadReceipt(product.ReceiptPath, product.Scope, options.Isolated) ?? throw new InvalidDataException("Installation receipt is missing.");
         NativeMigrationSession.GuardMaintenance(product);
+        await NativeMigrationSession.RetryCompletedCleanupAsync(product, nativeMigrationBackend, operationLock, progress, cancellationToken);
         using (var guardedPackage = PackageReader.Open(product.PackagePath))
         {
             guardedPackage.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
