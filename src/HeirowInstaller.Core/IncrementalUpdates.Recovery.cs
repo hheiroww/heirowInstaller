@@ -151,8 +151,8 @@ public sealed class FileTransactionRecoveryContext
             PublisherKeySha256 = publisherPin, BaseManifestSha256 = baseDigest,
             TargetManifestSha256 = targetDigest, BaseVersion = previous?.Version,
             TargetVersion = manifest.Version, RequireExactBase = requireExactBase, Isolated = options.Isolated,
-            Applications = oldManifest is null ? [RunningApplicationTarget.FromPlan(plan, "recover update")]
-                : [RunningApplicationTarget.FromManifest(oldManifest, installRoot, "recover update", previous!.Features), RunningApplicationTarget.FromPlan(plan, "recover update")],
+            Applications = oldManifest is null ? [RunningApplicationTarget.FromPlan(plan, "recover update", options.Isolated)]
+                : [RunningApplicationTarget.FromManifest(oldManifest, installRoot, "recover update", previous!.Features, previous.Scope, previous.Isolated), RunningApplicationTarget.FromPlan(plan, "recover update", options.Isolated)],
             Files = files.Values.OrderBy(file => file.Location + ":" + file.Path, StringComparer.OrdinalIgnoreCase).ToArray()
         };
         result.Validate();

@@ -279,7 +279,7 @@ internal sealed partial class AppController : IDisposable
             {
                 using var reader = PackageReader.Open(packagePath);
                 arguments.ValidatePackageIdentity(reader);
-                await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(engine.Plan(reader, options), "install"), Cancellation!.Token);
+                await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(engine.Plan(reader, options), "install", options.Isolated), Cancellation!.Token);
                 if (useWorker)
                     return await ElevatedInstallWorker.InstallAsync(packagePath, engine.Plan(reader, options), options,
                         PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token);

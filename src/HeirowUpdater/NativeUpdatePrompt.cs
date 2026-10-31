@@ -138,7 +138,7 @@ internal static class NativeUpdatePrompt
         PromptResult result;
         if (request.RunningApplications is { } running)
         {
-            if (!running.ProductId.Equals(configuration.ProductId, StringComparison.OrdinalIgnoreCase) || running.Applications.Count == 0)
+            if (!running.ProductId.Equals(configuration.ProductId, StringComparison.OrdinalIgnoreCase) || running.Applications.Count == 0 && !running.InspectionTimedOut)
                 throw new InvalidDataException("The close-apps request does not match this installed application.");
             result = new() { RunningChoice = await RunRunningApplicationsInProcessAsync(running with { ProductName = configuration.Name },
                 request.AcceptanceChoice, request.CapturePath, request.ReportPath, promptCancellation.Token) };
@@ -180,8 +180,10 @@ internal static class NativeUpdatePrompt
     private static Task<RunningApplicationsChoice> RunRunningApplicationsInProcessAsync(RunningApplicationsRequest request,
         string? acceptanceChoice, string? capturePath, string? reportPath, CancellationToken token)
     {
-        if (acceptanceChoice is not null && acceptanceChoice is not ("close" or "cancel"))
-            throw new ArgumentException("Close-apps acceptance choice must be close or cancel.");
+        if (acceptanceChoice is not null && acceptanceChoice is not ("close" or "cancel" or "check" or "force"))
+            throw new ArgumentException("Close-apps acceptance choice must be close, cancel, check, or force.");
+        if (acceptanceChoice == "force" && !request.Applications.Any(application => application.CanForceClose))
+            throw new ArgumentException("Force-close acceptance requires an eligible listed app.");
         var completion = new TaskCompletionSource<RunningApplicationsChoice>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
@@ -195,8 +197,8 @@ internal static class NativeUpdatePrompt
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
                     File.WriteAllText(reportPath, JsonSerializer.Serialize(new { framework = "Project-Z", choice = game.Choice.ToString(),
-                        request.ProductId, request.Operation, request.IsRetry, request.Applications, antiAliasing = 16, anisotropicFiltering = 16,
-                        pointerEventsInjected = game.Injected }, InstallerJson.Options));
+                        request.ProductId, request.Operation, request.IsRetry, request.InspectionTimedOut, request.Applications, antiAliasing = 16, anisotropicFiltering = 16,
+                        pointerEventsInjected = game.Injected, forceCloseConfirmationShown = game.ForceCloseConfirmationShown }, InstallerJson.Options));
                 }
                 token.ThrowIfCancellationRequested();
                 completion.SetResult(game.Choice);
@@ -384,8 +386,10 @@ internal static class NativeUpdatePrompt
         private RunningApplicationsScene scene = null!;
         private SpriteBatch batch = null!;
         private int frames, page;
-        private bool captured, details;
+        private bool captured, details, confirmForceClose;
+        private int injectedActions;
         internal bool Injected { get; private set; }
+        internal bool ForceCloseConfirmationShown { get; private set; }
         internal RunningApplicationsChoice Choice { get; private set; } = RunningApplicationsChoice.Cancel;
 
         internal RunningApplicationsGame(RunningApplicationsRequest request, string? acceptanceChoice, string? capturePath)
@@ -401,14 +405,24 @@ internal static class NativeUpdatePrompt
         internal void Choose(RunningApplicationsChoice choice) { Choice = choice; Exit(); }
         internal void ShowPage(int direction) => Enqueue(() =>
         {
-            page = Math.Clamp(page + direction, 0, (request.Applications.Count - 1) / 3);
+            var count = confirmForceClose ? request.Applications.Count(application => application.CanForceClose) : request.Applications.Count;
+            page = Math.Clamp(page + direction, 0, Math.Max(0, (count - 1) / 3));
             Rebuild();
         });
         internal void ToggleDetails() => Enqueue(() => { details = !details; Rebuild(); });
+        internal void ShowForceCloseConfirmation(bool show) => Enqueue(() =>
+        {
+            if (show && !request.Applications.Any(application => application.CanForceClose)) return;
+            confirmForceClose = show; ForceCloseConfirmationShown |= show; page = 0; details = false; Rebuild();
+        });
+        internal void ConfirmForceClose()
+        {
+            if (confirmForceClose && request.Applications.Any(application => application.CanForceClose)) Choose(RunningApplicationsChoice.ForceCloseListedApps);
+        }
         private void Rebuild()
         {
             manager.RemoveScene("close-apps"); scene.Dispose();
-            scene = new RunningApplicationsScene(manager, this, request, page, details); manager.AddScene("close-apps", scene); manager.ActiveScene = scene;
+            scene = new RunningApplicationsScene(manager, this, request, page, details, confirmForceClose); manager.AddScene("close-apps", scene); manager.ActiveScene = scene;
         }
         protected override void LoadContent()
         {
@@ -417,15 +431,17 @@ internal static class NativeUpdatePrompt
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);
             var quality = GraphicsQuality.ForDevice(GraphicsDevice); quality.AntiAliasingSamples = 16; quality.Filtering = TextureFiltering.Anisotropic16x; quality.PpiPerfectText = true;
             manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(Width, Height), UseHardwareInput = true };
-            scene = new RunningApplicationsScene(manager, this, request, page, details); manager.AddScene("close-apps", scene); manager.ActiveScene = scene;
+            scene = new RunningApplicationsScene(manager, this, request, page, details, confirmForceClose); manager.AddScene("close-apps", scene); manager.ActiveScene = scene;
         }
         protected override void Update(GameTime time)
         {
             while (actions.TryDequeue(out var action)) action();
             manager.Tick(time);
-            if (acceptanceChoice is not null && !Injected && frames > 30 && (capturePath is null || captured))
+            if (acceptanceChoice is not null && frames > 30 + injectedActions * 8 && (capturePath is null || captured) &&
+                (injectedActions == 0 || acceptanceChoice == "force" && injectedActions == 1 && confirmForceClose))
             {
-                Injected = true; var rectangle = scene.Button(acceptanceChoice).Rectangle;
+                var key = acceptanceChoice == "force" && injectedActions == 1 ? "force-confirm" : acceptanceChoice;
+                Injected = true; injectedActions++; var rectangle = scene.Button(key).Rectangle;
                 manager.InjectMouseMove(rectangle.Center.X, rectangle.Center.Y, Width, Height);
                 manager.InjectMouseLeftDown(rectangle.Center.X, rectangle.Center.Y, Width, Height);
                 manager.InjectMouseLeftUp(rectangle.Center.X, rectangle.Center.Y, Width, Height);
@@ -454,7 +470,7 @@ internal static class NativeUpdatePrompt
         private readonly RectangleElement root;
         private readonly Dictionary<string, Button> buttons = [];
         internal Button Button(string key) => buttons[key];
-        internal RunningApplicationsScene(SceneManager manager, RunningApplicationsGame game, RunningApplicationsRequest request, int page, bool details) : base(manager)
+        internal RunningApplicationsScene(SceneManager manager, RunningApplicationsGame game, RunningApplicationsRequest request, int page, bool details, bool confirmForceClose) : base(manager)
         {
             BackgroundColor = Background; EnableDesignTimeControls = false; isCursorVisible = false;
             root = new RectangleElement(this) { Position = Vector2.Zero, Size = new(780, 650), BackgroundColor = Background, Padding = new Thickness(0) }; AddElement(root);
@@ -463,11 +479,16 @@ internal static class NativeUpdatePrompt
             Label("heirowUpdater", 85, 27, 400, 27, 14, TextColor, true);
             Label("SOCKETJACK  ·  APPLICATION UPDATES", 86, 57, 590, 20, 8, Muted, true);
             Box(28, 91, 724, 1, Border);
-            Label(request.IsRetry ? "An app is still open." : "Close apps to continue.", 30, 108, 720, 43, 25, TextColor, true);
+            var listed = confirmForceClose ? request.Applications.Where(application => application.CanForceClose).ToArray() : request.Applications;
+            var forceCount = request.Applications.Count(application => application.CanForceClose);
+            Label(confirmForceClose ? $"Force close {forceCount} app{(forceCount == 1 ? "" : "s")}?" : request.InspectionTimedOut ? "Application check took too long." : request.IsRetry ? "An app is still open." : "Close apps to continue.", 30, 108, 720, 43, 25, TextColor, true);
             Label(request.ProductName, 32, 158, 710, 31, 16, Lime, true);
-            Paragraph(request.IsRetry ? "Finish saving your work, then retry. You can cancel this " + Operation(request.Operation) + " at any time."
+            Paragraph(confirmForceClose ? "Only the apps listed below will be forced to quit. Unsaved work in these apps will be lost. Save your work before confirming."
+                : request.InspectionTimedOut ? "Installation is paused because the application check did not finish in time. Check again or cancel."
+                : request.IsRetry ? "Finish saving your work, then retry. You can cancel this " + Operation(request.Operation) + " at any time."
                 : "Save your work before continuing. These apps use files needed for this " + Operation(request.Operation) + ".", 32, 200, 710, 48, 10.5f, Muted);
-            var applications = request.Applications.Skip(page * 3).Take(3).ToArray();
+            page = Math.Clamp(page, 0, Math.Max(0, (listed.Count - 1) / 3));
+            var applications = listed.Skip(page * 3).Take(3).ToArray();
             if (details)
             {
                 Box(30, 264, 720, 229, Surface);
@@ -481,32 +502,29 @@ internal static class NativeUpdatePrompt
             {
                 var application = applications[i]; var y = 264 + i * 79;
                 Box(30, y, 720, 71, Surface);
-                Label(application.DisplayName, 44, y + 7, 688, 24, 10.5f, TextColor, true);
-                Label(WindowTitle(application) ?? (application.Kind == "plugin-host" ? "This app is using an installed plugin." : "This app is using application files."), 44, y + 31, 688, 21, 9, Muted);
-                Label(application.CanRequestClose ? "A normal close request will preserve the app's save prompts." : "Close this app yourself, then select Check again.",
-                    44, y + 51, 688, 18, 8, application.CanRequestClose ? Muted : Orange);
+                Label(application.DisplayName + "  ·  PID " + application.ProcessId, 44, y + 7, 688, 24, 10.5f, TextColor, true);
+                Label(confirmForceClose ? application.ExecutablePath : application.Kind == "plugin-host" ? "This app is using an installed plugin." : "This app is using application files.", 44, y + 31, 688, 21, 9, Muted);
+                Label(confirmForceClose ? "Force close will discard unsaved work in this app." : application.CanRequestClose ? "A normal close request will preserve the app's save prompts." : application.CanForceClose ? "Close manually or select Force close… after saving." : "Close this app yourself, then select Check again.",
+                    44, y + 51, 688, 18, 8, confirmForceClose || !application.CanRequestClose ? Orange : Muted);
             }
-            var pages = (request.Applications.Count + 2) / 3;
-            Label(request.Applications.Count + (request.Applications.Count == 1 ? " open app" : " open apps") + (pages > 1 ? "  ·  Page " + (page + 1) + " of " + pages : ""), 32, 508, 300, 24, 9, Muted);
+            var pages = (listed.Count + 2) / 3;
+            Label(listed.Count + (listed.Count == 1 ? " listed app" : " listed apps") + (pages > 1 ? "  ·  Page " + (page + 1) + " of " + pages : ""), 32, 508, 300, 24, 9, Muted);
             Action("details", details ? "App list" : "Details", 352, 503, 130, false, game.ToggleDetails, 34);
             if (page > 0) Action("previous", "Previous", 502, 503, 116, false, () => game.ShowPage(-1), 34);
             if (page + 1 < pages) Action("next", "Next", 634, 503, 116, false, () => game.ShowPage(1), 34);
-            Label("No app will be forced to quit. Your application files are unchanged until apps close.", 32, 548, 710, 25, 9, Muted);
-            Action("cancel", "Cancel " + Operation(request.Operation), 31, 590, 218, false, () => game.Choose(RunningApplicationsChoice.Cancel));
-            var canClose = request.Applications.Any(x => x.CanRequestClose);
-            Action("close", canClose ? request.IsRetry ? "Retry closing apps" : "Close apps and continue" : "Check again", 476, 590, 273, true,
-                () => game.Choose(RunningApplicationsChoice.CloseAppsAndContinue));
-        }
-        private static string? WindowTitle(RunningApplication application)
-        {
-            try
+            Paragraph(confirmForceClose ? "Confirm only after saving. Other apps and processes will not be forced to close." : request.InspectionTimedOut ? request.Message : "Close apps preserves save prompts. Force close… requires a separate confirmation.", 32, 543, 710, 35, 9, Muted);
+            Action("cancel", "Cancel " + Operation(request.Operation), 31, 590, 174, false, () => game.Choose(RunningApplicationsChoice.Cancel));
+            if (confirmForceClose)
             {
-                using var process = Process.GetProcessById(application.ProcessId);
-                if (process.StartTime.ToUniversalTime().Ticks != application.StartTimeUtcTicks) return null;
-                var title = process.MainWindowTitle;
-                return string.IsNullOrWhiteSpace(title) ? null : new string(title.Where(character => !char.IsControl(character)).ToArray());
+                Action("back", "Back", 221, 590, 174, false, () => game.ShowForceCloseConfirmation(false));
+                Action("force-confirm", $"Force close {forceCount} app{(forceCount == 1 ? "" : "s")}", 411, 590, 338, true, game.ConfirmForceClose, accent: Orange);
+                return;
             }
-            catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+            var canClose = request.Applications.Any(x => x.CanRequestClose);
+            Action("check", "Check again", 221, 590, 166, !canClose, () => game.Choose(RunningApplicationsChoice.CheckAgain));
+            if (canClose) Action("close", "Close apps", 403, 590, 166, true, () => game.Choose(RunningApplicationsChoice.CloseAppsAndContinue));
+            else buttons["close"] = buttons["check"]; // Preserve the isolated legacy acceptance choice.
+            if (forceCount > 0) Action("force", "Force close…", canClose ? 585 : 403, 590, 164, false, () => game.ShowForceCloseConfirmation(true), accent: Orange);
         }
         private static string Operation(string operation) => operation is "repair" or "uninstall" ? operation : "installation";
         private static string Font(float points, bool bold = false) => ContentContainer.SystemFontName("Segoe UI", bold ? 600 : 400, points);
@@ -514,11 +532,12 @@ internal static class NativeUpdatePrompt
         private void Box(int x, int y, int width, int height, Color color) => Add(new RectangleElement(this) { Position = new(x, y), Size = new(width, height), BackgroundColor = color, BorderColor = Border, BorderThickness = height == 1 ? 0 : 1, CornerRadius = height == 1 ? 0 : 9, Padding = new Thickness(0), isMouseBypassEnabled = true });
         private void Label(string text, int x, int y, int width, int height, float points, Color color, bool bold = false) => Add(new TextElement(this) { Text = text, Position = new(x, y), Size = new(width, height), Font = Font(points, bold), ForegroundColor = color, Padding = new Thickness(0), TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = width, PpiPerfectText = true, isMouseBypassEnabled = true });
         private void Paragraph(string text, int x, int y, int width, int height, float points, Color color) => Add(new Textbox(this) { Text = text, Position = new(x, y), Size = new(width, height), Font = Font(points), ForegroundColor = color, BackgroundColor = Background, BorderThickness = 0, IsReadOnly = true, TextPadding = Vector2.Zero, AcceptsReturn = true, WrapText = true, Padding = new Thickness(0) });
-        private void Action(string key, string text, int x, int y, int width, bool primary, Action click, int height = 44)
+        private void Action(string key, string text, int x, int y, int width, bool primary, Action click, int height = 44, Color? accent = null)
         {
+            var tone = accent ?? Lime;
             var button = Add(new Button(this) { AutoSize = ButtonAutoSize.None, Text = text, Position = new(x, y), Size = new(width, height), Font = Font(10.5f, true),
-                ForegroundColor = primary ? Background : Muted, BackgroundColor = primary ? Lime : Surface, BorderColor = primary ? Color.Transparent : Border, BorderThickness = primary ? 0 : 1,
-                CornerRadius = 8, MouseOverBackgroundColor = primary ? Color.Lerp(Lime, Color.White, .12f) : new Color(40, 54, 67), MouseDownBackgroundColor = primary ? Color.Lerp(Lime, Color.Black, .12f) : Border,
+                ForegroundColor = primary ? Background : accent ?? Muted, BackgroundColor = primary ? tone : Surface, BorderColor = primary ? Color.Transparent : Border, BorderThickness = primary ? 0 : 1,
+                CornerRadius = 8, MouseOverBackgroundColor = primary ? Color.Lerp(tone, Color.White, .12f) : new Color(40, 54, 67), MouseDownBackgroundColor = primary ? Color.Lerp(tone, Color.Black, .12f) : Border,
                 Padding = new Thickness(12, 6, 12, 6), isAnimated = false });
             button.MouseLeftClick += _ => click(); buttons[key] = button;
         }

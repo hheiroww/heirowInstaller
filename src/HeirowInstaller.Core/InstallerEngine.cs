@@ -450,7 +450,7 @@ public sealed class InstallerEngine
         using (var guardedPackage = PackageReader.Open(product.PackagePath))
         {
             guardedPackage.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
-            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(guardedPackage.Manifest, product.InstallDirectory, "uninstall", product.Features),
+            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(guardedPackage.Manifest, product.InstallDirectory, "uninstall", product.Features, product.Scope, product.Isolated),
                 options.RunningApplicationsPrompt, cancellationToken);
             progress?.Report(new("applications", "Applications closed. Continuing uninstall.", 1, 1));
         }
@@ -469,7 +469,7 @@ public sealed class InstallerEngine
             var extracted = Path.Combine(transaction.Root, "external");
             await package.ExtractVerifiedAsync(extracted, null, progress, cancellationToken);
             product.LegacySourceDirectory = PrepareLegacySource(package.Manifest, extracted, cache, PackageSafety.HashFile(product.PackagePath), transaction);
-            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(package.Manifest, product.InstallDirectory, "uninstall", product.Features),
+            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(package.Manifest, product.InstallDirectory, "uninstall", product.Features, product.Scope, product.Isolated),
                 options.RunningApplicationsPrompt, cancellationToken);
             var exit = await WindowsIntegration.RunExecutableAsync("uninstall", package.Manifest.LegacyExecutable!, product.LegacySourceDirectory, product.InstallDirectory, options, cancellationToken);
             reboot = exit is 3010 or 1641;
@@ -516,7 +516,7 @@ public sealed class InstallerEngine
     private static async Task EnsureApplicationsClosedAsync(InstallPlan plan, InstallOptions options, string operation,
         IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
-        await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromPlan(plan, operation), options.RunningApplicationsPrompt, cancellationToken);
+        await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromPlan(plan, operation, options.Isolated), options.RunningApplicationsPrompt, cancellationToken);
         progress?.Report(new("applications", "Applications closed. Continuing " + operation + ".", 1, 1));
     }
 
@@ -654,7 +654,7 @@ public sealed class InstallerEngine
             Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin, UpdateMode = definition.UpdateMode,
             AuthApplication = definition.AuthApplication,
             CookieEnvironmentVariable = definition.CookieEnvironmentVariable, TokenEnvironmentVariable = definition.TokenEnvironmentVariable,
-            AffectedResourceFiles = RunningApplicationTarget.FromManifest(manifest, product.InstallDirectory, features: product.Features).AffectedResourceFiles.ToList()
+            AffectedResourceFiles = RunningApplicationTarget.FromManifest(manifest, product.InstallDirectory, "update", product.Features, product.Scope, product.Isolated).AffectedResourceFiles.ToList()
         };
         if (definition.RuntimeMode == "shared")
         {

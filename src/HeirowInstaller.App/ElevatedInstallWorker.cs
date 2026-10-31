@@ -71,7 +71,7 @@ internal static class ElevatedInstallWorker
         InstallResult? result = null;
         while (result is null)
         {
-            var message = await channel.ReadAsync(CancellationToken.None);
+            var message = await ReadOperationMessageAsync(channel, token);
             switch (message.Kind)
             {
                 case "progress" when message.Progress is { } value:
@@ -82,7 +82,7 @@ internal static class ElevatedInstallWorker
                     RunningApplicationsChoice choice;
                     try { choice = await prompt(applications, token); }
                     catch (OperationCanceledException) { choice = RunningApplicationsChoice.Cancel; }
-                    await channel.SendAsync(new("choice") { RequestId = message.RequestId, Choice = choice }, CancellationToken.None);
+                    await SendOperationMessageAsync(channel, new("choice") { RequestId = message.RequestId, Choice = choice }, token);
                     break;
                 case "result" when message.Result is { Success: true } completed:
                     if (completed.ProductId != request.ProductId || completed.Version != request.Version ||
@@ -103,6 +103,20 @@ internal static class ElevatedInstallWorker
         ValidateCompletedState(request, plan, result, hostBinding?.PublisherPin);
         LastObservation = LastObservation! with { Completed = true };
         return result;
+    }
+
+    private static async Task<WorkerMessage> ReadOperationMessageAsync(WorkerChannel channel, CancellationToken token)
+    {
+        try { return await channel.ReadAsync(CancellationToken.None); }
+        catch (IOException error) when (token.IsCancellationRequested)
+        { throw new OperationCanceledException("Installation was canceled.", error, token); }
+    }
+
+    private static async Task SendOperationMessageAsync(WorkerChannel channel, WorkerMessage message, CancellationToken token)
+    {
+        try { await channel.SendAsync(message, CancellationToken.None); }
+        catch (IOException error) when (token.IsCancellationRequested)
+        { throw new OperationCanceledException("Installation was canceled.", error, token); }
     }
 
     // This route is dispatched before DPI setup, Game construction or any dialog.

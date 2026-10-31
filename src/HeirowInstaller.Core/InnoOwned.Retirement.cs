@@ -387,7 +387,7 @@ internal sealed class InnoOwnedRetirement
             config.CredentialOrigin != companion.CredentialOrigin || config.AuthApplication != companion.AuthApplication ||
             config.TokenEnvironmentVariable != companion.TokenEnvironmentVariable || config.CookieEnvironmentVariable != companion.CookieEnvironmentVariable ||
             config.UpdateMode != companion.UpdateMode || config.LaunchWorkingDirectory != baseline.Manifest.LaunchWorkingDirectory ||
-            !config.AffectedResourceFiles.SequenceEqual(RunningApplicationTarget.FromManifest(baseline.Manifest, root, features: baseline.Product.Features).AffectedResourceFiles, StringComparer.OrdinalIgnoreCase) ||
+            !config.AffectedResourceFiles.SequenceEqual(RunningApplicationTarget.FromManifest(baseline.Manifest, root, "update", baseline.Product.Features, baseline.Product.Scope, baseline.Product.Isolated).AffectedResourceFiles, StringComparer.OrdinalIgnoreCase) ||
             !config.Features.Order(StringComparer.Ordinal).SequenceEqual(baseline.Product.Features.Order(StringComparer.Ordinal)))
             throw Repair("The generated old updater profile is not bound to this wrapper, user, root and publisher.");
     }

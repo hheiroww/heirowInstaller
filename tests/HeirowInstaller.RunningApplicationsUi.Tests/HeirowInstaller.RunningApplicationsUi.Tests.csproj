@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Description>Headless close-apps controller consent, cancellation and queued action checks.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+    <ProjectReference Include="../../src/HeirowInstaller.App/HeirowInstaller.App.csproj" />
+    <Compile Include="../../src/HeirowInstaller.App/AppController.RunningApplications.cs" Link="Production/AppController.RunningApplications.cs" />
+  </ItemGroup>
+</Project>

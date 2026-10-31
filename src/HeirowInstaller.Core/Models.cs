@@ -81,6 +81,9 @@ public sealed class AffectedResourceDefinition
 /// <summary>Small per-application configuration. Credential values are never stored here.</summary>
 public sealed class UpdateCompanionConfiguration
 {
+    /// <summary>Runtime-only identities derived from the verified installed package, never from writable profile data.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> VerifiedOwnedApplicationImages { get; set; } = [];
     public int FormatVersion { get; set; } = 1;
     public string ProductId { get; set; } = "";
     public string Name { get; set; } = "";

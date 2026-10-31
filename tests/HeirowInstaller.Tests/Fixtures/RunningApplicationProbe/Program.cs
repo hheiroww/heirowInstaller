@@ -14,10 +14,14 @@ internal static class Program
         if (args.Length < 2 || args[0] != "--run-directory" || !Path.IsPathFullyQualified(args[1])) return 2;
         var keepOpen = false;
         var nonactivating = false;
+        var windowless = false;
+        var unresponsive = false;
         string? module = null;
         for (var i = 2; i < args.Length; i++)
             if (args[i] == "--keep-open" && !keepOpen) keepOpen = true;
             else if (args[i] == "--nonactivating" && !nonactivating) nonactivating = true;
+            else if (args[i] == "--windowless" && !windowless) windowless = true;
+            else if (args[i] == "--unresponsive" && !unresponsive) unresponsive = true;
             else if (args[i] == "--module" && module is null && ++i < args.Length) module = args[i];
             else return 2;
         var directory = Path.GetFullPath(args[1]);
@@ -25,6 +29,16 @@ internal static class Program
         for (var parent = new DirectoryInfo(directory); parent is not null; parent = parent.Parent)
             if ((parent.Attributes & FileAttributes.ReparsePoint) != 0) return 3;
         if (!File.Exists(marker) || new FileInfo(marker).Length != Marker.Length || File.ReadAllText(marker) != Marker) return 4;
+        if (windowless)
+        {
+            using var process = Process.GetCurrentProcess();
+            File.WriteAllText(Path.Combine(directory, "ready.json"), JsonSerializer.Serialize(new {
+                processId = Environment.ProcessId, startTimeUtcTicks = process.StartTime.ToUniversalTime().Ticks,
+                executablePath = Environment.ProcessPath, keepOpen, windowless }));
+            var expires = DateTimeOffset.UtcNow.AddMinutes(3);
+            while (!File.Exists(Path.Combine(directory, "allow-close")) && DateTimeOffset.UtcNow < expires) Thread.Sleep(50);
+            return 0;
+        }
         IntPtr moduleHandle = IntPtr.Zero;
         if (module is not null)
         {
@@ -48,7 +62,21 @@ internal static class Program
         using var timer = new System.Windows.Forms.Timer { Interval = 100 };
         using var current = Process.GetCurrentProcess();
         void Report(string file, object value) => File.WriteAllText(Path.Combine(directory, file), JsonSerializer.Serialize(value));
-        form.Shown += (_, _) => Report("ready.json", new { processId = Environment.ProcessId, startTimeUtcTicks = current.StartTime.ToUniversalTime().Ticks, executablePath = Environment.ProcessPath, keepOpen });
+        form.Shown += (_, _) =>
+        {
+            Report("ready.json", new { processId = Environment.ProcessId, startTimeUtcTicks = current.StartTime.ToUniversalTime().Ticks, executablePath = Environment.ProcessPath, keepOpen });
+            // Only this marker-bound test process may deliberately stop pumping messages.
+            // A separate file watcher always permits graceful fixture cleanup without Kill.
+            if (unresponsive)
+            {
+                using var release = new ManualResetEventSlim();
+                _ = Task.Run(() => {
+                    while (!File.Exists(Path.Combine(directory, "allow-close")) && DateTimeOffset.UtcNow < deadline) Thread.Sleep(50);
+                    release.Set();
+                });
+                release.Wait(); form.BeginInvoke(form.Close);
+            }
+        };
         form.FormClosing += (_, eventArgs) =>
         {
             requests++;

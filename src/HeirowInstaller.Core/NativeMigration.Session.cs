@@ -269,7 +269,7 @@ internal sealed partial class NativeMigrationSession : IDisposable
 
     private async Task EnsureClosedAsync(InstallOptions options, CancellationToken token) =>
         await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(baseline.Manifest, baseline.Product.InstallDirectory,
-            "migrate", baseline.Product.Features), options.RunningApplicationsPrompt, token);
+            "migrate", baseline.Product.Features, baseline.Product.Scope, baseline.Product.Isolated), options.RunningApplicationsPrompt, token);
 
     internal Task PlanNativeMetadataAsync(IReadOnlyDictionary<string, object>? values, CancellationToken token)
     {

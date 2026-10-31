@@ -112,8 +112,10 @@ public static class ApplicationUpdater
             SharedUpdaterRuntime.ValidateBinding(configuration, package.Manifest);
             if (!package.Manifest.EntryPoint.Equals(configuration.EntryPoint, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("The updater entry point does not match its signed installed package.");
-            configuration.AffectedResourceFiles = RunningApplicationTarget.FromManifest(package.Manifest, installed.InstallDirectory,
-                features: installed.Features).AffectedResourceFiles.ToList();
+            var runningTarget = RunningApplicationTarget.FromManifest(package.Manifest, installed.InstallDirectory,
+                "update", installed.Features, installed.Scope, installed.Isolated);
+            configuration.AffectedResourceFiles = runningTarget.AffectedResourceFiles.ToList();
+            configuration.VerifiedOwnedApplicationImages = runningTarget.OwnedApplicationImages.ToArray();
         }
         configuration.CurrentVersion = installed.Version;
         configuration.Features = installed.Features;

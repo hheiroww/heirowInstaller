@@ -34,8 +34,11 @@ and 16× anisotropic filtering, with pixel-aligned vector text.
   normal close requests only to the verified affected apps. Their save dialogs
   remain in control. **Cancel installation** stops the operation without
   changing application files. An app that stays open or restarts returns to the
-  same dialog with another attempt available. No app is force-terminated.
-  Apps that cannot safely receive a close request must be closed manually.
+  same dialog after a bounded attempt. **Check again** and **Cancel** stay active.
+  **Force close listed apps** requires a separate unsaved-work confirmation and
+  applies only to the displayed, revalidated owned application identities, including
+  eligible windowless instances. Plugin hosts, wait-only dependencies, services,
+  system processes and unrelated model workers require manual closure.
 - **Build & publish** builds a verified `.hinst` from a manifest and application
   files and publishes through the shared SocketJack publisher client. Publisher
   credentials come from `SOCKETJACK_PUBLISHER_TOKEN` or `SOCKETJACK_PUBLISHER_COOKIE`; they are not saved in the

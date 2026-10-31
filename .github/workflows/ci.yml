@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - name: Engine and publisher integration tests
+      - name: Engine, publisher and close-apps controller tests
         shell: pwsh
         run: ./scripts/Test.ps1
       - name: Running applications and graceful-close consent

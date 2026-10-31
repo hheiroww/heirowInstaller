@@ -317,7 +317,7 @@ Credentials remain in environment variables and are sent only to their exact con
             var target = lifecycle is not null ? RunningApplicationTarget.FromConfiguration(lifecycle)
                 : RunningApplicationTarget.FromPlan(new InstallerEngine().Plan(package, new() { TargetDirectory = args.Get("target"),
                     StateRoot = args.Get("state-root"), Scope = args.Get("scope"), Features = prior?.Features,
-                    TrustedPublisherKeySha256 = key, RequireSignature = key is not null || !args.Has("allow-unsigned"), Isolated = args.Has("isolated") }), "update");
+                    TrustedPublisherKeySha256 = key, RequireSignature = key is not null || !args.Has("allow-unsigned"), Isolated = args.Has("isolated") }), "update", args.Has("isolated"));
             target = target.WithWaitOnlyExecutables((lifecycle is null ? [] : ApplicationHostRegistry.Paths(lifecycle))
                 .Concat(extraHost is null ? [] : new[] { extraHost }))
                 .WithWaitOnlyProcesses(waitingDependency is null ? [] : new[] { waitingDependency });

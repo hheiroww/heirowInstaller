@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -6,14 +7,20 @@ using System.Text.RegularExpressions;
 
 namespace HeirowInstaller.Core;
 
-public enum RunningApplicationsChoice { CloseAppsAndContinue, Cancel }
+public enum RunningApplicationsChoice { CloseAppsAndContinue, Cancel, CheckAgain, ForceCloseListedApps }
 
 /// <summary>A process observed using this application's exact executable or installed resources.</summary>
 public sealed record RunningApplication(int ProcessId, long StartTimeUtcTicks, string ExecutablePath,
-    string DisplayName, string AffectedPath, string Kind, bool CanRequestClose);
+    string DisplayName, string AffectedPath, string Kind, bool CanRequestClose)
+{
+    public bool CanForceClose { get; init; }
+}
 
 public sealed record RunningApplicationsRequest(string ProductId, string ProductName, string Operation,
-    IReadOnlyList<RunningApplication> Applications, bool IsRetry, string Message);
+    IReadOnlyList<RunningApplication> Applications, bool IsRetry, string Message)
+{
+    public bool InspectionTimedOut { get; init; }
+}
 
 public sealed class RunningApplicationsException : InvalidOperationException
 {
@@ -35,9 +42,10 @@ public sealed class RunningApplicationTarget
     public IReadOnlyList<string> WaitOnlyExecutables { get; } = [];
     public IReadOnlyList<RunningApplication> WaitOnlyProcesses { get; private init; } = [];
     internal IReadOnlySet<string> ExcludedExecutables { get; }
+    public IReadOnlySet<string> OwnedApplicationImages { get; }
 
     private RunningApplicationTarget(string id, string name, string operation, string directory, string entryPoint,
-        IEnumerable<string> resources, IEnumerable<string> excluded)
+        IEnumerable<string> resources, IEnumerable<string> excluded, IEnumerable<string>? ownedImages = null)
     {
         PackageSafety.ValidateId(id);
         ProductId = id; ProductName = name; Operation = operation;
@@ -52,31 +60,46 @@ public sealed class RunningApplicationTarget
         ExecutablePath = entryPoint.Length == 0 ? null : PackageSafety.UnderRoot(InstallDirectory, entryPoint);
         AffectedResourceFiles = resources.Select(ValidateResourceFile).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         ExcludedExecutables = excluded.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        OwnedApplicationImages = (ownedImages ?? []).Select(ValidateResourceFile)
+            .Concat(ExecutablePath is null ? [] : [ExecutablePath]).ToFrozenSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public static RunningApplicationTarget FromPlan(InstallPlan plan, string operation = "install") =>
-        FromManifest(plan.Manifest, plan.InstallDirectory, operation, plan.Features);
+        FromPlan(plan, operation, isolated: false);
+
+    public static RunningApplicationTarget FromPlan(InstallPlan plan, string operation, bool isolated) =>
+        FromManifest(plan.Manifest, plan.InstallDirectory, operation, plan.Features, plan.Scope, isolated);
 
     public static RunningApplicationTarget FromManifest(PackageManifest manifest, string installDirectory,
-        string operation = "install", IEnumerable<string>? features = null)
+        string operation = "install", IEnumerable<string>? features = null) =>
+        FromManifest(manifest, installDirectory, operation, features, manifest.Scope, isolated: false);
+
+    public static RunningApplicationTarget FromManifest(PackageManifest manifest, string installDirectory,
+        string operation, IEnumerable<string>? features, string scope, bool isolated)
     {
         var selected = (features ?? manifest.Features.Where(x => x.Default || x.Required).Select(x => x.Id)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var excluded = manifest.Services.Select(x => PackageSafety.UnderRoot(installDirectory, x.Executable)).ToList();
         if (manifest.UpdateCompanion is { } companion) excluded.Add(PackageSafety.UnderRoot(installDirectory, companion.ExecutablePath));
+        var owned = manifest.Payload.Where(file => file.TargetRoot != null && InstallerEngine.IsSelected(file.Feature, selected) &&
+            Path.GetFileName(file.Path).Equals(Path.GetFileName(manifest.EntryPoint), StringComparison.OrdinalIgnoreCase))
+            .Select(file => PayloadDestinations.Resolve(manifest, installDirectory, scope, isolated, file)).ToArray();
         return new(manifest.Id, manifest.Name, operation, installDirectory, manifest.EntryPoint,
             manifest.AffectedResources.Where(x => InstallerEngine.IsSelected(x.Feature, selected))
-                .Select(x => ResolveResourceFile(x.Path, installDirectory)), excluded);
+                .Select(x => ResolveResourceFile(x.Path, installDirectory))
+                .Concat(owned), excluded, owned);
     }
 
     public static RunningApplicationTarget FromConfiguration(UpdateCompanionConfiguration configuration, string operation = "update") =>
         new(configuration.ProductId, configuration.Name, operation, configuration.InstallDirectory, configuration.EntryPoint,
-            configuration.AffectedResourceFiles, [PackageSafety.UnderRoot(configuration.InstallDirectory, "heirowUpdater.exe")]);
+            configuration.AffectedResourceFiles, [PackageSafety.UnderRoot(configuration.InstallDirectory, "heirowUpdater.exe")],
+            configuration.VerifiedOwnedApplicationImages);
 
     private RunningApplicationTarget(RunningApplicationTarget source, IReadOnlyList<string> waitOnly)
     {
         ProductId = source.ProductId; ProductName = source.ProductName; Operation = source.Operation;
         InstallDirectory = source.InstallDirectory; ExecutablePath = source.ExecutablePath;
         AffectedResourceFiles = source.AffectedResourceFiles; ExcludedExecutables = source.ExcludedExecutables;
+        OwnedApplicationImages = source.OwnedApplicationImages;
         WaitOnlyExecutables = waitOnly;
         WaitOnlyProcesses = source.WaitOnlyProcesses;
     }
@@ -93,7 +116,7 @@ public sealed class RunningApplicationTarget
             if (identity.ProcessId <= 0 || identity.StartTimeUtcTicks <= 0 || !Path.IsPathFullyQualified(identity.ExecutablePath))
                 throw new InvalidDataException("A wait-only dependency requires an exact process identity.");
             var image = Path.GetFullPath(identity.ExecutablePath); PackageSafety.EnsureNoReparsePoints(image);
-            return identity with { ExecutablePath = image, Kind = "manual", CanRequestClose = false };
+            return identity with { ExecutablePath = image, Kind = "manual", CanRequestClose = false, CanForceClose = false };
         }).DistinctBy(x => (x.ProcessId, x.StartTimeUtcTicks)).ToArray();
         if (identities.Length > 16) throw new InvalidDataException("Too many explicit updater process dependencies.");
         return new(this, WaitOnlyExecutables) { WaitOnlyProcesses = identities };
@@ -140,8 +163,8 @@ public sealed class RunningApplicationTarget
     }
 }
 
-/// <summary>Query-only discovery and explicitly consented normal window closure. Never terminates a process.</summary>
-public static class RunningApplications
+/// <summary>Bounded discovery, normal closure, and confirmed closure of exact owned application identities.</summary>
+public static partial class RunningApplications
 {
     // Query-only inventory guard. A file in a signed cleanup inventory never grants process closure authority.
     internal static bool HasResourceUsers(IReadOnlyList<string> files)
@@ -160,55 +183,78 @@ public static class RunningApplications
     }
 
     public static Task<IReadOnlyList<RunningApplication>> InspectAsync(RunningApplicationTarget target, CancellationToken cancellationToken = default) =>
-        Task.Run(() => Inspect(target, cancellationToken), cancellationToken);
+        InspectWithinAsync(target, InspectionTimeout, cancellationToken);
 
     public static async Task EnsureClosedAsync(RunningApplicationTarget target,
         Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>>? prompt = null,
         CancellationToken cancellationToken = default)
     {
         var retry = false;
+        IReadOnlyList<RunningApplication> applications = [];
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var applications = await InspectAsync(target, cancellationToken);
-            if (applications.Count == 0)
+            var inspectionTimedOut = false;
+            try { applications = await InspectAsync(target, cancellationToken); }
+            catch (TimeoutException) when (prompt is not null) { inspectionTimedOut = true; }
+            if (applications.Count == 0 && !inspectionTimedOut)
             {
                 // A short quiet interval catches an application restarting during the transition.
                 await Task.Delay(750, cancellationToken);
-                applications = await InspectAsync(target, cancellationToken);
-                if (applications.Count == 0) return;
+                try { applications = await InspectAsync(target, cancellationToken); }
+                catch (TimeoutException) when (prompt is not null) { inspectionTimedOut = true; }
+                if (applications.Count == 0 && !inspectionTimedOut) return;
             }
             if (prompt is null) throw new RunningApplicationsException(applications);
-            var message = retry
+            var message = inspectionTimedOut ? "Windows took too long to check application status. Check again, close a verified listed app, or cancel."
+                : retry
                 ? "Some applications are still open or restarted. Save your work, finish any save dialogs, then retry or cancel installation."
                 : "These applications use files that must be updated. Save your work before closing them. Applications that cannot be verified must be closed manually.";
-            var choice = await prompt(new(target.ProductId, target.ProductName, target.Operation, applications, retry, message), cancellationToken);
+            var choice = await prompt(new(target.ProductId, target.ProductName, target.Operation, applications, retry, message)
+                { InspectionTimedOut = inspectionTimedOut }, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            if (choice != RunningApplicationsChoice.CloseAppsAndContinue)
+            if (choice == RunningApplicationsChoice.Cancel)
                 throw new OperationCanceledException("Installation cancelled before changing application files.", cancellationToken);
-            var fresh = await InspectAsync(target, cancellationToken);
             retry = true;
-            // New instances require their own consent; an old PID/name is not authority over a replacement process.
-            if (fresh.Any(x => !applications.Any(y => SameIdentity(x, y)))) continue;
-            foreach (var application in fresh)
+            if (choice == RunningApplicationsChoice.CheckAgain) continue;
+            if (choice == RunningApplicationsChoice.ForceCloseListedApps)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (application.CanRequestClose) RequestClose(target, application, cancellationToken);
+                // This exact displayed snapshot is the entire consent boundary. A blocked
+                // read-only RM scan cannot grant authority over other processes or trees.
+                applications = applications.Where(application => !application.CanForceClose ||
+                    !TryForceClose(target, application, cancellationToken)).ToArray();
+                continue;
             }
-            var watch = Stopwatch.StartNew();
-            while (watch.Elapsed < TimeSpan.FromSeconds(5))
-            {
-                await Task.Delay(200, cancellationToken);
-                var remaining = await InspectAsync(target, cancellationToken);
-                if (remaining.Count == 0) break;
-                if (remaining.Any(x => !fresh.Any(y => SameIdentity(x, y)))) break;
-            }
+            if (choice != RunningApplicationsChoice.CloseAppsAndContinue) throw new InvalidDataException("Unknown application-close choice.");
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attempt.CancelAfter(CloseAttemptTimeout);
+            try { await CloseGracefullyAsync(target, applications, attempt.Token); }
+            catch (TimeoutException) { }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
         }
     }
 
     private static bool SameIdentity(RunningApplication left, RunningApplication right) =>
         left.ProcessId == right.ProcessId && left.StartTimeUtcTicks == right.StartTimeUtcTicks &&
         left.ExecutablePath.Equals(right.ExecutablePath, StringComparison.OrdinalIgnoreCase);
+
+    private static async Task CloseGracefullyAsync(RunningApplicationTarget target, IReadOnlyList<RunningApplication> applications, CancellationToken token)
+    {
+        var fresh = await InspectWithinAsync(target, CloseAttemptTimeout, token);
+        // A replacement process needs new consent; no action runs on the read-only scan worker.
+        if (fresh.Any(x => !applications.Any(y => SameIdentity(x, y)))) return;
+        foreach (var application in fresh)
+        {
+            token.ThrowIfCancellationRequested();
+            if (application.CanRequestClose) RequestClose(target, application, token);
+        }
+        while (true)
+        {
+            await Task.Delay(200, token);
+            var remaining = await InspectWithinAsync(target, CloseAttemptTimeout, token);
+            if (remaining.Count == 0 || remaining.Any(x => !fresh.Any(y => SameIdentity(x, y)))) return;
+        }
+    }
 
     private static IReadOnlyList<RunningApplication> Inspect(RunningApplicationTarget target, CancellationToken token)
     {
@@ -230,7 +276,7 @@ public static class RunningApplications
         }
         var candidates = resources.Count == 0 ? new Dictionary<int, RestartManager.Candidate>() : RestartManager.Query(resources.ToArray());
         // Explicit executable matching also covers very short-lived startup transitions before RM reports the image.
-        foreach (var executable in target.WaitOnlyExecutables.Concat(target.ExecutablePath is { } entryPoint ? [entryPoint] : []).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var executable in target.WaitOnlyExecutables.Concat(target.OwnedApplicationImages).Distinct(StringComparer.OrdinalIgnoreCase))
             foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(executable)))
                 using (process)
                 {
@@ -262,7 +308,7 @@ public static class RunningApplications
                 image = Path.GetFullPath(image); PackageSafety.EnsureNoReparsePoints(image);
                 var excluded = target.ExcludedExecutables.Contains(image);
                 if (excluded && !target.WaitOnlyExecutables.Contains(image, StringComparer.OrdinalIgnoreCase)) continue;
-                var isEntry = image.Equals(target.ExecutablePath, StringComparison.OrdinalIgnoreCase);
+                var isEntry = target.OwnedApplicationImages.Contains(image);
                 string? affected = isEntry ? image : null;
                 var plugin = false;
                 if (!isEntry)
@@ -277,12 +323,16 @@ public static class RunningApplications
                     }
                 affected ??= resources.Contains(image) || target.WaitOnlyExecutables.Contains(image, StringComparer.OrdinalIgnoreCase) ? image : null;
                 // RM may report a file handle rather than a mapped module. It can block replacement, but cannot grant closure.
-                var canClose = !excluded && affected is not null && (isEntry || plugin) && !RunningApplicationTarget.IsSystemPath(image) &&
+                var waitOnly = target.WaitOnlyExecutables.Contains(image, StringComparer.OrdinalIgnoreCase) ||
+                    target.WaitOnlyProcesses.Any(dependency => dependency.ProcessId == candidate.Id && dependency.StartTimeUtcTicks == candidate.StartTicks);
+                var safeSession = !excluded && !waitOnly && affected is not null && !RunningApplicationTarget.IsSystemPath(image) &&
                     candidate.ApplicationType is not (3 or 4 or 1000) && process.SessionId == currentSession &&
-                    process.SessionId != 0 && process.MainWindowHandle != IntPtr.Zero;
+                    process.SessionId != 0;
+                var canClose = safeSession && (isEntry || plugin) && process.MainWindowHandle != IntPtr.Zero;
                 var display = candidate.Name.Length > 0 ? candidate.Name : Path.GetFileName(image);
                 found.Add(new(candidate.Id, candidate.StartTicks, image, display, affected ?? "Installed resource (manual closure required)",
-                    isEntry ? "application" : plugin ? "plugin-host" : "manual", canClose));
+                    isEntry ? "application" : plugin ? "plugin-host" : "manual", canClose)
+                    { CanForceClose = safeSession && isEntry });
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { }
             catch (Exception ex) when (ex is Win32Exception or IOException or UnauthorizedAccessException) { found.Add(Manual(candidate)); }
@@ -296,11 +346,11 @@ public static class RunningApplications
                 using var process = Process.GetProcessById(dependency.ProcessId);
                 if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != dependency.StartTimeUtcTicks) continue;
                 if (process.MainModule?.FileName is { } image && Path.GetFullPath(image).Equals(dependency.ExecutablePath, StringComparison.OrdinalIgnoreCase))
-                    found.Add(dependency with { CanRequestClose = false, Kind = "manual" });
+                    found.Add(dependency with { CanRequestClose = false, CanForceClose = false, Kind = "manual" });
             }
             catch (Exception error) when (error is ArgumentException or InvalidOperationException) { }
             catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
-            { found.Add(dependency with { CanRequestClose = false, Kind = "manual" }); }
+            { found.Add(dependency with { CanRequestClose = false, CanForceClose = false, Kind = "manual" }); }
         }
         return found.OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.ProcessId).ToArray();
     }
@@ -311,12 +361,14 @@ public static class RunningApplications
 
     private static void RequestClose(RunningApplicationTarget target, RunningApplication application, CancellationToken cancellationToken)
     {
-        // Re-query resource ownership as well as PID/start/image immediately before sending WM_CLOSE.
-        var verified = Inspect(target, cancellationToken).FirstOrDefault(x => SameIdentity(x, application) && x.CanRequestClose);
-        if (verified is null) return;
+        // A single bounded fresh inspection already checked resources. Never repeat an
+        // unbounded RM/module scan on the action path or run late actions on scan workers.
+        var verified = application;
+        if (!verified.CanRequestClose) return;
         try
         {
             using var process = Process.GetProcessById(verified.ProcessId);
+            _ = process.SafeHandle; // Pin the original process object while inspecting its identity.
             if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != verified.StartTimeUtcTicks) return;
             var image = process.MainModule?.FileName;
             if (image is null || !Path.GetFullPath(image).Equals(verified.ExecutablePath, StringComparison.OrdinalIgnoreCase)) return;
