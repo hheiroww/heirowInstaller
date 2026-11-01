@@ -33,6 +33,7 @@ var root = Path.Combine(Path.GetTempPath(), "heirowinstaller-publishing-tests-" 
 Directory.CreateDirectory(root);
 try
 {
+    HostingPolicyChecks.Run(Check, root);
     await TrustedPublishingChecks.RunAsync(Check, root);
     await CliIncrementalPublishingChecks.RunAsync(Check, root);
     await CliWindowsSigningChecks.RunAsync(Check, root);

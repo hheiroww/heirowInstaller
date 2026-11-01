@@ -25,6 +25,8 @@ public sealed class PackageManifest
     public string Publisher { get; set; } = "";
     public string Description { get; set; } = "";
     public string EntryPoint { get; set; } = "";
+    /// <summary>Signed application target. Omission retains the legacy Windows default.</summary>
+    public string TargetPlatform { get; set; } = "windows";
     public string? LaunchWorkingDirectory { get; set; }
     public string InstallDirectory { get; set; } = "";
     public string Scope { get; set; } = "user";

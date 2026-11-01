@@ -98,7 +98,15 @@ public sealed partial class PublisherClient : IDisposable
                 {
                     using var package = PackageReader.Open(path);
                     LegalDocumentRules.RequireForCreation(package.Manifest);
+                    if (!protectedPreparation && !SocketJackHostingPolicy.IsComponentPreparation(package.Manifest) && origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase))
+                        SocketJackHostingPolicy.VerifyFullInstaller(path, package.Manifest);
                 }
+            }, cancellationToken).ConfigureAwait(false);
+        if (sealedProduct is not null && origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase))
+            await Task.Run(() =>
+            {
+                using var package = PackageReader.Open(path);
+                SocketJackHostingPolicy.VerifyFullInstaller(path, package.Manifest);
             }, cancellationToken).ConfigureAwait(false);
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken)).ToLowerInvariant();
         file.Position = 0;

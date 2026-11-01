@@ -2,6 +2,8 @@
 
 New creation requires both actual [Privacy Policy and Terms and Conditions](legal-documents.md). Type or paste the text, import UTF-8 files, or load a saved publisher draft. The signed package contains both texts and public URLs; rebuilding is required after edits.
 
+SocketJack provides installer hosting separately from [Windows code signing](windows-code-signing.md). New Windows uploads require a Setup.exe signed with your own trusted identity. Non-Windows .hinst packages declare their signed `targetPlatform` explicitly and are exempt from Windows Authenticode; omission defaults to Windows. The current Setup.exe runtime supports Windows installation.
+
 A distributed application setup can be one `.exe` containing its installer runtime and verified payload. The recipient does not need an installed copy of heirowInstaller, the .NET SDK, or the WiX compiler. The application's own native prerequisites still need to be embedded or authored explicitly.
 
 The application entry point is protected by a running-application consent step. Declare exact `affectedResources` for external plugin binaries so their hosts can be listed safely before maintenance; see [running applications](running-applications.md) for authoring and SDK callbacks.

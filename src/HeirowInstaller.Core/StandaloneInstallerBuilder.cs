@@ -50,6 +50,8 @@ public static class StandaloneInstallerBuilder
             (options.SigningKeyPath is { } key && outputPath.Equals(Path.GetFullPath(key), StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Installer output must differ from the launcher, manifest, and signing key.");
         var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath), InstallerJson.Options) ?? throw new InvalidDataException("Application manifest is empty.");
+        if (PackagePlatform.Normalize(manifest.TargetPlatform) != "windows")
+            throw new InvalidDataException("Standalone Setup.exe targets Windows. Package other platforms as .hinst with their explicit targetPlatform.");
         manifest.LegalDocuments = LegalDocumentRules.PrepareForCreation(manifest.Id, options.LegalDocuments is { } suppliedLegal
             ? new() { PrivacyPolicy = suppliedLegal.PrivacyPolicy ?? manifest.LegalDocuments?.PrivacyPolicy,
                 TermsAndConditions = suppliedLegal.TermsAndConditions ?? manifest.LegalDocuments?.TermsAndConditions }
