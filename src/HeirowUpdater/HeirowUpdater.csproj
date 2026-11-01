@@ -8,7 +8,8 @@
   <ItemGroup><ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" /></ItemGroup>
   <ItemGroup>
-    <PackageReference Include="ProjectZ" Version="[2026.10.23.2]" />
+    <PackageReference Include="ProjectZ" Version="$(ProjectZPackageVersion)" Condition="'$(UseLocalProjectZ)' != 'true'" />
+    <ProjectReference Include="$(ProjectZRoot)/Project Z Windows.vbproj" Condition="'$(UseLocalProjectZ)' == 'true'" />
     <EmbeddedResource Include="../../assets/heirowInstaller-256.png" LogicalName="HeirowUpdater.Assets.Logo.png" />
     <Content Include="../../assets/heirowInstaller.png" Link="Assets/heirowInstaller.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="../../assets/heirowInstaller.ico" Link="Assets/heirowInstaller.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

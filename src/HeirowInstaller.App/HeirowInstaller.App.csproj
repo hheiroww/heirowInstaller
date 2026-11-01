@@ -10,8 +10,6 @@
     <AssemblyName>heirowInstaller</AssemblyName>
     <RootNamespace>HeirowInstaller.App</RootNamespace>
     <ApplicationIcon Condition="Exists('../../assets/heirowInstaller.ico')">../../assets/heirowInstaller.ico</ApplicationIcon>
-    <ProjectZPackageVersion Condition="'$(ProjectZPackageVersion)' == ''">[2026.10.23.2]</ProjectZPackageVersion>
-    <ProjectZRoot Condition="'$(UseLocalProjectZ)' == 'true' and '$(ProjectZRoot)' == ''">$(USERPROFILE)\Documents\GitHub\Project-Z</ProjectZRoot>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../templates/bootstrap/HeirowUpdaterBootstrap.cs" Link="Bootstrap/HeirowUpdaterBootstrap.cs" />
