@@ -17,6 +17,7 @@ heirowInstaller — modular Windows installation and publishing
     [--launcher <published-heirowInstaller.exe>] [--updater <published-heirowUpdater.exe>] [--sign-key <pem>]
   sign <setup.exe|application.dll|package.msi> [Windows signing options]
   signing-check [Windows signing options]
+  verify-windows-signature <file.exe|file.dll|file.msi>
   compile <source.wxs|project.wixproj> --output <package.msi|module.msm|patch.msp|bundle.exe>
     [--wix <wix.exe>] [--msbuild <MSBuild.exe>] [--extension <id-or-dll>] [--compiler-arg <argument>]
   inspect <package.hinst|setup.exe>
@@ -104,6 +105,8 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                 }
                 case "signing-check":
                     Print(new { available = true, settings = WindowsCodeSigner.CheckAvailability(RequireWindowsSigning(windowsSigning)), signingRequestSent = false }); break;
+                case "verify-windows-signature":
+                    Print(new { verified = true, identity = WindowsPublisherTrust.Verify(Subject()), signingRequestSent = false }); break;
                 case "build":
                     Print(await StandaloneInstallerBuilder.BuildAsync(Subject(), parsed.Require("output"), new()
                     {

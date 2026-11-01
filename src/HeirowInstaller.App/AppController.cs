@@ -521,10 +521,10 @@ internal sealed partial class AppController : IDisposable
             }, Cancellation!.Token);
             using var publisher = new PublisherClient(new Uri("https://socketjack.com"), bearerToken: token, sessionCookie: cookie);
             var receipt = await publisher.PublishAsync(path, Cancellation!.Token, ReleaseNotes);
-            await game.OnUiAsync(() => End(receipt.UpdateActivationPending == true ? "Release staged" : "Release published",
+            await game.OnUiAsync(() => End(receipt.UpdateActivationPending == true ? "Hosting staged" : "Hosted on SocketJack",
                 receipt.UpdateActivationPending == true
                     ? "Signed file updates are missing for existing versions. Publish those updates, then publish this same package again to activate it."
-                    : "SocketJack accepted your verified package and generated its update feed."));
+                    : "SocketJack is hosting your installer and update feed. Windows publisher trust uses your own code-signing identity."));
         }
         catch (Exception error) { await ErrorAsync("Publish failed", error); }
     }

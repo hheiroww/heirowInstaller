@@ -63,6 +63,8 @@ public sealed class InstallerEngine
             throw new ArgumentException("Isolated validation requires explicit --state-root and --target directories.");
         var manifest = package.Manifest;
         PackageSafety.ValidateManifest(manifest, true);
+        if (PackagePlatform.Normalize(manifest.TargetPlatform) != "windows")
+            throw new PlatformNotSupportedException("This installer runtime installs Windows packages. Use a runtime for the package's declared target platform.");
         package.VerifySignature(options.TrustedPublisherKeySha256, options.RequireSignature);
         var scope = options.Scope ?? manifest.Scope;
         if (scope is not ("user" or "machine")) throw new InvalidDataException("Scope must be user or machine.");

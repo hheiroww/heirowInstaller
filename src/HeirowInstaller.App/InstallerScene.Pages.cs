@@ -91,7 +91,7 @@ internal sealed partial class InstallerScene
         var compact = Math.Clamp(800 - Height, 0, 40);
         Box(Left, 146, BodyWidth, 63, Theme.Surface, 10);
         Text("YOUR RELEASE WORKSPACE", Left + 20, 158, BodyWidth - 245, 24, 9, Theme.Lime, true);
-        Text("Application → standalone setup → published update", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
+        Text("Build → sign with your identity → host on SocketJack", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
         Action("workspace.publisher", Controller.SigningIn ? "Cancel sign-in" : Controller.PublisherSignedIn ? "Sign out" : "Sign in to SocketJack  ↗", Width - 252, 157, 199, () => _ = Controller.SignInPublisherAsync(), enabled: !Controller.Busy || Controller.SigningIn, accent: Theme.Orange);
         PathField("workspace.manifest", "PACKAGE MANIFEST", Controller.ManifestPath, 232 - compact / 4f, value => Controller.ManifestPath = value, () =>
         {
@@ -123,7 +123,7 @@ internal sealed partial class InstallerScene
             _ = Controller.LoadLegalDraftAsync(false);
         }, enabled: !Controller.Busy);
         Action("workspace.build", Controller.OutputPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? "Build setup  →" : "Build package  →", Left, BodyBottom - 48, 192, () => _ = Controller.BuildAsync(), true, !Controller.Busy);
-        Action("workspace.publish", "Publish release", Left + 206, BodyBottom - 48, 170, () => _ = Controller.PublishAsync(), enabled: !Controller.Busy, accent: Theme.Orange);
+        Action("workspace.publish", "Host on SocketJack", Left + 206, BodyBottom - 48, 184, () => _ = Controller.PublishAsync(), enabled: !Controller.Busy, accent: Theme.Orange);
         Action("workspace.test", "Open built installer", Width - 220, BodyBottom - 48, 186, () => _ = Controller.OpenPackageAsync(Controller.BuiltPackagePath ?? Controller.OutputPath), enabled: !Controller.Busy && File.Exists(Controller.BuiltPackagePath ?? Controller.OutputPath));
     }
 

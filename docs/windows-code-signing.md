@@ -2,6 +2,14 @@
 
 Windows shows a verified publisher when an executable has a valid Authenticode signature from a certificate Windows trusts. The RSA package key used by `--sign-key` protects heirowInstaller packages and updates; it does not establish Windows publisher trust. Use both signatures when publishing a signed package inside a Windows-signed Setup.
 
+## Signing and SocketJack hosting are separate
+
+Windows publisher signing uses **your own** purchased certificate or Microsoft Artifact Signing account. Signing into SocketJack grants installer hosting and update-feed access only. It never grants access to SocketJack's Microsoft signing account, certificate profiles, private keys or signing service. The builder includes no shared Microsoft account or signing credentials. Bundling a new application removes the toolkit launcher's old Windows signature; your completed Setup must be signed with your identity.
+
+New Windows uploads to SocketJack require a trusted Authenticode-signed `Setup.exe`, independently of the RSA package signature and any workflow or hosting approval. A Windows `.hinst` alone cannot satisfy this requirement. `.hupd` uploads are verified against the exact registered full target installer, which must meet the same Windows trust requirement. Existing hosted versions remain downloadable.
+
+This requirement applies **only to Windows apps**. The signed manifest's `targetPlatform` defaults to `"windows"` for legacy packages. Non-Windows `.hinst` packages explicitly declare `"linux"`, `"macos"`, `"freebsd"`, `"android"`, `"ios"` or `"other"` and do not need Windows Authenticode. They retain package-integrity and hosting authorization checks; their platform-specific signing policies are separate. A Windows Setup.exe or Windows executable entry point cannot opt out by claiming another platform. The current Setup.exe runtime supports Windows installation; this metadata does not add a Linux or macOS installer runtime.
+
 Signing also differs from Microsoft Defender SmartScreen reputation. New downloads can still show reputation warnings after successful signing. A self-signed certificate does not establish public Windows trust, and EV certificates no longer guarantee an immediate SmartScreen bypass. See Microsoft's [signing options](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options) and [SmartScreen guidance](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
 
 ## Choose a signing provider
@@ -83,6 +91,14 @@ heirowInstaller.Cli.exe sign .\dist\MyApp-Setup.exe `
 Sign application EXEs and DLLs before packaging when you need signatures on those individual files. The standalone `build` option signs the completed Setup; it does not rewrite your supplied application's payload. An installer wrapper's signature does not sign the files it installs.
 
 Sign the final artifact before computing its download hash, update feed, delta or release manifest. Changing a file after signing can invalidate its signature. Authenticode does not apply to `.hinst` or `.hupd`; continue using the publisher package key for those formats.
+
+Verify an existing Windows artifact without signing credentials or a signing request:
+
+```powershell
+heirowInstaller.Cli.exe verify-windows-signature .\dist\MyApp-Setup.exe
+```
+
+The official release workflow refuses to publish an unsigned Windows Setup. Its build job must use the certificate or Microsoft options below with the repository owner's signing identity and authorized CI authentication; no shared SocketJack profile is supplied.
 
 ## Build the toolkit release
 

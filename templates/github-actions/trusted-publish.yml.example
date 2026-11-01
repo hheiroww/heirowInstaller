@@ -45,7 +45,11 @@ jobs:
           }
           "INSTALLER_VERSION=$releaseVersion" >> $env:GITHUB_ENV
       # Replace with the application's established build steps. A protected draft can
-      # request hostedSigning:true; the registered private service seals and signs it.
+      # request hostedSigning:true and preparationOnly:true. This is RSA component
+      # preparation, not Windows code signing or a complete application installer.
+      # To host a Windows app, replace these two steps with your own build/sign
+      # process and publish its Authenticode-signed Setup.exe. Non-Windows .hinst
+      # packages explicitly declare targetPlatform and need no Windows signature.
       - name: Build draft using existing release script
         shell: pwsh
         run: ./tools/Build-InstallerDraft.ps1 -Version $env:INSTALLER_VERSION -Output ./artifacts/draft.hinst

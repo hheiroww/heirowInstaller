@@ -27,6 +27,10 @@ internal static class CliWindowsSigningChecks
             return (child.ExitCode, await stdout, await stderr);
         }
 
+        var unsignedVerification = await Run("verify-windows-signature", output);
+        check(unsignedVerification.ExitCode != 0 && File.ReadAllBytes(output).SequenceEqual(retained),
+            "CLI trust verification rejects unsigned input without changing it or needing signing credentials");
+
         var missingProvider = await Run("sign", output);
         check(missingProvider.ExitCode != 0 && File.ReadAllBytes(output).SequenceEqual(retained),
             "CLI signing requires an explicit certificate or service profile and preserves the input on failure");
