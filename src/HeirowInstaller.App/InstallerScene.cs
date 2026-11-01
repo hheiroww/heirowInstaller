@@ -276,8 +276,10 @@ internal sealed partial class InstallerScene : Scene
             _ => "Make this release workspace your own."
         };
         Text(title, Left, 28, BodyWidth - 155, 43, 23, bold: true);
-        Text(subtitle, Left, 81, BodyWidth - 30, 26, 10.5f, Theme.Muted);
+        Text(subtitle, Left, 81, BodyWidth - 255, 26, 10.5f, Theme.Muted);
         Pill("●  NATIVE DESKTOP", Width - 197, 33, 163);
+        Action("account.session", Controller.SigningIn ? "Cancel sign-in" : Controller.PublisherSignedIn ? "Sign out of SocketJack" : "Sign in to SocketJack", Width - 252, 74, 218,
+            () => _ = Controller.SignInPublisherAsync(), enabled: !Controller.Busy || Controller.SigningIn, accent: Theme.Orange);
         Box(Left, 120, BodyWidth, 1, Theme.Border, 0, Color.Transparent);
     }
 

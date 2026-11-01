@@ -1,6 +1,6 @@
 heirowInstaller - Privacy Policy
 Effective: 2026-10-28
-Last updated: 2026-10-28
+Last updated: 2026-11-01
 
 BUILDING AND INSTALLING
 
@@ -19,6 +19,8 @@ Changing saved document drafts does not rewrite an already signed or published i
 UPDATES, AUTHENTICATION AND SUPPORT
 
 A version-only check contacts the publisher's product catalog; installed/current version comparison can occur locally without launching an installer. Downloads contact the release service. Protected SocketJack downloads use the active account session and the registered authorization flow when a session must be renewed. Credentials do not belong in manifests, release notes or legal document content.
+
+Signing in to heirowInstaller saves the account name, authorization token, administrator flag and expiry in an encrypted file protected by Windows for your Windows user. The installer and its updater reuse this account only for SocketJack requests. The remembered sign-in lasts up to 30 days without opening heirowInstaller; opening the desktop requests a new server-validated 30-day session. Background checks do not renew it. Signing out clears the local credential and asks SocketJack to revoke the current session. Browser, earlier server sessions and other device sessions are separate.
 
 The optional shared heirowUpdater runtime and its per-application configuration have the additional notice at https://socketjack.com/heirowInstaller/PrivacyPolicy/heirowUpdater. Support submissions contain the text and attachments you choose to send. Independent app publishers are responsible for accurately describing their own applications; the presence of a policy document is not an audit or certification of its claims.
 

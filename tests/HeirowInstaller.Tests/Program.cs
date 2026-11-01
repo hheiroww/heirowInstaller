@@ -64,6 +64,8 @@ internal sealed partial class AcceptanceSuite
             ,("central update sessions approve once, retain the new bearer for downloads and confine credentials to their origin", CentralUpdateSessions)
             ,("central update sessions preserve unauthorized results and cancellation without repeated browser approvals", CentralUpdateSessionFailures)
             ,("central update profile authentication comes only from signed installed metadata and no-prompt checks stay headless", CentralUpdateProfileAuthentication)
+            ,("remembered central updater account shares one installer approval and preserves background expiry without foreign credential access", RememberedUpdaterAccountSharing)
+            ,("remembered central updater account rejects obsolete approvals and conditionally invalidates rejected credentials", RememberedUpdaterAccountRaces)
             ,("both bootstrap languages launch the verified shared runtime with a pre-queued session capture and no inherited bearer", SharedBootstrapLanguages)
             ,("an exact updater dependency waits for one PID and never other apps sharing its image", ExactUpdaterDependencies)
             ,("the shared native updater applies signed file data and rejects wrong root, digest, base and tampering before mutation", NativeIncrementalHandoff)

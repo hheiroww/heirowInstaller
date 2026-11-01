@@ -175,6 +175,8 @@ internal sealed partial class InstallerScene
     {
         Box(Left, 147, BodyWidth, 146, Theme.Surface, 12);
         Pill("HEIROWUPDATER", Left + 22, 168, 150, Theme.Orange);
+        Text(Controller.PublisherSignedIn ? Controller.PublisherAccount + " · sign-in renews when you open heirowInstaller" : "Sign in once. Remembered for 30 days after each app open.",
+            Left + 192, 173, BodyWidth - 216, 24, 9.5f, Theme.Muted);
         Text("Your next release, one step away.", Left + 23, 216, BodyWidth - 46, 40, 21, bold: true);
         Text("Check every installed application through its publisher's update feed.", Left + 24, 263, BodyWidth - 48, 26, 10.5f, Theme.Muted);
         var available = File.Exists(Controller.UpdaterPath);

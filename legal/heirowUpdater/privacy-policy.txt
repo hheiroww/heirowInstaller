@@ -1,6 +1,6 @@
 heirowUpdater - Privacy Policy
 Effective: 2026-10-28
-Last updated: 2026-10-28
+Last updated: 2026-11-01
 
 UPDATE INFORMATION AND LOCAL STATE
 
@@ -11,6 +11,8 @@ The companion tracks the configured app's relevant process identity and waits fo
 NETWORK AND AUTHENTICATION
 
 Checking or downloading contacts the configured release publisher, which receives ordinary request/connection information and product/release selectors. SocketJack-protected requests can use an immutable snapshot of the application's current authorized session. Credential handling is restricted to the declared trusted origin and same-user update handoff; session secrets are not part of public legal documents, command arguments or application package configuration.
+
+Central update checks can also reuse heirowInstaller's Windows-protected remembered SocketJack account without a separate approval for each application. The saved account includes its name, authorization token, administrator flag and expiry, encrypted for the current Windows user. Reading it for an update does not renew its 30-day lifetime. Other release publishers do not receive this account. Signing out in heirowInstaller clears its local saved credential and asks SocketJack to revoke the current server session.
 
 Choosing Update now downloads signed compressed update data and metadata describing old and new files. The updater verifies the intended product, base, publisher and payload before applying a transition. Postponement does not authorize unattended installation. Browser approval can be offered when the normal account session requires sign-in; it does not grant publisher or administrator permissions.
 

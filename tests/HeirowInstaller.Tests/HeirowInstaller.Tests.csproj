@@ -8,7 +8,7 @@
     <Compile Remove="Fixtures/**/*.cs" />
     <ProjectReference Include="../../src/HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
     <ProjectReference Include="../../src/HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" />
-    <ProjectReference Include="../../src/HeirowUpdater/HeirowUpdater.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../src/HeirowUpdater/HeirowUpdater.csproj" />
     <ProjectReference Include="Fixtures/LegacyArgumentProbe/LegacyArgumentProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="Fixtures/RawMsiUpdateProbe/RawMsiUpdateProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="Fixtures/ManualCheckApplicationProbe/ManualCheckApplicationProbe.csproj" ReferenceOutputAssembly="false" />

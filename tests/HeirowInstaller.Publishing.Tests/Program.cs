@@ -6,6 +6,8 @@ using System.Text.Json;
 using HeirowInstaller.Publishing;
 using HeirowInstaller.Core;
 
+if (args.FirstOrDefault() == "--remembered-account-child") return await RememberedPublisherAccountChecks.RunChildAsync(args);
+
 var passed = 0;
 void Check(bool condition, string description)
 {
@@ -33,6 +35,7 @@ try
 {
     await TrustedPublishingChecks.RunAsync(Check, root);
     await CliIncrementalPublishingChecks.RunAsync(Check, root);
+    await RememberedPublisherAccountChecks.RunAsync(Check, root);
     using var listener = new TcpListener(IPAddress.Loopback, 0);
     listener.Start();
     var endpoint = (IPEndPoint)listener.LocalEndpoint;

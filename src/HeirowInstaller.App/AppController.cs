@@ -21,7 +21,7 @@ internal sealed partial class AppController : IDisposable
     private PackageReader? verifiedPlanningPackage;
     internal bool SigningIn { get; private set; }
     internal bool PublisherSignedIn => publisherSession is { } session && session.ExpiresUtc > DateTimeOffset.UtcNow;
-    internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username} · expires {publisherSession.ExpiresUtc.ToLocalTime():HH:mm}" : "Sign in to SocketJack to publish, or use publisher credentials from your environment.";
+    internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username}" : "Sign in once to publish and check protected updates.";
     internal DesktopSettings Settings { get; private set; } = new();
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
@@ -93,7 +93,7 @@ internal sealed partial class AppController : IDisposable
         {
             var settings = Task.Run(DesktopSettings.Load);
             if (IsWizard) await settings;
-            else await Task.WhenAll(RefreshInstalledAsync(), RefreshUpdaterAvailabilityAsync(), settings);
+            else await Task.WhenAll(RefreshInstalledAsync(), RefreshUpdaterAvailabilityAsync(), RestoreAccountAsync(renew: true, Cancellation!.Token), settings);
             await game.OnUiAsync(() => { Settings = settings.Result; OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe"); End("Ready when you are", "Open a package or check your installed applications for updates."); });
         }
         catch (Exception error) { await ErrorAsync("Could not load applications", error); }
@@ -514,22 +514,7 @@ internal sealed partial class AppController : IDisposable
         catch (Exception error) { await ErrorAsync("Publish failed", error); }
     }
 
-    internal async Task SignInPublisherAsync()
-    {
-        if (Busy) { if (SigningIn) Cancellation?.Cancel(); return; }
-        if (PublisherSignedIn) { publisherSession!.Dispose(); publisherSession = null; End("Signed out", "The in-memory SocketJack publisher session was cleared."); return; }
-        SigningIn = true;
-        Begin("Approve SocketJack sign-in", "Complete the publisher approval in your browser. You can cancel sign-in here.");
-        try
-        {
-            using var approval = await PublisherSignInClient.BeginAsync(new Uri("https://socketjack.com"), Cancellation!.Token);
-            Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
-            var session = await approval.CompleteAsync(Cancellation.Token);
-            await game.OnUiAsync(() => { publisherSession?.Dispose(); publisherSession = session; End("SocketJack sign-in complete", PublisherAccount); });
-        }
-        catch (Exception error) { await ErrorAsync("SocketJack sign-in failed", error); }
-        finally { await game.OnUiAsync(() => { SigningIn = false; Notify(); }); }
-    }
+    internal Task SignInPublisherAsync() => SignInAccountAsync();
 
     public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; verifiedPlanningPackage?.Dispose(); verifiedPlanningPackage = null; DisposeWizardArtwork(); }
 
@@ -571,6 +556,7 @@ internal sealed partial class AppController : IDisposable
             var output = await standardOutput;
             var error = await standardError;
             token.ThrowIfCancellationRequested();
+            if (command.FirstOrDefault() is "check" or "update") await RestoreAccountAsync(renew: false, token);
             await RefreshInstalledAsync();
             await game.OnUiAsync(() =>
             {
@@ -610,8 +596,8 @@ internal sealed partial class AppController : IDisposable
 
     private UpdateClient CreateUpdateClient() => new(allowLoopback: arguments.SelfUpdateSmokeFeed is not null, transport: new SocketJackUpdateTransport(
         credentialOrigin: new Uri("https://socketjack.com"),
-        cookie: Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE"),
-        bearerToken: Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN")));
+        cookie: PublisherSignedIn ? null : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE"),
+        bearerToken: PublisherSignedIn ? publisherSession!.AccessToken : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN")));
 
     private static bool RequiresExitForStagedUpdate(string output)
     {

@@ -9,7 +9,7 @@ using System.Text.Json.Serialization;
 namespace HeirowInstaller.Publishing;
 
 /// <summary>Starts a browser approval flow without accessing saved browser credentials.</summary>
-public static class PublisherSignInClient
+public static partial class PublisherSignInClient
 {
     public static async Task<PublisherSignInOperation> BeginAsync(Uri publisher,
         CancellationToken cancellationToken = default, bool allowLoopback = false, string applicationId = "heirowinstaller")
@@ -190,7 +190,7 @@ public sealed class PublisherSignInOperation : IDisposable
     }
 }
 
-/// <summary>An in-memory credential. Neither token nor account details are written to installer settings.</summary>
+/// <summary>A usable in-memory account session. Remembered sessions are protected separately from installer settings.</summary>
 public sealed class PublisherSession : IDisposable
 {
     internal PublisherSession(string username, string token, bool administrator, DateTimeOffset expiresUtc)

@@ -33,7 +33,8 @@ Options: --target <directory>, --scope user|machine, --state-root <directory>,
 Checks do not install updates. Enable schedules per-user checks at sign-in and every hour.
 --apply opts into background installation and requires a pinned publisher key by default.
 --allow-unsigned explicitly permits hash-verified packages without a publisher signature.
-Credentials remain in environment variables and are sent only to their exact configured origin.
+Credentials come from environment variables or the protected current-user installer account and stay origin-bound.
+Signed SocketJack targets reuse remembered sign-in; checks never renew or extend its lifetime.
 --interactive allows browser approval for a registered installed application's protected feed.
 Background, watch, silent and --no-prompt operations never request browser approval.
 """;
@@ -84,8 +85,8 @@ Background, watch, silent and --no-prompt operations never request browser appro
             {
                 progress.Report(new("check", "Reading installed application update information", 0, 0));
                 var targets = Targets(parsed, configuration);
-                using var sessions = new TargetUpdateSessions(targets, configuration, parsed.Has("allow-loopback"),
-                    parsed.Has("interactive") && (command is "check" or "update") && !parsed.Has("background") && !parsed.Has("silent") && !parsed.Has("no-prompt"), progress);
+                using var sessions = await TargetUpdateSessions.CreateAsync(targets, configuration, parsed.Has("allow-loopback"),
+                    parsed.Has("interactive") && (command is "check" or "update") && !parsed.Has("background") && !parsed.Has("silent") && !parsed.Has("no-prompt"), progress, cancellation.Token);
                 if (command == "check")
                 {
                     var checks = await updater.CheckTargetsAsync(targets,
