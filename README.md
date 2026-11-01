@@ -95,6 +95,8 @@ heirowUpdater disable
 
 The desktop Updates page exposes these companion operations. Apps pass their current login through an immutable in-memory snapshot captured before background work. Login changes replace the observer's credentials and sign-out clears them. Credentials stay outside manifests and source control and are sent only to the signed HTTPS origin. Registered SocketJack applications can request browser approval when their current session is rejected.
 
+The desktop **Check all applications** and **Install available updates** actions also use each installed package's pinned, signed authentication settings. If a protected feed rejects the current session, approve sign-in in the browser to retry once. The approved session stays in memory for that operation, including its downloads. For the same behavior from the CLI, add `--interactive` to `check` or `update`. Scheduled, background, watch, silent and `--no-prompt` operations report `sign-in-required` without opening a browser.
+
 The companion's published single-file host discovery is fixed in 2026.10.24.3. To upgrade heirowInstaller itself from .1 or .2, use **Installed apps → Update** in the desktop app or download the latest Setup once.
 
 ## Publish

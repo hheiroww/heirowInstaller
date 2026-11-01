@@ -25,7 +25,7 @@ heirowUpdater — application updates over the SocketJack network library
   stop --config <app-root/heirowUpdater.json>
 
 Options: --target <directory>, --scope user|machine, --state-root <directory>,
-  --download-directory <directory>, --log <path>, --silent, --json,
+  --download-directory <directory>, --log <path>, --silent, --json, --interactive,
   --token-env <environment-variable-name>, --cookie-env <environment-variable-name>,
   --credential-origin <https-origin> (default https://socketjack.com),
   --allow-loopback and --isolated for local acceptance only.
@@ -34,6 +34,8 @@ Checks do not install updates. Enable schedules per-user checks at sign-in and e
 --apply opts into background installation and requires a pinned publisher key by default.
 --allow-unsigned explicitly permits hash-verified packages without a publisher signature.
 Credentials remain in environment variables and are sent only to their exact configured origin.
+--interactive allows browser approval for a registered installed application's protected feed.
+Background, watch, silent and --no-prompt operations never request browser approval.
 """;
     public static async Task<int> RunAsync(string[] args)
     {
@@ -68,14 +70,7 @@ Credentials remain in environment variables and are sent only to their exact con
                 case "check": case "update": case "watch": break;
                 default: throw new ArgumentException("Unknown updater command. Use --help.");
             }
-            string? Secret(string? name)
-            {
-                if (name is null) return null;
-                return System.Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value
-                    : throw new InvalidOperationException("A configured updater credential environment variable is empty.");
-            }
-            using var updater = new SocketJackUpdater(parsed.Has("allow-loopback"), new Uri(configuration.CredentialOrigin),
-                Secret(configuration.CookieEnvironmentVariable), Secret(configuration.TokenEnvironmentVariable));
+            using var updater = new SocketJackUpdater(parsed.Has("allow-loopback"));
             var policy = new UpdaterPolicy { AllowUnsigned = configuration.AllowUnsigned, TrustedPublisherKeySha256 = configuration.TrustedPublisherKeySha256,
                 DownloadDirectory = parsed.Get("download-directory"), Isolated = parsed.Has("isolated"), LogPath = parsed.Get("log") };
             var progress = new InlineProgress(value =>
@@ -89,13 +84,17 @@ Credentials remain in environment variables and are sent only to their exact con
             {
                 progress.Report(new("check", "Reading installed application update information", 0, 0));
                 var targets = Targets(parsed, configuration);
+                using var sessions = new TargetUpdateSessions(targets, configuration, parsed.Has("allow-loopback"),
+                    parsed.Has("interactive") && (command is "check" or "update") && !parsed.Has("background") && !parsed.Has("silent") && !parsed.Has("no-prompt"), progress);
                 if (command == "check")
                 {
-                    var checks = await updater.CheckTargetsAsync(targets, progress, cancellation.Token);
+                    var checks = await updater.CheckTargetsAsync(targets,
+                        (target, token) => sessions[target].RunAsync(client => client.CheckAsync(target, token), token), progress, cancellation.Token);
                     var checkedProducts = checks.Select((check, index) => new { productId = check.ProductId, name = check.Name,
                         currentVersion = check.CurrentVersion, latestVersion = check.LatestVersion, available = check.Available,
-                        requiresUserAction = check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated,
-                        status = check.Error is not null ? "error" : check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated ? "requires-elevation" : check.Available ? "update-available" : "current", error = check.Error }).ToArray();
+                        requiresUserAction = check.RequiresSignIn || check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated,
+                        status = check.RequiresSignIn ? "sign-in-required" : check.Error is not null ? "error" : check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated ? "requires-elevation" : check.Available ? "update-available" : "current",
+                        error = check.RequiresSignIn ? "Sign in to SocketJack to check this application's updates. Use Check all applications in heirowInstaller or check --interactive." : check.Error }).ToArray();
                     await UpdaterSchedule.WriteJsonAsync(parsed.Get("status-file") ?? UpdaterSchedule.LastCheckPath,
                         new { checkedAt = DateTimeOffset.UtcNow, transport = "SocketJack", products = checkedProducts }, cancellation.Token);
                     if (!parsed.Has("background")) Print(checkedProducts);
@@ -110,7 +109,7 @@ Credentials remain in environment variables and are sent only to their exact con
                     try
                     {
                         var previousVersion = target.CurrentVersion;
-                        var check = await updater.CheckAsync(target, cancellation.Token);
+                        var check = await sessions[target].RunAsync(client => client.CheckAsync(target, cancellation.Token), cancellation.Token);
                         InstallResult? applied = null;
                         var apply = command == "update" || ((command == "watch" || parsed.Has("background")) && configuration.Apply);
                         if (apply && check.Available && IsCurrentApplication(target))
@@ -118,14 +117,14 @@ Credentials remain in environment variables and are sent only to their exact con
                             using var current = Process.GetCurrentProcess();
                             var pid = parsed.Get("application-pid") is { } suppliedPid ? int.Parse(suppliedPid, System.Globalization.CultureInfo.InvariantCulture) : current.Id;
                             var ticks = parsed.Get("application-start") is { } suppliedStart ? long.Parse(suppliedStart, System.Globalization.CultureInfo.InvariantCulture) : current.StartTime.ToUniversalTime().Ticks;
-                            var handoff = await updater.PrepareInstallerHandoffAsync(target, check, pid, ticks, policy, progress, cancellation.Token);
+                            var handoff = await sessions[target].RunAsync(client => client.PrepareInstallerHandoffAsync(target, check, pid, ticks, policy, progress, cancellation.Token), cancellation.Token);
                             using var helper = Process.Start(handoff) ?? throw new InvalidOperationException("The trusted update helper did not start.");
                             results.Add(new { productId = target.ProductId, installDirectory = target.InstallDirectory, status = "update-staged", requiresApplicationExit = true, helperProcessId = helper.Id });
                             await UpdaterSchedule.WriteJsonAsync(parsed.Get("status-file") ?? UpdaterSchedule.LastCheckPath, new { checkedAt = DateTimeOffset.UtcNow, transport = "SocketJack", products = results }, cancellation.Token);
                             if (!parsed.Has("background")) Print(results);
                             return 0;
                         }
-                        if (apply && check.Available) applied = await updater.ApplyAsync(target, check, policy, progress, cancellation.Token);
+                        if (apply && check.Available) applied = await sessions[target].RunAsync(client => client.ApplyAsync(target, check, policy, progress, cancellation.Token), cancellation.Token);
                         if (applied is not null) appliedVersions[target.ProductId] = target.CurrentVersion;
                         var needsElevation = check.Available && applied is null && target.Scope == "machine" && !InstallerEngine.IsElevated;
                         results.Add(new { productId = target.ProductId, name = target.Name, currentVersion = previousVersion,
@@ -144,7 +143,10 @@ Credentials remain in environment variables and are sent only to their exact con
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        failed = true; results.Add(new { productId = target.ProductId, name = target.Name, currentVersion = target.CurrentVersion, available = false, status = "error", error = ex.Message });
+                        var signInRequired = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized };
+                        failed = true; results.Add(new { productId = target.ProductId, name = target.Name, currentVersion = target.CurrentVersion, available = false,
+                            status = signInRequired ? "sign-in-required" : "error", requiresUserAction = signInRequired,
+                            error = signInRequired ? "Sign in to SocketJack to update this application. Use Install available updates in heirowInstaller or update --interactive." : ex.Message });
                     }
                 }
                 var status = JsonSerializer.Serialize(results, InstallerJson.Options);
@@ -210,10 +212,20 @@ Credentials remain in environment variables and are sent only to their exact con
         var installed = InstallerEngine.ListInstalled(target.StateRoot).FirstOrDefault(x => x.Id.Equals(target.ProductId, StringComparison.OrdinalIgnoreCase) && x.Scope == target.Scope);
         if (installed is not null)
         {
+            var verified = string.IsNullOrWhiteSpace(installed.UpdateUrl) ? null : UpdaterTarget.FromInstalled(installed, target.StateRoot);
+            target.CredentialOrigin = verified?.CredentialOrigin;
+            target.AuthApplication = verified?.AuthApplication;
+            target.CookieEnvironmentVariable = verified?.CookieEnvironmentVariable;
+            target.TokenEnvironmentVariable = verified?.TokenEnvironmentVariable;
             if (PackageVersion.Parse(installed.Version).CompareTo(PackageVersion.Parse(target.CurrentVersion)) > 0) target.CurrentVersion = installed.Version;
             target.PublisherKeySha256 ??= installed.PublisherKeySha256;
             target.InstallDirectory ??= installed.UseOriginalInstallDirectory ? null : installed.InstallDirectory;
             target.Features ??= installed.Features;
+        }
+        else
+        {
+            // A standalone JSON profile cannot designate trusted application authentication settings.
+            target.CredentialOrigin = target.AuthApplication = target.CookieEnvironmentVariable = target.TokenEnvironmentVariable = null;
         }
         return target;
     }
@@ -366,7 +378,7 @@ Credentials remain in environment variables and are sent only to their exact con
         public List<string> ApplicationArguments { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "progress-json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "progress-json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt", "interactive"], StringComparer.OrdinalIgnoreCase);
             var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report", "file-size", "base-version", "base-manifest-sha256", "target-manifest-sha256"], StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < args.Length; i++)
             {

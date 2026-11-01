@@ -555,6 +555,7 @@ internal sealed partial class AppController : IDisposable
             var start = new ProcessStartInfo(updater) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(updater)! };
             foreach (var item in command) start.ArgumentList.Add(item);
             start.ArgumentList.Add("--progress-json");
+            if (command.FirstOrDefault() is "check" or "update") start.ArgumentList.Add("--interactive");
             if (command.FirstOrDefault() == "update")
             {
                 start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -661,6 +662,7 @@ internal sealed partial class AppController : IDisposable
                         "update-available" => "Update available",
                         "requires-elevation" => "Administrator approval is needed to install this update.",
                         "current" => "Up to date",
+                        "sign-in-required" => Read("error"),
                         "error" => Read("error"),
                         _ => "Check complete"
                     };

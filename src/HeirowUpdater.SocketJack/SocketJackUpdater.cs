@@ -1,5 +1,6 @@
 using HeirowInstaller.Core;
 using System.Diagnostics;
+using System.Net;
 using System.Security.Cryptography;
 
 namespace HeirowUpdater.SocketJack;
@@ -16,6 +17,10 @@ public sealed class UpdaterTarget
     public string? PublisherKeySha256 { get; set; }
     public List<string>? Features { get; set; }
     public string? UpdateMode { get; set; }
+    public string? CredentialOrigin { get; set; }
+    public string? AuthApplication { get; set; }
+    public string? CookieEnvironmentVariable { get; set; }
+    public string? TokenEnvironmentVariable { get; set; }
 
     public static UpdaterTarget FromInstalled(InstalledProduct product, string? stateRoot = null)
     {
@@ -25,13 +30,16 @@ public sealed class UpdaterTarget
             throw new InvalidDataException("The update target's cached signed package differs from its installed receipt.");
         var mode = package.Manifest.UpdateCompanion?.UpdateMode;
         if (mode == "files") package.VerifySignature(product.PublisherKeySha256, requireSignature: true);
+        var authentication = product.PublisherKeySha256 is not null ? package.Manifest.UpdateCompanion : null;
         return new()
         {
             ProductId = product.Id, Name = product.Name, CurrentVersion = product.Version,
             FeedUrl = product.UpdateUrl ?? throw new InvalidOperationException("Product has no update feed."),
             InstallDirectory = product.UseOriginalInstallDirectory ? null : product.InstallDirectory,
             Scope = product.Scope, StateRoot = stateRoot ?? Path.GetDirectoryName(Path.GetDirectoryName(product.ReceiptPath)), PublisherKeySha256 = product.PublisherKeySha256,
-            Features = product.Features, UpdateMode = mode
+            Features = product.Features, UpdateMode = mode,
+            CredentialOrigin = authentication?.CredentialOrigin, AuthApplication = authentication?.AuthApplication,
+            CookieEnvironmentVariable = authentication?.CookieEnvironmentVariable, TokenEnvironmentVariable = authentication?.TokenEnvironmentVariable
         };
     }
 }
@@ -55,6 +63,7 @@ public sealed class UpdaterCheck
     public string CurrentVersion { get; set; } = "";
     public string? LatestVersion { get; set; }
     public bool Available { get; set; }
+    public bool RequiresSignIn { get; set; }
     public string? Error { get; set; }
     public UpdateCheckResult? Update { get; set; }
 }
@@ -98,16 +107,24 @@ public sealed class SocketJackUpdater : IDisposable
                 result.Update = await CheckAsync(UpdaterTarget.FromInstalled(product, stateRoot), token);
                 result.LatestVersion = result.Update.Feed.Version; result.Available = result.Update.Available;
             }
-            catch (Exception error) when (error is not OperationCanceledException) { result.Error = error.Message; }
+            catch (Exception error) when (error is not OperationCanceledException)
+            { result.Error = error.Message; result.RequiresSignIn = error is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized }; }
             results[index] = result;
         });
         return results;
     }
 
     /// <summary>Checks up to four feeds concurrently, preserving input order and reporting each completion.</summary>
-    public async Task<IReadOnlyList<UpdaterCheck>> CheckTargetsAsync(IReadOnlyList<UpdaterTarget> targets,
+    public Task<IReadOnlyList<UpdaterCheck>> CheckTargetsAsync(IReadOnlyList<UpdaterTarget> targets,
         IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+        => CheckTargetsAsync(targets, (target, token) => CheckAsync(target, token), progress, cancellationToken);
+
+    /// <summary>Checks feeds concurrently with a caller-owned per-application authentication session.</summary>
+    public async Task<IReadOnlyList<UpdaterCheck>> CheckTargetsAsync(IReadOnlyList<UpdaterTarget> targets,
+        Func<UpdaterTarget, CancellationToken, Task<UpdateCheckResult>> checker,
+        IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(checker);
         var results = new UpdaterCheck[targets.Count];
         var completed = 0;
         var reportLock = new object();
@@ -118,10 +135,11 @@ public sealed class SocketJackUpdater : IDisposable
             lock (reportLock) progress?.Report(new("check", "Checking " + target.Name, completed, targets.Count));
             try
             {
-                result.Update = await CheckAsync(target, token);
+                result.Update = await checker(target, token);
                 result.LatestVersion = result.Update.Feed.Version; result.Available = result.Update.Available;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) { result.Error = ex.Message; }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            { result.Error = ex.Message; result.RequiresSignIn = ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized }; }
             results[index] = result;
             lock (reportLock) progress?.Report(new("check-complete", target.Name + (result.Error is not null ? ": check failed" : result.Available ? ": update available" : ": up to date"), ++completed, targets.Count));
         });
