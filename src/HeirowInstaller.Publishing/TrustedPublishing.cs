@@ -36,7 +36,8 @@ public sealed partial class PublisherClient
         if (Path.GetExtension(path).ToLowerInvariant() is not (".hinst" or ".hupd" or ".exe")) throw new ArgumentException("Publish a signed .hinst, .hupd update, or standalone Setup.exe.");
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (file.Length == 0) throw new InvalidDataException("Package is empty.");
-        if (origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".hupd", StringComparison.OrdinalIgnoreCase))
+        if (origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".hupd", StringComparison.OrdinalIgnoreCase) &&
+            (await GetHostingPolicyAsync(cancellationToken).ConfigureAwait(false)).WindowsAuthenticodeRequired)
             await Task.Run(() =>
             {
                 using var package = HeirowInstaller.Core.PackageReader.Open(path);

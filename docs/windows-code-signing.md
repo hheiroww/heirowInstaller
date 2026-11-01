@@ -6,7 +6,9 @@ Windows shows a verified publisher when an executable has a valid Authenticode s
 
 Windows publisher signing uses **your own** purchased certificate or Microsoft Artifact Signing account. Signing into SocketJack grants installer hosting and update-feed access only. It never grants access to SocketJack's Microsoft signing account, certificate profiles, private keys or signing service. The builder includes no shared Microsoft account or signing credentials. Bundling a new application removes the toolkit launcher's old Windows signature; your completed Setup must be signed with your identity.
 
-New Windows uploads to SocketJack require a trusted Authenticode-signed `Setup.exe`, independently of the RSA package signature and any workflow or hosting approval. A Windows `.hinst` alone cannot satisfy this requirement. `.hupd` uploads are verified against the exact registered full target installer, which must meet the same Windows trust requirement. Existing hosted versions remain downloadable.
+Windows signing is currently optional on SocketJack while publisher onboarding is in progress. Windows uploads without verified Authenticode are labeled **Windows publisher unverified**. RSA package integrity, legal documents and hosting authorization still apply. The client reads the server hosting policy; neither a hosting login nor a workflow approval provides Windows signing.
+
+When an administrator enables Windows signature enforcement, new Windows uploads require a trusted Authenticode-signed `Setup.exe`. A Windows `.hinst` alone cannot satisfy that mode. `.hupd` uploads bind the exact full target installer and follow the same configured requirement. Existing hosted versions remain downloadable.
 
 This requirement applies **only to Windows apps**. The signed manifest's `targetPlatform` defaults to `"windows"` for legacy packages. Non-Windows `.hinst` packages explicitly declare `"linux"`, `"macos"`, `"freebsd"`, `"android"`, `"ios"` or `"other"` and do not need Windows Authenticode. They retain package-integrity and hosting authorization checks; their platform-specific signing policies are separate. A Windows Setup.exe or Windows executable entry point cannot opt out by claiming another platform. The current Setup.exe runtime supports Windows installation; this metadata does not add a Linux or macOS installer runtime.
 
@@ -98,7 +100,7 @@ Verify an existing Windows artifact without signing credentials or a signing req
 heirowInstaller.Cli.exe verify-windows-signature .\dist\MyApp-Setup.exe
 ```
 
-The official release workflow refuses to publish an unsigned Windows Setup. Its build job must use the certificate or Microsoft options below with the repository owner's signing identity and authorized CI authentication; no shared SocketJack profile is supplied.
+The official release workflow enforces Windows signing only when the repository variable `REQUIRE_WINDOWS_SIGNATURE` is `true`. Its build job must use the certificate or Microsoft options below with the repository owner's signing identity and authorized CI authentication; no shared SocketJack profile is supplied.
 
 ## Build the toolkit release
 

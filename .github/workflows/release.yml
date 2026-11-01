@@ -47,11 +47,12 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUIRE_WINDOWS_SIGNATURE: ${{ vars.REQUIRE_WINDOWS_SIGNATURE }}
         run: |
           $version = '${{ github.ref_name }}'.Substring(1)
           $root = "artifacts/release/$version"
           $signature = Get-AuthenticodeSignature -LiteralPath "$root/heirowInstaller-$version-Setup.exe"
-          if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or $signature.SignerCertificate.Subject -eq $signature.SignerCertificate.Issuer) {
+          if ($env:REQUIRE_WINDOWS_SIGNATURE -ceq 'true' -and ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or $signature.SignerCertificate.Subject -eq $signature.SignerCertificate.Issuer)) {
             throw 'Official Windows releases require trusted Authenticode signing. Configure the build signing provider before publishing.'
           }
           $updates = @(Get-ChildItem -LiteralPath $root -Filter '*.hupd' -File | ForEach-Object FullName)

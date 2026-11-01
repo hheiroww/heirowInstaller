@@ -91,7 +91,7 @@ internal sealed partial class InstallerScene
         var compact = Math.Clamp(800 - Height, 0, 40);
         Box(Left, 146, BodyWidth, 63, Theme.Surface, 10);
         Text("YOUR RELEASE WORKSPACE", Left + 20, 158, BodyWidth - 245, 24, 9, Theme.Lime, true);
-        Text("Build → sign with your identity → host on SocketJack", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
+        Text("Build → optional Windows signing → host on SocketJack", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
         Action("workspace.publisher", Controller.SigningIn ? "Cancel sign-in" : Controller.PublisherSignedIn ? "Sign out" : "Sign in to SocketJack  ↗", Width - 252, 157, 199, () => _ = Controller.SignInPublisherAsync(), enabled: !Controller.Busy || Controller.SigningIn, accent: Theme.Orange);
         PathField("workspace.manifest", "PACKAGE MANIFEST", Controller.ManifestPath, 232 - compact / 4f, value => Controller.ManifestPath = value, () =>
         {

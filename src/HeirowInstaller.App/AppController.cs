@@ -524,7 +524,9 @@ internal sealed partial class AppController : IDisposable
             await game.OnUiAsync(() => End(receipt.UpdateActivationPending == true ? "Hosting staged" : "Hosted on SocketJack",
                 receipt.UpdateActivationPending == true
                     ? "Signed file updates are missing for existing versions. Publish those updates, then publish this same package again to activate it."
-                    : "SocketJack is hosting your installer and update feed. Windows publisher trust uses your own code-signing identity."));
+                    : "SocketJack is hosting your installer and update feed. " + (receipt.TargetPlatform is null or "windows"
+                        ? receipt.WindowsPublisherVerified == true ? "Windows publisher verified with your signing identity." : "Windows publisher unverified. You can add your own Windows signing identity when ready."
+                        : "Platform signing is managed separately.")));
         }
         catch (Exception error) { await ErrorAsync("Publish failed", error); }
     }

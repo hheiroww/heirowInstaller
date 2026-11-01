@@ -1,6 +1,6 @@
 # GitHub Actions trusted publishing
 
-Here, "trusted publishing" authenticates a workflow for SocketJack hosting or protected-component preparation. It does not sign Windows code and grants no access to SocketJack's Microsoft Artifact Signing account. Sign completed Windows installers with your own identity before uploading them; see [Windows signing and hosting](windows-code-signing.md). Non-Windows packages do not require Windows Authenticode.
+Here, "trusted publishing" authenticates a workflow for SocketJack hosting or protected-component preparation. It does not sign Windows code and grants no access to SocketJack's Microsoft Artifact Signing account. Windows signing is currently optional during onboarding. To verify the publisher, sign completed Windows installers with your own identity before uploading them; see [Windows signing and hosting](windows-code-signing.md). Non-Windows packages do not require Windows Authenticode.
 
 Register the repository, product, tag/environment identity and hosted-signing policy with the private SocketJack publisher before using this workflow. Enable `id-token: write` only in the publishing job; keep environment protections in place. The generic client requests a fresh GitHub identity for audience `https://socketjack.com/installer-publisher`, exchanges it for a short-lived package-scoped credential, and never stores it or prints it. No publisher password, publisher access token or durable signing key belongs in the workflow.
 
@@ -44,6 +44,6 @@ For the finished large package, use `PublisherClient.PublishSealedDeliveryAsync(
 
 The final delivery lane requires a native administrator bearer session and rejects browser cookies and scoped CI credentials. GitHub trusted publishing continues to publish component preparation drafts without persistent account credentials; it does not grant administration or final-delivery privileges.
 
-For Windows final delivery, replace `application.hinst` in the example above with the completed `Application-Setup.exe`, Authenticode-signed using your own Windows identity after sealing and bundling. Only explicitly preparation-only component artifacts use the separate `.hinst` preparation lane; they are not installable application releases and cannot bypass the Windows hosting gate.
+For Windows final delivery, replace `application.hinst` in the example above with the completed `Application-Setup.exe`, Authenticode-signed using your own Windows identity after sealing and bundling. Only explicitly preparation-only component artifacts use the separate `.hinst` preparation lane; they are not installable application releases and cannot bypass Windows signature enforcement when it is enabled.
 
 Native protected preparation accepts only a `.hinst` source draft. Completed sealed delivery accepts a full `.hinst` or standalone `.exe`. Publish signed `.hupd` transitions through the ordinary file-update publisher; a file transition is not a component source draft or a full installer.

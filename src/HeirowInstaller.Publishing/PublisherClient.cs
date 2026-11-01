@@ -84,6 +84,8 @@ public sealed partial class PublisherClient : IDisposable
         // Hash and upload the same open file, denying writers while it is read.
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (file.Length == 0) throw new InvalidDataException("Package is empty.");
+        var windowsSignatureRequired = origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase) &&
+            (await GetHostingPolicyAsync(cancellationToken).ConfigureAwait(false)).WindowsAuthenticodeRequired;
         // The server independently validates opaque sealed delivery after its existing trusted preparation flow.
         // Ordinary packages are checked before any hash/upload, on a worker rather than the publisher UI thread.
         if (sealedProduct is null)
@@ -98,11 +100,11 @@ public sealed partial class PublisherClient : IDisposable
                 {
                     using var package = PackageReader.Open(path);
                     LegalDocumentRules.RequireForCreation(package.Manifest);
-                    if (!protectedPreparation && !SocketJackHostingPolicy.IsComponentPreparation(package.Manifest) && origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase))
+                    if (!protectedPreparation && !SocketJackHostingPolicy.IsComponentPreparation(package.Manifest) && windowsSignatureRequired)
                         SocketJackHostingPolicy.VerifyFullInstaller(path, package.Manifest);
                 }
             }, cancellationToken).ConfigureAwait(false);
-        if (sealedProduct is not null && origin.Host.Equals("socketjack.com", StringComparison.OrdinalIgnoreCase))
+        if (sealedProduct is not null && windowsSignatureRequired)
             await Task.Run(() =>
             {
                 using var package = PackageReader.Open(path);
@@ -236,6 +238,9 @@ public sealed class PublisherStatus
 
 public sealed class PublishedRelease
 {
+    public string? TargetPlatform { get; set; }
+    public bool? WindowsPublisherVerified { get; set; }
+    public string? WindowsPublisherSubject { get; set; }
     public string ProductId { get; set; } = "";
     public string Version { get; set; } = "";
     public string InstallerUrl { get; set; } = "";

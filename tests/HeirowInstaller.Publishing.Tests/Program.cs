@@ -43,6 +43,19 @@ try
     var endpoint = (IPEndPoint)listener.LocalEndpoint;
     var origin = new Uri($"http://127.0.0.1:{endpoint.Port}/");
     using var client = new PublisherClient(origin, bearerToken: "test-publisher-credential", allowLoopback: true);
+    foreach (var mode in new[] { false, true })
+    {
+        var policyServer = ServeOnceAsync(listener, request =>
+        {
+            Check(request.RequestLine.StartsWith("GET /api/installer/hosting-policy ", StringComparison.Ordinal), "Hosting requirements use their separate read-only endpoint");
+            return (200, JsonSerializer.Serialize(new { windowsAuthenticodeRequired = mode, codeSigningProvided = false }), null);
+        });
+        var policy = await client.GetHostingPolicyAsync(); await policyServer;
+        Check(policy.WindowsAuthenticodeRequired == mode && !policy.CodeSigningProvided, "Client honors " + (mode ? "required" : "optional") + " Windows signing policy without a shared signer");
+    }
+    var legacyPolicyServer = ServeOnceAsync(listener, _ => (404, "{}", null));
+    Check(!(await client.GetHostingPolicyAsync()).WindowsAuthenticodeRequired, "Older hosting servers remain compatible with optional Windows signing");
+    await legacyPolicyServer;
     var body = new byte[4 * 1024 * 1024 + 513];
     new Random(17).NextBytes(body);
     var package = Path.Combine(root, "test.hinst");
