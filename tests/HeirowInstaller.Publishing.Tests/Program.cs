@@ -35,6 +35,7 @@ try
 {
     await TrustedPublishingChecks.RunAsync(Check, root);
     await CliIncrementalPublishingChecks.RunAsync(Check, root);
+    await CliWindowsSigningChecks.RunAsync(Check, root);
     await RememberedPublisherAccountChecks.RunAsync(Check, root);
     using var listener = new TcpListener(IPAddress.Loopback, 0);
     listener.Start();

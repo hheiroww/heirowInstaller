@@ -151,7 +151,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
                     break;
             }
         }
-        if (package is null && Environment.ProcessPath is { } self && PackageReader.HasEmbeddedPackage(self)) package = self;
+        if (!maintenanceInvocation && package is null && Environment.ProcessPath is { } self && PackageReader.HasEmbeddedPackage(self)) package = self;
         if (scope is not null && scope is not ("user" or "machine")) throw new ArgumentException("Scope must be user or machine.");
         if (smoke is not null) { state = Path.Combine(smoke, "state"); target = Path.Combine(smoke, "installed"); isolated = true; }
         if (wizardSmoke is not null)

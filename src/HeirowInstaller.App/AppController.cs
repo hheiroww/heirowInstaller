@@ -460,30 +460,45 @@ internal sealed partial class AppController : IDisposable
     internal async Task BuildAsync()
     {
         if (Busy) return;
+        var windowsSigning = CopyWindowsSigningSettings(Settings.WindowsCodeSigning);
         Begin("Building installer package", Path.GetFileName(OutputPath));
         var manifest = ManifestPath; var source = SourceDirectory; var output = OutputPath;
         try
         {
+            if (windowsSigning.Provider != "none" && !output.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Windows publisher signing requires an EXE setup. Choose an .exe output, or disable Windows signing to build a .hinst package.");
             var signingKey = Environment.GetEnvironmentVariable("HEIROWINSTALLER_SIGNING_KEY_PATH");
             signingKey = string.IsNullOrWhiteSpace(signingKey) ? null : signingKey;
             var legal = await LegalForBuildAsync(manifest);
             PackageManifest result;
+            WindowsCodeSigningResult? windowsSignature = null;
             if (output.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
                 var metadata = JsonSerializer.Deserialize<PackageManifest>(await File.ReadAllTextAsync(manifest, Cancellation!.Token), InstallerJson.Options) ?? throw new InvalidDataException("The application manifest is empty.");
                 var project = File.Exists(source) && Path.GetExtension(source).ToLowerInvariant() is ".csproj" or ".vbproj" or ".fsproj";
                 var updater = metadata.UpdateCompanion is null ? null : await Task.Run(ResolveUpdater);
-                var built = await StandaloneInstallerBuilder.BuildAsync(manifest, output, new()
+                var buildOptions = new StandaloneBuildOptions
                 {
                     SourceDirectory = project ? null : source, ApplicationProjectPath = project ? source : null,
                     LauncherPath = Environment.GetEnvironmentVariable("HEIROWINSTALLER_LAUNCHER_PATH") ?? Environment.ProcessPath,
                     SigningKeyPath = signingKey, UpdateCompanionExecutablePath = string.IsNullOrEmpty(updater) ? null : updater,
+                    WindowsCodeSigning = windowsSigning,
                     LegalDocuments = legal
-                }, Reporter(), Cancellation.Token);
+                };
+                var reporter = Reporter(); var cancellationToken = Cancellation.Token;
+                var built = await Task.Run(() => StandaloneInstallerBuilder.BuildAsync(manifest, output, buildOptions, reporter, cancellationToken), cancellationToken);
                 result = built.Manifest;
+                windowsSignature = built.WindowsSignature;
             }
             else result = await Task.Run(() => PackageBuilder.Build(manifest, source, output, new() { SigningKeyPath = signingKey, LegalDocuments = legal }));
-            await game.OnUiAsync(() => { BuiltPackagePath = Path.GetFullPath(output); End(signingKey is null ? "Installer built and verified" : "Signed installer built and verified", $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes"); });
+            await game.OnUiAsync(() =>
+            {
+                BuiltPackagePath = Path.GetFullPath(output);
+                End(windowsSignature is { Verified: true, TimestampVerified: true } ? "Windows-signed installer verified" : "Installer built and verified",
+                    $"{result.Name} {result.Version} · {new FileInfo(output).Length:N0} bytes" +
+                    (windowsSignature is { Verified: true } ? " · Windows publisher: " + windowsSignature.CertificateSubject
+                        : signingKey is not null ? " · Package publisher signature verified" : ""));
+            });
         }
         catch (Exception error) { await ErrorAsync("Build failed", error); }
     }

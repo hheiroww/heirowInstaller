@@ -15,6 +15,8 @@ heirowInstaller — modular Windows installation and publishing
   bundle <package.hinst> --launcher <single-file.exe> --output <setup.exe>
   build <manifest.json> --source <directory>|--project <application.csproj> --output <setup.exe>
     [--launcher <published-heirowInstaller.exe>] [--updater <published-heirowUpdater.exe>] [--sign-key <pem>]
+  sign <setup.exe|application.dll|package.msi> [Windows signing options]
+  signing-check [Windows signing options]
   compile <source.wxs|project.wixproj> --output <package.msi|module.msm|patch.msp|bundle.exe>
     [--wix <wix.exe>] [--msbuild <MSBuild.exe>] [--extension <id-or-dll>] [--compiler-arg <argument>]
   inspect <package.hinst|setup.exe>
@@ -38,6 +40,14 @@ Creation options: --legal-documents <json>, --privacy-policy-file <utf8.txt|md>,
   --terms-and-conditions-file <utf8.txt|md>, --privacy-policy-url <https-url>,
   --terms-and-conditions-url <https-url>, --autofill-legal (saved publisher draft).
 Files are optional: authoring JSON and the desktop/publisher editors also accept typed or pasted text.
+
+Windows signing for build, bundle, and sign (separate from --sign-key):
+  --windows-signing certificate --certificate-thumbprint <sha1> [--machine-certificate-store]
+  --windows-signing microsoft --artifact-endpoint <https-url> --artifact-account <name> --artifact-profile <name>
+  Optional: --signtool <signtool.exe>, --artifact-signing-dlib <Azure.CodeSigning.Dlib.dll>,
+    --timestamp-url <url>. Tools are discovered automatically when installed.
+Microsoft signing uses your existing Azure login or environment credentials; setup and service fees apply.
+signing-check checks settings and local prerequisites without sending a signing request.
 
 Maintenance options: --silent, --no-launch, --launch, --log <path>, --state-root <directory>,
   --allow-downgrade, --no-register, --trust-key <sha256>, --require-signature.
@@ -68,6 +78,9 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
             if (command is null && File.Exists(ownPath) && PackageReader.HasEmbeddedPackage(ownPath))
             { bundled = ownPath; command ??= "install"; }
             if (command is null) { Console.WriteLine(Help); return 0; }
+            var windowsSigning = WindowsSigningOptions(parsed);
+            if (windowsSigning is not null && command.ToLowerInvariant() is not ("build" or "bundle" or "sign" or "signing-check"))
+                throw new ArgumentException("Windows signing options apply to build, bundle, sign, or signing-check. A .hinst package uses --sign-key instead.");
             var options = Options(parsed);
             var progress = new InlineProgress(value =>
             {
@@ -79,13 +92,24 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                 case "pack":
                     Print(PackageBuilder.Build(Subject(), parsed.Require("source"), parsed.Require("output"), await CreationOptionsAsync(parsed, Subject(), cancellation.Token))); break;
                 case "bundle":
-                    BundleBuilder.Build(parsed.Require("launcher"), Subject(), parsed.Require("output"));
-                    Print(new { output = Path.GetFullPath(parsed.Require("output")), sha256 = PackageSafety.HashFile(parsed.Require("output")) }); break;
+                {
+                    var signature = await BundleAsync(parsed.Require("launcher"), Subject(), parsed.Require("output"), windowsSigning, progress, cancellation.Token);
+                    Print(new { output = Path.GetFullPath(parsed.Require("output")), sha256 = PackageSafety.HashFile(parsed.Require("output")),
+                        size = new FileInfo(parsed.Require("output")).Length, windowsSignature = signature }); break;
+                }
+                case "sign":
+                {
+                    var signature = await WindowsCodeSigner.SignAsync(Subject(), RequireWindowsSigning(windowsSigning), progress, cancellation.Token);
+                    Print(new { output = Path.GetFullPath(Subject()), sha256 = PackageSafety.HashFile(Subject()), size = new FileInfo(Subject()).Length, windowsSignature = signature }); break;
+                }
+                case "signing-check":
+                    Print(new { available = true, settings = WindowsCodeSigner.CheckAvailability(RequireWindowsSigning(windowsSigning)), signingRequestSent = false }); break;
                 case "build":
                     Print(await StandaloneInstallerBuilder.BuildAsync(Subject(), parsed.Require("output"), new()
                     {
                         SourceDirectory = parsed.Get("source"), ApplicationProjectPath = parsed.Get("project"), LauncherPath = parsed.Get("launcher"),
                         SigningKeyPath = parsed.Get("sign-key"), UpdateCompanionExecutablePath = parsed.Get("updater"),
+                        WindowsCodeSigning = windowsSigning,
                         LegalDocuments = (await CreationOptionsAsync(parsed, Subject(), cancellation.Token)).LegalDocuments,
                         UpdaterDefaultSelected = parsed.Has("updater-default") ? true : null,
                         Configuration = parsed.Get("configuration") ?? "Release", Runtime = parsed.Get("runtime") ?? "win-x64", Framework = parsed.Get("framework")
@@ -298,6 +322,51 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         return result;
     }
     private static void Print<T>(T value) => Console.WriteLine(JsonSerializer.Serialize(value, InstallerJson.Options));
+
+    private static WindowsCodeSigningOptions RequireWindowsSigning(WindowsCodeSigningOptions? options)
+        => options is { Provider: not "none" } ? options : throw new ArgumentException("Choose --windows-signing certificate or microsoft and provide its signing settings.");
+
+    private static WindowsCodeSigningOptions? WindowsSigningOptions(Arguments args)
+    {
+        string[] names = ["windows-signing", "certificate-thumbprint", "machine-certificate-store", "signtool", "artifact-signing-dlib", "artifact-endpoint", "artifact-account", "artifact-profile", "timestamp-url"];
+        if (!names.Any(args.Has)) return null;
+        var microsoft = new[] { "artifact-signing-dlib", "artifact-endpoint", "artifact-account", "artifact-profile" }.Any(args.Has);
+        var options = new WindowsCodeSigningOptions
+        {
+            Provider = (args.Get("windows-signing") ?? (microsoft ? "microsoft" : "certificate")).ToLowerInvariant(),
+            CertificateThumbprint = args.Get("certificate-thumbprint"), UseMachineCertificateStore = args.Has("machine-certificate-store"),
+            SignToolPath = args.Get("signtool"), ArtifactSigningDlibPath = args.Get("artifact-signing-dlib"),
+            Endpoint = args.Get("artifact-endpoint"), AccountName = args.Get("artifact-account"), CertificateProfileName = args.Get("artifact-profile"),
+            TimestampUrl = args.Get("timestamp-url")
+        };
+        WindowsCodeSigner.Validate(options);
+        return options;
+    }
+
+    private static async Task<WindowsCodeSigningResult?> BundleAsync(string launcher, string package, string output,
+        WindowsCodeSigningOptions? signing, IProgress<InstallProgress> progress, CancellationToken token)
+    {
+        if (signing is null || signing.Provider == "none") { BundleBuilder.Build(launcher, package, output); return null; }
+        WindowsCodeSigner.CheckAvailability(signing);
+        output = Path.GetFullPath(output);
+        if (output.Equals(Path.GetFullPath(launcher), StringComparison.OrdinalIgnoreCase) || output.Equals(Path.GetFullPath(package), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Bundle output must differ from its inputs.");
+        PackageSafety.EnsureNoReparsePoints(output);
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        var temporary = output + "." + Guid.NewGuid().ToString("N") + ".exe";
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            BundleBuilder.Build(launcher, package, temporary);
+            var signature = await WindowsCodeSigner.SignAsync(temporary, signing, progress, token);
+            token.ThrowIfCancellationRequested();
+            PackageSafety.EnsureNoReparsePoints(output);
+            File.Move(temporary, output, overwrite: true);
+            return signature;
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     private sealed class InlineProgress(Action<InstallProgress> report) : IProgress<InstallProgress> { public void Report(InstallProgress value) => report(value); }
     private sealed class Arguments
     {
@@ -313,8 +382,9 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
         public List<string> LocalizationFiles { get; } = [];
         public Arguments(string[] args)
         {
-            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation", "sealed-delivery", "protected-preparation", "autofill-legal"], StringComparer.OrdinalIgnoreCase);
+            var flags = new HashSet<string>(["help", "silent", "launch", "no-launch", "no-register", "allow-downgrade", "isolated", "require-signature", "allow-loopback", "json", "skip-restore", "updater-default", "github-oidc", "wait-for-activation", "sealed-delivery", "protected-preparation", "autofill-legal", "machine-certificate-store"], StringComparer.OrdinalIgnoreCase);
             var values = new HashSet<string>(["source", "output", "sign-key", "launcher", "trust-key", "target", "state-root", "features", "scope", "log", "feed", "download-directory", "id", "name", "version", "publisher", "token-env", "cookie-env", "credential-origin", "install-args", "silent-install-args", "directory-argument", "repair-args", "uninstall-args", "uninstall-executable", "wait-for-pid", "project", "updater", "configuration", "runtime", "framework", "wix", "msbuild", "arch", "base", "resume-upload", "legal-documents", "privacy-policy-file", "terms-and-conditions-file", "privacy-policy-url", "terms-and-conditions-url"], StringComparer.OrdinalIgnoreCase);
+            foreach (var name in new[] { "windows-signing", "certificate-thumbprint", "signtool", "artifact-signing-dlib", "artifact-endpoint", "artifact-account", "artifact-profile", "timestamp-url" }) values.Add(name);
             var repeated = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) { ["compiler-arg"] = CompilerArguments, ["extension"] = Extensions,
                 ["define"] = Defines, ["source-file"] = SourceFiles, ["bind-path"] = BindPaths, ["include"] = IncludeDirectories, ["localization"] = LocalizationFiles };
             for (var i = 0; i < args.Length; i++)

@@ -176,6 +176,19 @@ public sealed class PackageReader : IDisposable
 
     public static PackageReader Open(string path) => new(path);
     public static bool HasEmbeddedPackage(string path) => BundleBuilder.HasEmbeddedPackage(path);
+
+    /// <summary>Hashes the exact package archive, independently of a containing Setup executable or its Windows signature.</summary>
+    public string ComputePackageSha256()
+    {
+        var position = stream.Position;
+        try
+        {
+            stream.Position = 0;
+            return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        }
+        finally { stream.Position = position; }
+    }
+
     // This immutable copy is the exact manifest read from this verified, open archive.
     // Reading it must not reopen and rehash a potentially very large setup executable.
     internal byte[] ReadManifestBytes() => manifestBytes.ToArray();
@@ -264,7 +277,7 @@ public static class BundleBuilder
         {
             using (var destination = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                using (var input = File.OpenRead(launcher)) input.CopyTo(destination);
+                using (var input = File.OpenRead(launcher)) CopyLauncherWithoutSignature(input, destination);
                 var offset = destination.Position;
                 using (var input = OpenPackageStream(package))
                 {
@@ -286,10 +299,40 @@ public static class BundleBuilder
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
+    private static void CopyLauncherWithoutSignature(Stream input, Stream destination)
+    {
+        // Appending a package invalidates the launcher's signature. Remove only a valid trailing
+        // certificate table in the output copy; the original launcher is never modified.
+        if (!TryGetSecurityDirectory(input, out var directory, out var offset, out var size, out var minimumOffset) || (offset == 0 && size == 0))
+        {
+            input.Position = 0; input.CopyTo(destination); return;
+        }
+        if (offset % 8 != 0 || size < 8 || offset < minimumOffset || (long)offset + size != input.Length)
+            throw new InvalidDataException("The launcher has an invalid or non-trailing Authenticode certificate table. Use a clean published launcher.");
+        input.Position = 0;
+        var buffer = new byte[128 * 1024]; long remaining = offset;
+        while (remaining > 0)
+        {
+            var count = input.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+            if (count == 0) throw new EndOfStreamException("The launcher changed while bundling.");
+            destination.Write(buffer, 0, count); remaining -= count;
+        }
+        var end = destination.Position;
+        destination.Position = directory;
+        destination.Write(new byte[8]);
+        destination.Position = end;
+    }
+
     public static bool HasEmbeddedPackage(string path)
     {
         using var file = File.OpenRead(path);
         return TryReadFooter(file, out _, out _, out _);
+    }
+
+    internal static bool HasAuthenticodeTable(string path)
+    {
+        using var file = File.OpenRead(path);
+        return TryGetCertificateOffset(file, out _);
     }
 
     internal static Stream OpenPackageStream(string path)
@@ -345,6 +388,15 @@ public static class BundleBuilder
     private static bool TryGetCertificateOffset(Stream file, out long certificateOffset)
     {
         certificateOffset = 0;
+        if (!TryGetSecurityDirectory(file, out _, out var offset, out var size, out var minimumOffset) ||
+            offset < minimumOffset || offset % 8 != 0 || size < 8 || (long)offset + size != file.Length) return false;
+        certificateOffset = offset;
+        return true;
+    }
+
+    private static bool TryGetSecurityDirectory(Stream file, out long directory, out uint offset, out uint size, out long minimumOffset)
+    {
+        directory = minimumOffset = 0; offset = size = 0;
         if (file.Length < 64) return false;
         using var reader = new BinaryReader(file, Encoding.UTF8, leaveOpen: true);
         file.Position = 0;
@@ -365,10 +417,10 @@ public static class BundleBuilder
         file.Position = optionalStart + directoriesOffset - 4;
         if (reader.ReadUInt32() < 5) return false;
         file.Position = optionalStart + directoriesOffset + 32;
-        var offset = reader.ReadUInt32();
-        var size = reader.ReadUInt32();
-        if (offset < optionalStart + optionalSize || offset % 8 != 0 || size < 8 || (long)offset + size != file.Length) return false;
-        certificateOffset = offset;
+        directory = file.Position;
+        minimumOffset = optionalStart + optionalSize;
+        offset = reader.ReadUInt32();
+        size = reader.ReadUInt32();
         return true;
     }
 

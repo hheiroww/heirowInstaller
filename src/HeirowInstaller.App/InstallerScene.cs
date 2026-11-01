@@ -26,6 +26,7 @@ internal sealed partial class InstallerScene : Scene
     private bool showLicense;
     private bool showLegalEditor;
     private bool showPackageLegal;
+    private bool showWindowsSigning;
     private bool legalPrivacy = true;
     private int legalTextPage;
     private RectangleElement? legalBusyIndicator;
@@ -132,6 +133,7 @@ internal sealed partial class InstallerScene : Scene
             if (confirmUninstall) BuildUninstallConfirmation();
             if (showLicense) BuildLicense();
             if (showLegalEditor || showPackageLegal) BuildLegalDocuments();
+            if (showWindowsSigning) BuildWindowsSigning();
             if (showWizardDetails) BuildWizardDetails();
             if (Controller.RunningApplicationsDialog is not null) BuildRunningApplicationsDialog();
             AddElement(root);

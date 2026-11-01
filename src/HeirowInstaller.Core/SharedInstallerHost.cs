@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace HeirowInstaller.Core;
 
-/// <summary>Stores one immutable GUI maintenance prefix per scope without retaining each application's installer payload.</summary>
+/// <summary>Stores immutable GUI maintenance hosts per scope, preserving complete signed installers and pooling unsigned prefixes.</summary>
 public static class SharedInstallerHost
 {
     /// <returns>The shared GUI host, or null only for explicitly isolated framework-dependent development fixtures.</returns>
@@ -11,8 +11,12 @@ public static class SharedInstallerHost
         var source = Path.GetFullPath(currentTrustedInstallerPath); PackageSafety.EnsureNoReparsePoints(source);
         try { StandaloneRuntimeInspector.RequireEmbeddedRuntime(source); }
         catch (InvalidDataException) when (isolated) { return null; }
-        var length = BundleBuilder.LauncherLength(source);
-        if (length is < 64 or > 512L * 1024 * 1024) throw new InvalidDataException("The trusted maintenance host has invalid executable bounds.");
+        var launcherLength = BundleBuilder.LauncherLength(source);
+        if (launcherLength is < 64 or > 512L * 1024 * 1024) throw new InvalidDataException("The trusted maintenance host has invalid executable bounds.");
+        // Authenticode covers the entire Setup, including its payload overlay. A truncated
+        // prefix cannot retain that signature, so signed sources must be cached unchanged.
+        // The runtime-size bound applies to the prefix; an application's payload can be larger.
+        var length = BundleBuilder.HasAuthenticodeTable(source) ? new FileInfo(source).Length : launcherLength;
         using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
         if (length > input.Length) throw new InvalidDataException("The maintenance host prefix exceeds its source.");
         using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -43,7 +47,7 @@ public static class SharedInstallerHost
                 }
                 output.Flush(flushToDisk: true);
             }
-            if (!PackageSafety.HashEquals(PackageSafety.HashFile(temporary), hash)) throw new CryptographicException("The maintenance prefix failed integrity verification.");
+            if (!PackageSafety.HashEquals(PackageSafety.HashFile(temporary), hash)) throw new CryptographicException("The maintenance executable failed integrity verification.");
             StandaloneRuntimeInspector.RequireEmbeddedRuntime(temporary);
             try { File.Move(temporary, destination); }
             catch (IOException) when (File.Exists(destination)) { }
@@ -68,7 +72,7 @@ public static class SharedInstallerHost
             Path.GetFileName(path) != "heirowInstaller.exe" || hash.Length != 64 || !hash.All(Uri.IsHexDigit))
             throw new InvalidDataException("The maintenance host is outside its scope's immutable pool.");
         using var protection = Guard(scope, stateRoot, isolated, create: false);
-        if (!File.Exists(path) || new FileInfo(path).Length is < 64 or > 512L * 1024 * 1024 || !PackageSafety.HashEquals(PackageSafety.HashFile(path), hash))
+        if (!File.Exists(path) || BundleBuilder.LauncherLength(path) is < 64 or > 512L * 1024 * 1024 || !PackageSafety.HashEquals(PackageSafety.HashFile(path), hash))
             throw new CryptographicException("The shared maintenance host failed its content binding.");
         StandaloneRuntimeInspector.RequireEmbeddedRuntime(path);
         return path;

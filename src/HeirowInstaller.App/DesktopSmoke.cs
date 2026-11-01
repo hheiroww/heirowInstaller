@@ -15,6 +15,7 @@ internal static partial class DesktopSmoke
         var fixture = Path.Combine(directory, "fixture");
         var install = Path.Combine(directory, "installed");
         var probes = new List<(Process Process, string Directory)>();
+        WindowsCodeSigningOptions? savedWindowsSigning = null;
         try
         {
             Require(game.FramesRendered > 0, "The desktop rendered before reading installation state and starting background work");
@@ -70,11 +71,15 @@ internal static partial class DesktopSmoke
             await Click("nav.workspace");
             await game.OnUiAsync(() =>
             {
+                // Native acceptance must never use a user's saved paid signing profile.
+                savedWindowsSigning = game.MainScene.Controller.Settings.WindowsCodeSigning;
+                game.MainScene.Controller.Settings.WindowsCodeSigning = new();
                 ((Textbox)game.MainScene.Control("workspace.manifest")).Text = manifestPath;
                 ((Textbox)game.MainScene.Control("workspace.source")).Text = fixture;
                 ((Textbox)game.MainScene.Control("workspace.output")).Text = package;
                 ((Textbox)game.MainScene.Control("workspace.notes")).Text = "Verified through native Project-Z pointer and control events.";
             });
+            await VerifyWindowsSigningUiAsync(game, directory, package, checks);
             await game.CaptureAsync(Path.Combine(directory, "02-workspace.png"));
             await Click("workspace.build");
             await Wait(() => !game.MainScene.Controller.Busy && game.MainScene.Controller.BuiltPackagePath is not null);
@@ -219,7 +224,12 @@ internal static partial class DesktopSmoke
                     finally { probe.Process.Dispose(); }
                 }
             }
-            finally { game.Enqueue(game.Exit); }
+            finally
+            {
+                if (savedWindowsSigning is not null)
+                    await game.OnUiAsync(() => game.MainScene.Controller.Settings.WindowsCodeSigning = savedWindowsSigning);
+                game.Enqueue(game.Exit);
+            }
         }
 
         void Require(bool condition, string description)

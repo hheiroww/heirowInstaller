@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HeirowInstaller.Core;
 
 namespace HeirowInstaller.App;
 
@@ -8,6 +9,8 @@ internal sealed class DesktopSettings
     public string PublisherBaseUrl { get; set; } = "https://socketjack.com";
     public bool LaunchAfterInstall { get; set; }
     public bool RegisterProducts { get; set; } = true;
+    // Provider settings contain public certificate identifiers and tool locations, never passwords or Azure credentials.
+    public WindowsCodeSigningOptions WindowsCodeSigning { get; set; } = new();
     public static string SettingsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "desktop.json");
 
     public static DesktopSettings Load()

@@ -19,6 +19,7 @@ public sealed class StandaloneBuildOptions
     public string Runtime { get; set; } = "win-x64";
     public string? Framework { get; set; }
     public PackageLegalDocuments? LegalDocuments { get; set; }
+    public WindowsCodeSigningOptions? WindowsCodeSigning { get; set; }
 }
 
 public sealed class StandaloneBuildResult
@@ -29,6 +30,7 @@ public sealed class StandaloneBuildResult
     public string LauncherSha256 { get; set; } = "";
     public bool ApplicationRuntimePublished { get; set; }
     public PackageManifest Manifest { get; set; } = new();
+    public WindowsCodeSigningResult? WindowsSignature { get; set; }
 }
 
 /// <summary>Builds a single setup executable from a self-contained launcher and complete app payload; no installed heirowInstaller is needed.</summary>
@@ -38,6 +40,7 @@ public static class StandaloneInstallerBuilder
         IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         manifestPath = Path.GetFullPath(manifestPath); outputPath = Path.GetFullPath(outputPath);
+        var windowsSigningAvailability = options.WindowsCodeSigning is { } windowsSigning ? WindowsCodeSigner.CheckAvailability(windowsSigning) : null;
         if (!outputPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Standalone installer output must end in .exe.");
         if ((options.SourceDirectory is null) == (options.ApplicationProjectPath is null)) throw new ArgumentException("Select either a complete source directory or an application project to publish.");
         var launcher = Path.GetFullPath(options.LauncherPath ?? FindLauncher() ?? throw new FileNotFoundException("A published self-contained heirowInstaller launcher is required. Pass --launcher or keep heirowInstaller.exe beside the portable builder."));
@@ -54,6 +57,7 @@ public static class StandaloneInstallerBuilder
         PackageSafety.EnsureNoReparsePoints(outputPath);
         var work = Path.Combine(Path.GetTempPath(), "heirowInstaller-build-" + Guid.NewGuid().ToString("N"));
         var payload = Path.Combine(work, "payload"); Directory.CreateDirectory(payload);
+        string? stagedOutput = null;
         try
         {
             if (options.ApplicationProjectPath is { } project)
@@ -113,12 +117,20 @@ public static class StandaloneInstallerBuilder
             var package = Path.Combine(work, "application.hinst");
             var built = PackageBuilder.Build(stagedManifest, payload, package, new() { SigningKeyPath = options.SigningKeyPath });
             cancellationToken.ThrowIfCancellationRequested();
-            BundleBuilder.Build(launcher, package, outputPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+            stagedOutput = Path.Combine(Path.GetDirectoryName(outputPath)!, "." + Path.GetFileNameWithoutExtension(outputPath) + "." + Guid.NewGuid().ToString("N") + ".building.exe");
+            BundleBuilder.Build(launcher, package, stagedOutput);
+            WindowsCodeSigningResult? windowsSignature = null;
+            if (options.WindowsCodeSigning is { } signing && windowsSigningAvailability?.Provider != "none")
+                windowsSignature = await WindowsCodeSigner.SignAsync(stagedOutput, signing, progress, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            PackageSafety.EnsureNoReparsePoints(outputPath);
+            File.Move(stagedOutput, outputPath, overwrite: true);
             progress?.Report(new("complete", "Standalone application installer built", 1, 1));
             return new() { OutputPath = outputPath, Sha256 = PackageSafety.HashFile(outputPath), Size = new FileInfo(outputPath).Length,
-                LauncherSha256 = PackageSafety.HashFile(launcher), ApplicationRuntimePublished = options.ApplicationProjectPath is not null, Manifest = built };
+                LauncherSha256 = PackageSafety.HashFile(launcher), ApplicationRuntimePublished = options.ApplicationProjectPath is not null, Manifest = built, WindowsSignature = windowsSignature };
         }
-        finally { if (Directory.Exists(work)) Directory.Delete(work, recursive: true); }
+        finally { if (stagedOutput is not null && File.Exists(stagedOutput)) File.Delete(stagedOutput); if (Directory.Exists(work)) Directory.Delete(work, recursive: true); }
     }
 
     private static string? FindLauncher()

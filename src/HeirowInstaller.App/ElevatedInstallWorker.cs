@@ -33,7 +33,7 @@ internal static class ElevatedInstallWorker
         using var imageLock = File.Open(image, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var packageLock = File.Open(packagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         var imageHash = PackageSafety.HashFile(image);
-        var hostBinding = ReadHostBinding(image, imageHash);
+        var hostBinding = ReadHostBinding(image);
         var parent = ProcessIdentity.Read(Environment.ProcessId);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         var pipeName = "heirowInstaller.install." + Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
@@ -132,7 +132,7 @@ internal static class ElevatedInstallWorker
             PackageSafety.EnsureNoReparsePoints(image);
             using var imageLock = File.Open(image, FileMode.Open, FileAccess.Read, FileShare.Read);
             var imageHash = PackageSafety.HashFile(image);
-            var hostBinding = ReadHostBinding(image, imageHash);
+            var hostBinding = ReadHostBinding(image);
             var parent = ProcessIdentity.Read(parentPid);
             if (parent.StartTicks != parentTicks) throw new InvalidDataException("The original wizard is no longer running.");
             parent.RequireImage(image, imageHash);
@@ -356,13 +356,13 @@ internal static class ElevatedInstallWorker
             throw new InvalidDataException("The completed installation destination changed from the reviewed plan.");
     }
 
-    private sealed record HostBinding(string ProductId, string? PublisherPin, string ImageSha256);
-    private static HostBinding? ReadHostBinding(string image, string imageHash)
+    private sealed record HostBinding(string ProductId, string? PublisherPin, string PackageSha256);
+    private static HostBinding? ReadHostBinding(string image)
     {
         if (!PackageReader.HasEmbeddedPackage(image)) return null;
         using var ownPackage = PackageReader.Open(image);
         ownPackage.VerifySignature();
-        return new(ownPackage.Manifest.Id, ownPackage.PublisherKeySha256, imageHash);
+        return new(ownPackage.Manifest.Id, ownPackage.PublisherKeySha256, ownPackage.ComputePackageSha256());
     }
 
     private static void ValidateHostBinding(HostBinding? host, PackageReader package, WorkerRequest request)
@@ -375,7 +375,16 @@ internal static class ElevatedInstallWorker
                 throw new CryptographicException("The requested publisher does not match this setup.");
             package.VerifySignature(pin, requireSignature: true);
         }
-        else if (package.PublisherKeySha256 is not null || !PackageSafety.HashEquals(request.PackageSha256, host.ImageSha256))
+        else VerifyUnsignedHostPackage(host.ProductId, host.PackageSha256, package);
+    }
+
+    // The same archive can be read from its signed Setup or the raw installed cache.
+    // Only exact ZIP bytes authorize an unsigned host; parsed manifest equivalence does not.
+    internal static void VerifyUnsignedHostPackage(string productId, string packageSha256, PackageReader package)
+    {
+        if (package.Manifest.Id != productId)
+            throw new InvalidDataException("This setup belongs to a different application. Use that application's own installer.");
+        if (package.PublisherKeySha256 is not null || !PackageSafety.HashEquals(package.ComputePackageSha256(), packageSha256))
             throw new CryptographicException("An unsigned bundled setup can only apply its own unchanged package. Use the new application's installer.");
     }
 

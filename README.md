@@ -63,6 +63,8 @@ MSI repair and uninstall reuse the recorded directory when it was explicitly sel
 
 For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. Keep the private key outside the payload directory. The desktop builder also accepts its path through `HEIROWINSTALLER_SIGNING_KEY_PATH`; the path is never saved in project or desktop settings. SocketJack.com publication requires an approved publisher signature and an authorized account.
 
+Windows **Verified publisher** uses a separate Authenticode signature. The desktop builder supports Windows certificates (including certificate import) and Microsoft Artifact Signing. The CLI exposes the same providers through `build --windows-signing` and `sign`; `scripts/Build.ps1` can also sign a complete toolkit release. Signing requires a trusted certificate or an existing paid Microsoft signing account. See [Windows code signing](docs/windows-code-signing.md) for setup, prices, free Store distribution and the distinction from SmartScreen reputation.
+
 ## Application updates
 
 Selecting an application's optional updates feature generates a small `heirowUpdater.json` at its root and provisions one immutable updater runtime in a shared directory for its installation scope. Applications using the same runtime reuse its bytes. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. Manual checks show progress and a visible result. Choosing **Update now** asks before closing a running app or plugin host and allows cancellation before replacing files. Leaving the feature off creates no application profile or runtime reference.

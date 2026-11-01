@@ -88,16 +88,17 @@ internal sealed partial class InstallerScene
 
     private void BuildWorkspace()
     {
+        var compact = Math.Clamp(800 - Height, 0, 40);
         Box(Left, 146, BodyWidth, 63, Theme.Surface, 10);
         Text("YOUR RELEASE WORKSPACE", Left + 20, 158, BodyWidth - 245, 24, 9, Theme.Lime, true);
         Text("Application → standalone setup → published update", Left + 20, 185, BodyWidth - 245, 20, 9, Theme.Muted);
         Action("workspace.publisher", Controller.SigningIn ? "Cancel sign-in" : Controller.PublisherSignedIn ? "Sign out" : "Sign in to SocketJack  ↗", Width - 252, 157, 199, () => _ = Controller.SignInPublisherAsync(), enabled: !Controller.Busy || Controller.SigningIn, accent: Theme.Orange);
-        PathField("workspace.manifest", "PACKAGE MANIFEST", Controller.ManifestPath, 232, value => Controller.ManifestPath = value, () =>
+        PathField("workspace.manifest", "PACKAGE MANIFEST", Controller.ManifestPath, 232 - compact / 4f, value => Controller.ManifestPath = value, () =>
         {
             using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Choose package manifest", Filter = "Package manifest|*.json|All files|*.*", CheckFileExists = true };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.ManifestPath = picker.FileName; if (string.IsNullOrWhiteSpace(Controller.SourceDirectory)) Controller.SourceDirectory = Path.GetDirectoryName(picker.FileName)!; Controller.Notify(); }
         });
-        PathField("workspace.source", "APPLICATION FILES OR .NET PROJECT", Controller.SourceDirectory, 318, value => Controller.SourceDirectory = value, () =>
+        PathField("workspace.source", "APPLICATION FILES OR .NET PROJECT", Controller.SourceDirectory, 318 - compact / 2f, value => Controller.SourceDirectory = value, () =>
         {
             using var picker = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose published application files", UseDescriptionForTitle = true, InitialDirectory = File.Exists(Controller.SourceDirectory) ? Path.GetDirectoryName(Controller.SourceDirectory) ?? "" : Controller.SourceDirectory };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.SourceDirectory = picker.SelectedPath; Controller.Notify(); }
@@ -106,15 +107,17 @@ internal sealed partial class InstallerScene
             using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Choose an application project to publish", Filter = ".NET application project|*.csproj;*.vbproj;*.fsproj", CheckFileExists = true };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.SourceDirectory = picker.FileName; Controller.Notify(); }
         });
-        PathField("workspace.output", "OUTPUT INSTALLER", Controller.OutputPath, 404, value => Controller.OutputPath = value, () =>
+        PathField("workspace.output", "OUTPUT INSTALLER", Controller.OutputPath, 404 - 3 * compact / 4f, value => Controller.OutputPath = value, () =>
         {
             using var picker = new System.Windows.Forms.SaveFileDialog { Title = "Choose output installer", Filter = "Standalone Windows setup|*.exe|heirowInstaller package|*.hinst", FileName = Path.GetFileName(Controller.OutputPath), DefaultExt = "exe", AddExtension = true };
             if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.OutputPath = picker.FileName; Controller.Notify(); }
         });
-        Text("RELEASE NOTES", Left, 490, BodyWidth, 22, 8.5f, Theme.Muted, true);
-        Field("workspace.notes", Controller.ReleaseNotes, Left, 520, BodyWidth, value => Controller.ReleaseNotes = value, true, 52);
-        Text(Controller.PublisherAccount, Left, 581, BodyWidth - 205, 20, 9, Theme.Muted);
-        Action("workspace.legal", "Privacy & terms", Width - 218, 579, 184, () =>
+        Text("RELEASE NOTES", Left, 490 - compact, BodyWidth, 22, 8.5f, Theme.Muted, true);
+        Field("workspace.notes", Controller.ReleaseNotes, Left, 520 - compact, BodyWidth, value => Controller.ReleaseNotes = value, true, 52);
+        Text(Controller.WindowsSigningSummary, Left, 578 - compact, BodyWidth - 380, 24, 9, Theme.Muted);
+        Text(Controller.PublisherAccount, Left, 603 - compact, BodyWidth - 380, 18, 8, Theme.Muted);
+        Action("workspace.signing", "Windows signing", Width - 400, 579 - compact, 170, OpenWindowsSigning, enabled: !Controller.Busy);
+        Action("workspace.legal", "Privacy & terms", Width - 218, 579 - compact, 184, () =>
         {
             showLegalEditor = true; showPackageLegal = false; legalTextPage = 0; Controller.Notify();
             _ = Controller.LoadLegalDraftAsync(false);

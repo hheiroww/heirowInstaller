@@ -8,12 +8,42 @@ param(
     [string]$SigningKey,
     [string]$LegalDocuments,
     [string]$CertificateThumbprint,
+    [ValidateSet('none','certificate','microsoft')][string]$WindowsSigning = 'none',
+    [switch]$MachineCertificateStore,
+    [string]$SignTool,
+    [string]$ArtifactSigningDlib,
+    [string]$ArtifactEndpoint,
+    [string]$ArtifactAccount,
+    [string]$ArtifactProfile,
+    [string]$TimestampUrl,
     [string]$PackageCache,
     [string[]]$PreviousPackage,
     [switch]$FirstRelease,
     [switch]$SkipTests
 )
 $ErrorActionPreference = 'Stop'
+if ($CertificateThumbprint -and $WindowsSigning -eq 'none') { $WindowsSigning = 'certificate' }
+$windowsSigningArguments = @()
+if ($WindowsSigning -eq 'none') {
+    if ($MachineCertificateStore -or $SignTool -or $ArtifactSigningDlib -or $ArtifactEndpoint -or $ArtifactAccount -or $ArtifactProfile -or $TimestampUrl) {
+        throw 'Select -WindowsSigning certificate or microsoft when supplying Windows signing options.'
+    }
+} else {
+    $windowsSigningArguments = @('--windows-signing',$WindowsSigning)
+    if ($WindowsSigning -eq 'certificate') {
+        if (-not $CertificateThumbprint) { throw '-WindowsSigning certificate requires -CertificateThumbprint.' }
+        if ($ArtifactSigningDlib -or $ArtifactEndpoint -or $ArtifactAccount -or $ArtifactProfile) { throw 'Microsoft Artifact Signing options require -WindowsSigning microsoft.' }
+        $windowsSigningArguments += @('--certificate-thumbprint',$CertificateThumbprint)
+        if ($MachineCertificateStore) { $windowsSigningArguments += '--machine-certificate-store' }
+    } else {
+        if ($CertificateThumbprint -or $MachineCertificateStore) { throw 'Certificate-store options cannot be combined with -WindowsSigning microsoft.' }
+        if (-not $ArtifactEndpoint -or -not $ArtifactAccount -or -not $ArtifactProfile) { throw '-WindowsSigning microsoft requires -ArtifactEndpoint, -ArtifactAccount and -ArtifactProfile.' }
+        $windowsSigningArguments += @('--artifact-endpoint',$ArtifactEndpoint,'--artifact-account',$ArtifactAccount,'--artifact-profile',$ArtifactProfile)
+        if ($ArtifactSigningDlib) { $windowsSigningArguments += @('--artifact-signing-dlib',$ArtifactSigningDlib) }
+    }
+    if ($SignTool) { $windowsSigningArguments += @('--signtool',$SignTool) }
+    if ($TimestampUrl) { $windowsSigningArguments += @('--timestamp-url',$TimestampUrl) }
+}
 if ($SigningKey -and -not $PreviousPackage -and -not $FirstRelease) { throw 'Signed releases require -PreviousPackage so existing installations receive a signed file update. Use -FirstRelease only for an initial release with no installed native baseline.' }
 if ($FirstRelease -and $PreviousPackage) { throw '-FirstRelease cannot be combined with -PreviousPackage.' }
 if ($PreviousPackage -and -not $SigningKey) { throw 'A file update requires the same publisher signing key as both full packages.' }
@@ -49,11 +79,14 @@ $launcher = Join-Path $appDirectory 'heirowInstaller.exe'
 $cli = Join-Path $cliDirectory 'heirowInstaller.Cli.exe'
 $updater = Join-Path $updaterDirectory 'heirowUpdater.exe'
 if (-not (Test-Path -LiteralPath $launcher) -or -not (Test-Path -LiteralPath $cli) -or -not (Test-Path -LiteralPath $updater)) { throw 'Published single-file executables are missing.' }
-if ($CertificateThumbprint) {
-    $signTool = Get-Command signtool.exe -ErrorAction Stop
+if ($windowsSigningArguments.Count) {
+    # Sign through a separate copy so Windows does not lock the CLI being signed.
+    $signingCliDirectory = Join-Path $buildDirectory 'signing-tool'
+    Copy-Item -LiteralPath $cliDirectory -Destination $signingCliDirectory -Recurse
+    $signingCli = Join-Path $signingCliDirectory 'heirowInstaller.Cli.exe'
     foreach ($binary in @($launcher,$cli,$updater)) {
-        & $signTool.Source sign /sha1 $CertificateThumbprint /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 $binary
-        if ($LASTEXITCODE -ne 0) { throw 'Authenticode signing failed.' }
+        & $signingCli sign $binary @windowsSigningArguments
+        if ($LASTEXITCODE -ne 0) { throw 'Windows code signing failed for a published executable.' }
     }
 }
 $payloadDirectory = Join-Path $buildDirectory 'payload'
@@ -126,8 +159,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Setup bundle build failed.' }
 & $cli verify $setup
 if ($LASTEXITCODE -ne 0) { throw 'Setup bundle verification failed.' }
 # Authenticode must be applied after the payload overlay has been appended.
-if ($CertificateThumbprint) {
-    & $signTool.Source sign /sha1 $CertificateThumbprint /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 $setup
+if ($windowsSigningArguments.Count) {
+    & $signingCli sign $setup @windowsSigningArguments
     if ($LASTEXITCODE -ne 0) { throw 'Setup Authenticode signing failed.' }
     & $cli verify $setup
     if ($LASTEXITCODE -ne 0) { throw 'Signed setup payload verification failed.' }

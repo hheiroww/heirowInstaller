@@ -24,6 +24,19 @@ The project route runs `dotnet publish --self-contained true`, bundles managed/n
 
 `scripts/New-Installer.ps1` exposes these commands with `-SourceDirectory` or `-ApplicationProject`. A `.hinst` output remains useful for managed distribution; an `.exe` is the standalone recipient-facing setup. `pack` and `bundle` remain available separately.
 
+## Windows publisher signing
+
+For a verified Windows publisher, open the desktop builder's Windows signing settings or add `--windows-signing certificate` / `--windows-signing microsoft` to a standalone `build`. Windows certificate signing uses a selected certificate and accessible private key from the Windows certificate store. Microsoft Artifact Signing uses an existing validated Azure account and certificate profile. The completed Setup is signed after its payload is bundled and checked before the build succeeds.
+
+```powershell
+heirowInstaller.Cli.exe build installer.json --source .\publish `
+  --output .\dist\MyApp-Setup.exe --sign-key $env:APPLICATION_SIGNING_KEY `
+  --windows-signing certificate `
+  --certificate-thumbprint $env:CODE_SIGNING_CERT_THUMBPRINT
+```
+
+`--sign-key` remains the independent package/update signature. Windows signing does not replace it, and a valid Windows signature does not guarantee immediate SmartScreen reputation. Sign individual application binaries before packaging when those files also need Authenticode. See [Windows code signing](windows-code-signing.md) for certificate import, Microsoft setup and pricing, raw artifact signing, and release-script options.
+
 ## Launch working directories
 
 For an application installed in a subdirectory, declare its original working directory explicitly:
