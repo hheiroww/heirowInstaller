@@ -723,7 +723,7 @@ internal sealed partial class AppController : IDisposable
             "uninstall" => "Removing application files",
             "complete" => MaintenanceOperation == "uninstall" ? "Uninstall complete" : MaintenanceOperation == "repair" ? "Repair complete" : "Installation complete",
             _ => "Installing " + Manifest!.Name
-        } : value.Phase switch { "check" or "check-complete" => "Checking for updates", _ => value.Phase };
+        } : value.Phase switch { "check" or "check-complete" => "Checking for updates", "sign-in-required" => "Sign in to SocketJack", _ => value.Phase };
         StatusDetail = IsWizard ? value.Phase.ToLowerInvariant() switch
         {
             "verify" => "Checking your application's installation files.",
