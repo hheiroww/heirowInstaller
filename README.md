@@ -29,6 +29,8 @@ The public repository contains the installer tooling and public publisher identi
 
 Windows x64 and the .NET 10 SDK are required to build the tooling. Each released application setup is a self-contained executable; its recipient does not need heirowInstaller, the SDK, or a WiX compiler installed.
 
+The installer and updater share the `ProjectZPackageVersion` pin and use the smaller base runtime. Native crash capture, model importing, browser hosting and XAML compiler tools are [optional Project-Z packages](https://github.com/hheiroww/Project-Z/blob/master/docs/MODULAR-PACKAGES.md). Release builds check the runtime dependency graph and enforce a 90 MiB budget for each published UI executable.
+
 A compiled application setup opens that application's wizard, with feature selection, verified installation progress, and a final **Open application** choice. Its elevated worker has no second interface. The unbundled desktop tool provides the package-authoring workspace. See [the setup wizard](docs/app-setup-wizard.md).
 
 When an app uses files being installed, repaired, or removed, the native interface offers **Close apps and continue** or **Cancel installation**. Closing uses the application's normal window request, allowing it to ask about unsaved work. Apps that remain open return to a responsive retry/cancel prompt. [Running-app integration](docs/running-applications.md) includes signed plugin resources and the noninteractive command-line contract.

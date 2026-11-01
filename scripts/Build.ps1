@@ -74,6 +74,10 @@ foreach ($project in @(@('src/HeirowInstaller.App/HeirowInstaller.App.csproj',$a
     $publishArguments += @("-p:SourceRevisionId=$sourceCommit", "-p:RepositoryCommit=$sourceCommit")
     if ($PackageCache) { $publishArguments += "-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
     Invoke-DotNet -Arguments $publishArguments
+    if ($project[0] -in @('src/HeirowInstaller.App/HeirowInstaller.App.csproj','src/HeirowUpdater/HeirowUpdater.csproj')) {
+        $executableName = if ($project[0] -like '*HeirowInstaller.App*') { 'heirowInstaller.exe' } else { 'heirowUpdater.exe' }
+        & (Join-Path $PSScriptRoot 'Test-RuntimeSize.ps1') -Project (Join-Path $projectRoot $project[0]) -PublishedExecutable (Join-Path $project[1] $executableName)
+    }
 }
 $launcher = Join-Path $appDirectory 'heirowInstaller.exe'
 $cli = Join-Path $cliDirectory 'heirowInstaller.Cli.exe'
@@ -119,7 +123,8 @@ foreach ($ownApp in @('heirowinstaller','heirowUpdater')) {
 $packageCacheRoot = if ($PackageCache) { [IO.Path]::GetFullPath($PackageCache) } elseif ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget/packages' }
 $noticesDirectory = Join-Path $payloadDirectory 'ThirdParty'
 New-Item -ItemType Directory -Path $noticesDirectory -Force | Out-Null
-foreach ($notice in @(@('projectz/2026.10.23.2/THIRD-PARTY-NOTICES.md','ProjectZ-NOTICES.md'),@('socketjack/2026.10.24/License.txt','SocketJack-LICENSE.txt'))) {
+$projectZVersion = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.ProjectZPackageVersion.Trim('[',']')
+foreach ($notice in @(@("projectz/$projectZVersion/THIRD-PARTY-NOTICES.md",'ProjectZ-NOTICES.md'),@('socketjack/2026.10.24/License.txt','SocketJack-LICENSE.txt'))) {
     $noticePath = Join-Path $packageCacheRoot $notice[0]
     if (-not (Test-Path -LiteralPath $noticePath)) { throw "Required package notice is missing: $($notice[0])" }
     Copy-Item -LiteralPath $noticePath -Destination (Join-Path $noticesDirectory $notice[1])
