@@ -123,7 +123,7 @@ foreach ($ownApp in @('heirowinstaller','heirowUpdater')) {
 $packageCacheRoot = if ($PackageCache) { [IO.Path]::GetFullPath($PackageCache) } elseif ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget/packages' }
 $noticesDirectory = Join-Path $payloadDirectory 'ThirdParty'
 New-Item -ItemType Directory -Path $noticesDirectory -Force | Out-Null
-$projectZVersion = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.ProjectZPackageVersion.Trim('[',']')
+$projectZVersion = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.ProjectZPackageVersion.InnerText.Trim([char[]]'[]')
 foreach ($notice in @(@("projectz/$projectZVersion/THIRD-PARTY-NOTICES.md",'ProjectZ-NOTICES.md'),@('socketjack/2026.10.24/License.txt','SocketJack-LICENSE.txt'))) {
     $noticePath = Join-Path $packageCacheRoot $notice[0]
     if (-not (Test-Path -LiteralPath $noticePath)) { throw "Required package notice is missing: $($notice[0])" }
