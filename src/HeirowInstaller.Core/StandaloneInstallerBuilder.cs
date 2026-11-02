@@ -263,7 +263,7 @@ public static class StandaloneRuntimeInspector
             if (offset < 0 || size < 0 || compressed < 0 || offset > header || (compressed > 0 ? compressed : size) > header - offset || !names.Add(name))
                 throw new InvalidDataException("Invalid single-file bundle entry.");
         }
-        if (!names.Contains("System.Private.CoreLib.dll") || (!names.Contains("coreclr.dll") && !names.Contains("libcoreclr.so") && !names.Contains("libcoreclr.dylib") && !(isWindows && HasEmbeddedRuntimeExport(path))) || configurationSize is < 1 or > 4 * 1024 * 1024 ||
+        if (!names.Contains("System.Private.CoreLib.dll") || (!names.Contains("coreclr.dll") && !names.Contains("libcoreclr.so") && !names.Contains("libcoreclr.dylib") && !(isWindows ? HasEmbeddedRuntimeExport(path) : NativeRuntimeExports.ContainsRuntimeContract(path))) || configurationSize is < 1 or > 4 * 1024 * 1024 ||
             configurationOffset < 0 || configurationOffset > header || configurationSize > header - configurationOffset)
             throw new InvalidDataException("The executable omits its .NET runtime. Publish with --self-contained true and IncludeNativeLibrariesForSelfExtract=true.");
         stream.Position = configurationOffset; var json = new byte[(int)configurationSize]; stream.ReadExactly(json);

@@ -4,6 +4,14 @@ using System.Text.Json;
 using HeirowInstaller.Core;
 using HeirowUpdater.SocketJack;
 
+if (args is ["--inspect-runtime", var nativePath, var nativeRuntime])
+{
+    StandaloneRuntimeInspector.RequireEmbeddedRuntime(nativePath);
+    StandaloneRuntimeInspector.RequireTarget(nativePath, nativeRuntime);
+    Console.WriteLine("Verified self-contained " + nativeRuntime + " host.");
+    return;
+}
+
 var root = Path.Combine(Path.GetTempPath(), "heirowinstaller-portable-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var checks = 0;

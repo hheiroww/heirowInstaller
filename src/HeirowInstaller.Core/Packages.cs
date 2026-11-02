@@ -273,6 +273,7 @@ public static class BundleBuilder
             throw new InvalidOperationException("Bundle output must differ from its inputs.");
         using (var reader = PackageReader.Open(package))
         {
+            if (reader.Manifest.TargetPlatform == "macos") throw new PlatformNotSupportedException("Use an application bundle with a separate Application.hinst payload on macOS; appending data invalidates Mach-O signing.");
             LegalDocumentRules.RequireForCreation(reader.Manifest);
             reader.VerifyAsync().GetAwaiter().GetResult();
         }

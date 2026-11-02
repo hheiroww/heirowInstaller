@@ -51,6 +51,16 @@ jobs:
           if (-not $updater) { throw 'The published updater was not found.' }
           dotnet run --project tests/HeirowInstaller.CrossPlatform.Tests -c Release -- --updater $updater.FullName
           if ($LASTEXITCODE -ne 0) { throw 'Native shared updater checks failed.' }
+      - name: Install and remove through the published setup host
+        shell: pwsh
+        run: |
+          $distribution = Get-ChildItem -Path 'artifacts/portable/0.0.0/${{ matrix.runtime }}/.build/*/heirowInstaller-*' -Directory | Select-Object -First 1
+          $setup = if ($IsMacOS) { Join-Path $distribution.FullName 'heirowInstaller Setup.app/Contents/MacOS/heirowInstaller' } else { Join-Path $distribution.FullName 'heirowInstaller-Setup' }
+          $options = @('--silent','--isolated','--state-root','artifacts/portable/setup-state','--target','artifacts/portable/setup-installed','--no-register')
+          & $setup @options
+          if ($LASTEXITCODE -ne 0) { throw 'The native setup host failed to install its separate payload.' }
+          & $setup uninstall heirowinstaller @options
+          if ($LASTEXITCODE -ne 0) { throw 'The native setup host failed to remove its owned installation.' }
       - name: Render the Linux desktop
         if: runner.os == 'Linux'
         env:
