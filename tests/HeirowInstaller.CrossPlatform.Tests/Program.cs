@@ -112,7 +112,7 @@ try
         manifest.UpdateCompanion = new() { ExecutablePath = updaterName, RuntimeMode = "shared", UpdateMode = "files" };
         manifest.Payload = [new() { Source = entry, Path = entry }, new() { Source = updaterName, Path = updaterName, Feature = "updates" }];
         var runtimePackage = Build("4.0.0");
-        options.Isolated = true;
+        options.Isolated = true; options.Features = ["updates"];
         using var runtimeReader = PackageReader.Open(runtimePackage);
         await engine.InstallAsync(runtimeReader, options);
         var configuration = ApplicationUpdater.ReadConfiguration(Path.Combine(options.TargetDirectory, "heirowUpdater.json"));

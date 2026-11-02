@@ -36,7 +36,7 @@ internal static class PortableIntegration
             }
             else
             {
-                Write("Contents/Info.plist", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>launch</string><key>CFBundleName</key><string>" + SecurityElement.Escape(definition.Name) + "</string><key>CFBundleIdentifier</key><string>com.socketjack.installer." + manifest.Id + "." + index + "</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>", 420);
+                Write("Contents/Info.plist", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>launch</string><key>CFBundleName</key><string>" + SecurityElement.Escape(definition.Name) + "</string><key>CFBundleIdentifier</key><string>com.socketjack.installer." + manifest.Id.Replace('_', '-') + "." + index + "</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>", 420);
                 Write("Contents/MacOS/launch", "#!/bin/sh\ncd " + ShellArgument(working) + " || exit 1\nexec " + string.Join(" ", new[] { target }.Concat(arguments).Select(ShellArgument)) + " \"$@\"\n", 493);
             }
 
@@ -73,7 +73,21 @@ internal static class PortableIntegration
                 File.SetUnixFileMode(temporary, (UnixFileMode)int.Parse(snapshot.Values["mode"]!, System.Globalization.CultureInfo.InvariantCulture));
                 transaction.ReplaceFile(path, temporary);
             }
-            else transaction.DeleteFile(path);
+            else
+            {
+                transaction.DeleteFile(path);
+                if (OperatingSystem.IsMacOS())
+                {
+                    var bundleRoot = path[..^snapshot.Values["part"]!.Length].TrimEnd(Path.DirectorySeparatorChar);
+                    for (var directory = Path.GetDirectoryName(path)!; directory.StartsWith(bundleRoot, StringComparison.Ordinal); directory = Path.GetDirectoryName(directory)!)
+                    {
+                        if (!Directory.Exists(directory) || Directory.EnumerateFileSystemEntries(directory).Any()) break;
+                        var restore = directory; transaction.AddRollback(() => Directory.CreateDirectory(restore));
+                        Directory.Delete(directory);
+                        if (directory == bundleRoot) break;
+                    }
+                }
+            }
         }
         return Task.CompletedTask;
     }

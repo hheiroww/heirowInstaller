@@ -284,7 +284,7 @@ internal static class NativeUpdatePrompt
             Window.Title = context.Application.Name + " update | heirowUpdater";
             Window.AllowUserResizing = false; IsMouseVisible = true; IsFixedTimeStep = true; TargetElapsedTime = TimeSpan.FromSeconds(1d / 60);
             InactiveSleepTime = TimeSpan.FromMilliseconds(40); Content.RootDirectory = "Content";
-            graphics = new GraphicsDeviceManager(this) { PreferredBackBufferWidth = 780, PreferredBackBufferHeight = 510, PreferMultiSampling = true, SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
+            graphics = new GraphicsDeviceManager(this) { PreferredBackBufferWidth = 780, PreferredBackBufferHeight = 510, PreferMultiSampling = OperatingSystem.IsWindows(), SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
         }
         internal void Enqueue(Action action) => actions.Enqueue(action);
         internal void Choose(ApplicationUpdateChoice choice) { Choice = choice; Exit(); }
@@ -405,7 +405,7 @@ internal static class NativeUpdatePrompt
             Window.AllowUserResizing = false; IsMouseVisible = true; IsFixedTimeStep = true; TargetElapsedTime = TimeSpan.FromSeconds(1d / 60);
             InactiveSleepTime = TimeSpan.FromMilliseconds(40); Content.RootDirectory = "Content";
             graphics = new GraphicsDeviceManager(this) { PreferredBackBufferWidth = Width, PreferredBackBufferHeight = Height,
-                PreferMultiSampling = true, SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
+                PreferMultiSampling = OperatingSystem.IsWindows(), SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
         }
         internal void Enqueue(Action action) => actions.Enqueue(action);
         internal void Choose(RunningApplicationsChoice choice) { Choice = choice; Exit(); }

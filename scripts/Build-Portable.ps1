@@ -88,7 +88,8 @@ if ($platform -eq 'macos') {
     New-Item -ItemType Directory -Path (Join-Path $app 'MacOS'),(Join-Path $app 'Resources') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $payload 'heirowInstaller') -Destination (Join-Path $app 'MacOS/heirowInstaller')
     Copy-Item -LiteralPath $package -Destination (Join-Path $app 'Resources/Application.hinst')
-    $plist = '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>heirowInstaller</string><key>CFBundleIdentifier</key><string>com.socketjack.heirowinstaller.setup</string><key>CFBundleName</key><string>heirowInstaller Setup</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>' + $Version + '</string><key>NSHighResolutionCapable</key><true/></dict></plist>'
+    $bundleVersion = (($Version -split '[+\-]')[0] -split '\.')[0..2] -join '.'
+    $plist = '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>heirowInstaller</string><key>CFBundleIdentifier</key><string>com.socketjack.heirowinstaller.setup</string><key>CFBundleName</key><string>heirowInstaller Setup</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>' + $bundleVersion + '</string><key>NSHighResolutionCapable</key><true/></dict></plist>'
     [IO.File]::WriteAllText((Join-Path $app 'Info.plist'),$plist)
     & /usr/bin/codesign --force --sign - (Split-Path $app -Parent)
     if ($LASTEXITCODE -ne 0) { throw 'Ad-hoc application signing failed.' }

@@ -371,7 +371,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             Window.AllowUserResizing = false; IsMouseVisible = true; IsFixedTimeStep = true; TargetElapsedTime = TimeSpan.FromSeconds(1d / 60);
             InactiveSleepTime = TimeSpan.FromMilliseconds(40); Content.RootDirectory = "Content";
             graphics = new GraphicsDeviceManager(this) { PreferredBackBufferWidth = 780, PreferredBackBufferHeight = 510,
-                PreferMultiSampling = true, SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
+                PreferMultiSampling = OperatingSystem.IsWindows(), SynchronizeWithVerticalRetrace = true, GraphicsProfile = GraphicsProfile.HiDef };
         }
         internal void Enqueue(Action action) => actions.Enqueue(action);
         internal void OpenDownloadPage()

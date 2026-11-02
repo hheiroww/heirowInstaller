@@ -38,7 +38,7 @@ internal sealed partial class InstallerGame : Game
         {
             PreferredBackBufferWidth = arguments.PackagePath is not null || arguments.MaintenanceProductId is not null ? 1060 : 1180,
             PreferredBackBufferHeight = 800,
-            PreferMultiSampling = true,
+            PreferMultiSampling = OperatingSystem.IsWindows(),
             SynchronizeWithVerticalRetrace = true,
             GraphicsProfile = GraphicsProfile.HiDef
         };

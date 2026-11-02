@@ -72,7 +72,7 @@ static async Task Format()
     True(target.Manifest.FormatVersion == 3);
     var invalid = NativeMigrationValidation.Clone(target.Manifest); invalid.FormatVersion = 2;
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
-    invalid.FormatVersion = 4;
+    invalid.FormatVersion = 5;
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
     invalid.FormatVersion = 3; invalid.NativeMigration!.Baselines[0].FromManifestSha256 = "not-a-digest";
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));

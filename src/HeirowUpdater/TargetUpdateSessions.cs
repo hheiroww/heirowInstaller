@@ -66,7 +66,7 @@ internal sealed class TargetUpdateSessions : IDisposable
                         try
                         {
                             string? revision = null;
-                            if (usesAccount)
+                            if (usesAccount && result.account is not null)
                             {
                                 await result.InvalidateAsync(owned.Bearer, cancellation);
                                 // Another target or installer process may already have approved a newer account.
@@ -85,7 +85,7 @@ internal sealed class TargetUpdateSessions : IDisposable
                                 approved = await approval.CompleteAsync(cancellation);
                             }
                             using var session = approved;
-                            if (usesAccount && !await result.account!.RememberAsync(session, revision, cancellation))
+                            if (usesAccount && result.account is not null && !await result.account.RememberAsync(session, revision, cancellation))
                             {
                                 // A newer login or sign-out wins over an older browser completion.
                                 using var latest = await result.account.RestoreAsync(renew: false, cancellation);
