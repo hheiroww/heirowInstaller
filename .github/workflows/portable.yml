@@ -1,0 +1,57 @@
+name: Portable installer
+on:
+  push:
+    branches: [main, codex/linux-macos]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Signed install, launch, repair, update, and uninstall
+        run: dotnet run --project tests/HeirowInstaller.CrossPlatform.Tests -c Release
+      - name: Build portable automation tools
+        run: dotnet build src/HeirowInstaller.Cli -c Release --nologo
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            runtime: linux-x64
+          - os: macos-15
+            runtime: osx-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libopenal1 zenity
+      - name: Build the native setup archive
+        shell: pwsh
+        run: ./scripts/Build-Portable.ps1 -Runtime ${{ matrix.runtime }} -Version 0.0.0 -SkipTests
+      - name: Render the Linux desktop
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dotnet run --project src/HeirowInstaller.App -c Release -- --render-smoke artifacts/portable/desktop.png
+      - name: Render the macOS desktop
+        if: runner.os == 'macOS'
+        run: dotnet run --project src/HeirowInstaller.App -c Release -- --render-smoke artifacts/portable/desktop.png
+      - name: Retain the native desktop capture
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.runtime }}
+          path: artifacts/portable/desktop.png

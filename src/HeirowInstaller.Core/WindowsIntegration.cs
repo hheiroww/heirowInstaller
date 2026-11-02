@@ -17,9 +17,7 @@ internal static class WindowsIntegration
         if (options.Isolated) return snapshots;
         if (!OperatingSystem.IsWindows())
         {
-            if (manifest.Registry.Count + manifest.Environment.Count + manifest.Services.Count + manifest.Shortcuts.Count > 0)
-                throw new PlatformNotSupportedException("Windows integration modules require Windows.");
-            return snapshots;
+            return await PortableIntegration.ApplyAsync(manifest, plan, transaction, token, product);
         }
         foreach (var registry in manifest.Registry.Where(x => InstallerEngine.IsSelected(x.Feature, plan.Features)))
         {
@@ -65,7 +63,7 @@ internal static class WindowsIntegration
             if (!shortcuts.Add(path)) throw new InvalidDataException("Duplicate shortcut destination.");
             var target = PackageSafety.UnderRoot(plan.InstallDirectory, definition.Target);
             if (!File.Exists(target)) throw new FileNotFoundException("Shortcut target is not installed: " + definition.Target);
-            var arguments = definition.Arguments;
+            var arguments = definition.ArgumentList is { } list ? string.Join(" ", list.Select(Quote)) : definition.Arguments;
             var applicationTarget = target;
             if (plan.UpdateCompanionEnabled && definition.Target.Equals(manifest.EntryPoint, StringComparison.OrdinalIgnoreCase))
             {
@@ -105,7 +103,8 @@ internal static class WindowsIntegration
         if (product.Isolated) return;
         if (!OperatingSystem.IsWindows())
         {
-            if (product.Modules.Any(x => !x.Kind.StartsWith("extension:", StringComparison.Ordinal))) throw new PlatformNotSupportedException("Windows integration modules require Windows.");
+            if (product.Modules.Any(x => x.Kind != "portable-shortcut")) throw new PlatformNotSupportedException("Unknown portable integration module.");
+            await PortableIntegration.RestoreAsync(product, transaction, token);
             return;
         }
         foreach (var snapshot in product.Modules.Where(x => !x.Kind.StartsWith("extension:", StringComparison.Ordinal)).Reverse())

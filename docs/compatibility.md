@@ -1,5 +1,10 @@
 # Installer compatibility
 
+Linux and macOS use the native file engine, platform-specific Project-Z desktop
+packages, and self-contained setup archives. See [cross-platform support](cross-platform.md)
+for manifests, executable permissions, updates, and OS integration boundaries.
+The Windows backend table below applies to Windows packages.
+
 heirowInstaller builds standalone native `.exe` installers and provides an explicit WiX compiler backend for existing `.wxs` and `.wixproj` authoring. Its native package engine and Windows Installer adapter remain distinct installation backends. MSI packages run through Windows Installer, retaining their authored custom actions, component identities, upgrade codes, repair rules, service configuration, and prerequisites.
 
 WiX is an authoring toolchain for several package types and extensions. Its scope includes MSI, merge modules, patches, bootstrapper chains, IIS, SQL, and firewall authoring; see the [official WiX overview](https://docs.firegiant.com/wix/). Full WiX source-language or extension parity must not be inferred from a new setup interface.

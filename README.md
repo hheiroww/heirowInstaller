@@ -2,7 +2,7 @@
 
 # heirowInstaller
 
-Native Windows installers, signed file updates, and publishing, built with [Project-Z](https://github.com/hheiroww/Project-Z).
+Windows, Linux, and macOS installers, signed file updates, and publishing, built with [Project-Z](https://github.com/hheiroww/Project-Z).
 
 heirowInstaller combines a Project-Z desktop setup experience with a reusable .NET installation engine, command-line tooling, and a SocketJack.com publisher. The interface follows heirowSnap's desktop layout and SocketJack's charcoal, lime, and orange palette.
 
@@ -27,7 +27,7 @@ The public repository contains the installer tooling and public publisher identi
 
 ## Build and package
 
-Windows x64 and the .NET 10 SDK are required to build the tooling. Each released application setup is a self-contained executable; its recipient does not need heirowInstaller, the SDK, or a WiX compiler installed.
+The .NET 10 SDK builds the tooling on Windows, Linux, and macOS. Windows uses Project-Z's Windows runtime; Linux and macOS use its DesktopGL packages. Self-contained setups include their .NET runtime. See [cross-platform builds, package manifests, archives, and platform boundaries](docs/cross-platform.md).
 
 The installer and updater share the `ProjectZPackageVersion` pin and use the smaller base runtime. Native crash capture, model importing, browser hosting and XAML compiler tools are [optional Project-Z packages](https://github.com/hheiroww/Project-Z/blob/master/docs/MODULAR-PACKAGES.md). Release builds check the runtime dependency graph and enforce a 90 MiB budget for each published UI executable.
 

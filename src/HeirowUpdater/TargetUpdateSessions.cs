@@ -28,7 +28,7 @@ internal sealed class TargetUpdateSessions : IDisposable
             var accountOrigin = rememberedOrigin ?? SocketJackOrigin;
             bool UsesAccount(UpdaterTarget target) => target.CredentialOrigin is not null && SameOrigin(new Uri(target.CredentialOrigin), accountOrigin) &&
                 Uri.TryCreate(target.FeedUrl, UriKind.Absolute, out var feed) && SameOrigin(feed, accountOrigin);
-            if (targets.Any(UsesAccount)) result.account = rememberedAccount ?? new RememberedPublisherAccount(accountOrigin);
+            if (OperatingSystem.IsWindows() && targets.Any(UsesAccount)) result.account = rememberedAccount ?? new RememberedPublisherAccount(accountOrigin);
             // Update checks never renew or extend remembered sign-in, even when interactive.
             using var remembered = result.account is null ? null : await result.account.RestoreAsync(renew: false, cancellationToken);
             var configuredOrigin = new Uri(configuration.CredentialOrigin);

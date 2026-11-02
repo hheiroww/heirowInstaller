@@ -8,7 +8,7 @@ internal sealed partial class AppController
     private static readonly Uri AccountOrigin = new("https://socketjack.com");
     private RememberedPublisherAccount? rememberedAccount;
     private RememberedPublisherAccount Account => rememberedAccount ??= new(AccountOrigin);
-    private bool UsesRememberedAccount => !IsWizard && !arguments.Isolated && arguments.SmokeDirectory is null &&
+    private bool UsesRememberedAccount => OperatingSystem.IsWindows() && !IsWizard && !arguments.Isolated && arguments.SmokeDirectory is null &&
         arguments.SelfUpdateSmokeFeed is null && arguments.CapturePath is null;
 
     private async Task RestoreAccountAsync(bool renew, CancellationToken cancellationToken)
@@ -32,26 +32,27 @@ internal sealed partial class AppController
             Begin("Signing out of SocketJack", "Clearing this device's remembered sign-in.");
             try
             {
-                await Account.SignOutAsync(Cancellation!.Token);
+                if (OperatingSystem.IsWindows()) await Account.SignOutAsync(Cancellation!.Token);
+                else if (publisherSession is { } session) await PublisherSignInClient.RevokeAsync(AccountOrigin, session, Cancellation!.Token);
                 await game.OnUiAsync(() => { publisherSession?.Dispose(); publisherSession = null; End("Signed out", "Your SocketJack sign-in was cleared from this device."); });
             }
             catch (Exception error) { await ErrorAsync("Could not sign out", error); }
             return;
         }
         SigningIn = true;
-        Begin("Sign in to SocketJack", "Approve sign-in in your browser. This device remembers it for 30 days, renewed each time heirowInstaller opens.");
+        Begin("Sign in to SocketJack", "Approve sign-in in your browser. Sign-in lasts for this session on Linux and macOS; Windows remembers it for 30 days.");
         PublisherSession? pending = null;
         try
         {
             var cancellationToken = Cancellation!.Token;
-            pending = await Account.RestoreAsync(renew: false, cancellationToken);
+            pending = OperatingSystem.IsWindows() ? await Account.RestoreAsync(renew: false, cancellationToken) : null;
             if (pending is null)
             {
-                var revision = await Account.GetRevisionAsync(cancellationToken);
+                var revision = OperatingSystem.IsWindows() ? await Account.GetRevisionAsync(cancellationToken) : null;
                 using var approval = await PublisherSignInClient.BeginAsync(AccountOrigin, cancellationToken);
                 Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
                 pending = await approval.CompleteAsync(cancellationToken);
-                if (!await Account.RememberAsync(pending, revision, cancellationToken))
+                if (OperatingSystem.IsWindows() && !await Account.RememberAsync(pending, revision, cancellationToken))
                 {
                     pending.Dispose(); pending = null;
                     await RestoreAccountAsync(renew: false, cancellationToken);

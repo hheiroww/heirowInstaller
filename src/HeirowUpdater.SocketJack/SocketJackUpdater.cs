@@ -183,7 +183,7 @@ public sealed class SocketJackUpdater : IDisposable
             return await PrepareIncrementalHandoffAsync(target, update, waitForProcessId, waitForStartTicks, policy, key, progress, cancellationToken);
         var downloadDirectory = policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads");
         var stageRoot = policy.Isolated ? downloadDirectory : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "staging");
-        var stage = TrustedHelperStaging.NewDirectoryPath(stageRoot, "heirowUpdater.exe", "heirowInstaller.Cli.exe");
+        var stage = TrustedHelperStaging.NewDirectoryPath(stageRoot, "heirowUpdater" + InstallerPlatform.ExecutableSuffix, "heirowInstaller.Cli" + InstallerPlatform.ExecutableSuffix);
         var download = await client.DownloadAsync(update.Feed, downloadDirectory, progress, cancellationToken);
         using (var package = PackageReader.Open(download))
         {
@@ -195,7 +195,7 @@ public sealed class SocketJackUpdater : IDisposable
         var host = UpdaterHostResolver.FindExecutable() ?? throw new FileNotFoundException("The currently trusted heirowUpdater apphost is missing.");
         var hostDirectory = Path.GetDirectoryName(host)!;
         PackageSafety.EnsureNoReparsePoints(stage); Directory.CreateDirectory(stage);
-        var names = new[] { "heirowUpdater.exe", "heirowUpdater.deps.json", "heirowUpdater.runtimeconfig.json", "heirowInstaller.Cli.exe", "heirowInstaller.Cli.deps.json", "heirowInstaller.Cli.runtimeconfig.json" }
+        var names = new[] { "heirowUpdater" + InstallerPlatform.ExecutableSuffix, "heirowUpdater.deps.json", "heirowUpdater.runtimeconfig.json", "heirowInstaller.Cli" + InstallerPlatform.ExecutableSuffix, "heirowInstaller.Cli.deps.json", "heirowInstaller.Cli.runtimeconfig.json" }
             .Concat(Directory.EnumerateFiles(hostDirectory, "*.dll", SearchOption.TopDirectoryOnly).Select(Path.GetFileName).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase);
         foreach (var name in names)
         {
@@ -204,14 +204,14 @@ public sealed class SocketJackUpdater : IDisposable
             PackageSafety.EnsureNoReparsePoints(source);
             if (File.Exists(source)) File.Copy(source, PackageSafety.UnderRoot(stage, name));
         }
-        var start = new ProcessStartInfo(Path.Combine(stage, "heirowUpdater.exe"))
+        var start = new ProcessStartInfo(Path.Combine(stage, "heirowUpdater" + InstallerPlatform.ExecutableSuffix))
         { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = stage, RedirectStandardOutput = true, RedirectStandardError = true };
         void Argument(string option, string? value) { if (value is not null) { start.ArgumentList.Add(option); start.ArgumentList.Add(value); } }
         start.ArgumentList.Add("apply-bundle"); start.ArgumentList.Add(download);
         Argument("--sha256", update.Feed.Sha256); Argument("--product-id", target.ProductId); Argument("--expected-version", update.Feed.Version);
         Argument("--wait-pid", waitForProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)); Argument("--wait-start", waitForStartTicks.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Argument("--trust-key", key); Argument("--target", target.InstallDirectory); Argument("--state-root", target.StateRoot); Argument("--scope", target.Scope);
-        if (File.Exists(Path.Combine(stage, "heirowInstaller.Cli.exe"))) Argument("--maintenance-host", Path.Combine(stage, "heirowInstaller.Cli.exe"));
+        if (File.Exists(Path.Combine(stage, "heirowInstaller.Cli" + InstallerPlatform.ExecutableSuffix))) Argument("--maintenance-host", Path.Combine(stage, "heirowInstaller.Cli" + InstallerPlatform.ExecutableSuffix));
         Argument("--log", policy.LogPath);
         Argument("--status-file", Path.Combine(stage, "helper-status.json"));
         start.ArgumentList.Add("--background");
@@ -285,9 +285,9 @@ public sealed class SocketJackUpdater : IDisposable
     {
         foreach (var directory in UpdaterHostResolver.HostDirectories())
         {
-            var cli = Path.Combine(directory, "heirowInstaller.Cli.exe");
+            var cli = Path.Combine(directory, "heirowInstaller.Cli" + InstallerPlatform.ExecutableSuffix);
             if (File.Exists(cli)) return cli;
-            var app = Path.Combine(directory, "heirowInstaller.exe");
+            var app = Path.Combine(directory, "heirowInstaller" + InstallerPlatform.ExecutableSuffix);
             if (File.Exists(app)) return app;
         }
         return null; // A shared updater is not the application's GUI maintenance host; preserve the verified previous host.

@@ -16,7 +16,7 @@ public static class ApplicationProcesses
             if (process.StartTime.ToUniversalTime().Ticks != startTicks)
                 throw new InvalidDataException("The application process identity changed before updater startup.");
             var image = process.MainModule?.FileName ?? throw new InvalidDataException("The application process executable could not be verified.");
-            if (!Path.GetFullPath(image).Equals(Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase))
+            if (!Path.GetFullPath(image).Equals(Path.GetFullPath(executable), InstallerPlatform.PathComparison))
                 throw new InvalidDataException("The application process does not match the configured executable.");
         }
         catch (ArgumentException) { } // A short-lived application may already have exited.
@@ -34,7 +34,7 @@ public static class ApplicationProcesses
             {
                 try
                 {
-                    if (!process.HasExited && (process.MainModule?.FileName is not { } image || Path.GetFullPath(image).Equals(executable, StringComparison.OrdinalIgnoreCase))) found.Add(process.Id);
+                    if (!process.HasExited && (process.MainModule?.FileName is not { } image || Path.GetFullPath(image).Equals(executable, InstallerPlatform.PathComparison))) found.Add(process.Id);
                 }
                 catch (InvalidOperationException) { }
                 // If another user's same-named host cannot be inspected, keep

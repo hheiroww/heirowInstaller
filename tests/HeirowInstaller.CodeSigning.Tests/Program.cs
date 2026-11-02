@@ -199,11 +199,15 @@ static byte[] SyntheticPeWithCertificate()
 static byte[] SyntheticRuntimeLauncher()
 {
     using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);
-    stream.SetLength(512); writer.Write((ushort)0x5a4d); stream.Position = 56; writer.Write((long)512);
+    stream.SetLength(1024); writer.Write((ushort)0x5a4d);
+    stream.Position = 0x3c; writer.Write(128);
+    stream.Position = 128; writer.Write(0x00004550); writer.Write((ushort)0x8664);
+    stream.Position = 148; writer.Write((ushort)240); stream.Position = 152; writer.Write((ushort)0x20b);
+    stream.Position = 88; writer.Write((long)1024);
     writer.Write(Convert.FromHexString("8B1202B96A612038727B930214D7A03213F5B9E6EFAE3318EE3B2DCE24B36AAE"));
-    var configuration = Encoding.UTF8.GetBytes("{\"runtimeOptions\":{\"includedFrameworks\":[]}}"); stream.Position = 256; writer.Write(configuration);
-    stream.Position = 512; writer.Write((uint)6); writer.Write((uint)0); writer.Write(2); writer.Write("fixture");
-    writer.Write((long)0); writer.Write((long)0); writer.Write((long)256); writer.Write((long)configuration.Length); writer.Write((ulong)0);
+    var configuration = Encoding.UTF8.GetBytes("{\"runtimeOptions\":{\"includedFrameworks\":[]}}"); stream.Position = 512; writer.Write(configuration);
+    stream.Position = 1024; writer.Write((uint)6); writer.Write((uint)0); writer.Write(2); writer.Write("fixture");
+    writer.Write((long)0); writer.Write((long)0); writer.Write((long)512); writer.Write((long)configuration.Length); writer.Write((ulong)0);
     foreach (var name in new[] { "System.Private.CoreLib.dll", "coreclr.dll" }) { writer.Write((long)400); writer.Write((long)1); writer.Write((long)0); writer.Write((byte)0); writer.Write(name); }
     return stream.ToArray();
 }

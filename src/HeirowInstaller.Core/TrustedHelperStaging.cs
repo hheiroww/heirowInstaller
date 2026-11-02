@@ -15,7 +15,7 @@ public static class TrustedHelperStaging
         PackageSafety.EnsureNoReparsePoints(root);
         if (executableNames.Length == 0 || executableNames.Any(name => string.IsNullOrWhiteSpace(name) ||
             name.IndexOfAny(['/', '\\', ':', '"', '\0']) >= 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.Any(char.IsControl) || name is "." or ".." ||
-            !name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+            OperatingSystem.IsWindows() && !name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
             throw new ArgumentException("Choose the exact helper executable file names.", nameof(executableNames));
         for (var attempt = 0; attempt < 8; attempt++)
         {

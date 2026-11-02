@@ -9,7 +9,7 @@ return await InstallerCli.RunAsync(args);
 internal static class InstallerCli
 {
     private static readonly string Help = """
-heirowInstaller — modular Windows installation and publishing
+heirowInstaller — cross-platform installation and publishing
 
   pack <manifest.json> --source <directory> --output <package.hinst> [--sign-key <private.pem>]
   bundle <package.hinst> --launcher <single-file.exe> --output <setup.exe>
@@ -115,7 +115,7 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                         WindowsCodeSigning = windowsSigning,
                         LegalDocuments = (await CreationOptionsAsync(parsed, Subject(), cancellation.Token)).LegalDocuments,
                         UpdaterDefaultSelected = parsed.Has("updater-default") ? true : null,
-                        Configuration = parsed.Get("configuration") ?? "Release", Runtime = parsed.Get("runtime") ?? "win-x64", Framework = parsed.Get("framework")
+                        Configuration = parsed.Get("configuration") ?? "Release", Runtime = parsed.Get("runtime") ?? InstallerPlatform.RuntimeIdentifier, Framework = parsed.Get("framework")
                     }, progress, cancellation.Token)); break;
                 case "compile":
                 {

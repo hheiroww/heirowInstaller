@@ -16,7 +16,7 @@ public sealed class StandaloneBuildOptions
     public bool? UpdaterDefaultSelected { get; set; }
     public string DotNetExecutable { get; set; } = "dotnet";
     public string Configuration { get; set; } = "Release";
-    public string Runtime { get; set; } = "win-x64";
+    public string Runtime { get; set; } = InstallerPlatform.RuntimeIdentifier;
     public string? Framework { get; set; }
     public PackageLegalDocuments? LegalDocuments { get; set; }
     public WindowsCodeSigningOptions? WindowsCodeSigning { get; set; }
@@ -41,7 +41,11 @@ public static class StandaloneInstallerBuilder
     {
         manifestPath = Path.GetFullPath(manifestPath); outputPath = Path.GetFullPath(outputPath);
         var windowsSigningAvailability = options.WindowsCodeSigning is { } windowsSigning ? WindowsCodeSigner.CheckAvailability(windowsSigning) : null;
-        if (!outputPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Standalone installer output must end in .exe.");
+        if (!PackagePlatform.SupportedRuntimes.Contains(options.Runtime)) throw new ArgumentException("Select a supported --runtime.");
+        var platform = PackagePlatform.PlatformForRuntime(options.Runtime);
+        if (platform == "windows" && !outputPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Windows standalone installer output must end in .exe.");
+        if (platform != "windows" && options.WindowsCodeSigning is { Provider: not "none" }) throw new ArgumentException("Windows signing applies only to Windows installers.");
+        if (platform == "macos") throw new PlatformNotSupportedException("macOS uses an application bundle with a separate .hinst package; use Build-Portable.ps1. Appending data invalidates Mach-O signing.");
         if ((options.SourceDirectory is null) == (options.ApplicationProjectPath is null)) throw new ArgumentException("Select either a complete source directory or an application project to publish.");
         var launcher = Path.GetFullPath(options.LauncherPath ?? FindLauncher() ?? throw new FileNotFoundException("A published self-contained heirowInstaller launcher is required. Pass --launcher or keep heirowInstaller.exe beside the portable builder."));
         StandaloneRuntimeInspector.RequireEmbeddedRuntime(launcher);
@@ -50,8 +54,14 @@ public static class StandaloneInstallerBuilder
             (options.SigningKeyPath is { } key && outputPath.Equals(Path.GetFullPath(key), StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Installer output must differ from the launcher, manifest, and signing key.");
         var manifest = JsonSerializer.Deserialize<PackageManifest>(File.ReadAllText(manifestPath), InstallerJson.Options) ?? throw new InvalidDataException("Application manifest is empty.");
-        if (PackagePlatform.Normalize(manifest.TargetPlatform) != "windows")
-            throw new InvalidDataException("Standalone Setup.exe targets Windows. Package other platforms as .hinst with their explicit targetPlatform.");
+        if (PackagePlatform.Normalize(manifest.TargetPlatform) != platform) throw new InvalidDataException("The selected runtime must match the manifest targetPlatform.");
+        if (manifest.TargetRuntime is { } declaredRuntime && declaredRuntime != options.Runtime) throw new InvalidDataException("The selected runtime differs from targetRuntime.");
+        if (platform != "windows" || manifest.TargetRuntime is not null)
+        {
+            manifest.TargetRuntime = options.Runtime;
+            manifest.FormatVersion = Math.Max(manifest.FormatVersion, 4);
+        }
+        StandaloneRuntimeInspector.RequireTarget(launcher, options.Runtime);
         manifest.LegalDocuments = LegalDocumentRules.PrepareForCreation(manifest.Id, options.LegalDocuments is { } suppliedLegal
             ? new() { PrivacyPolicy = suppliedLegal.PrivacyPolicy ?? manifest.LegalDocuments?.PrivacyPolicy,
                 TermsAndConditions = suppliedLegal.TermsAndConditions ?? manifest.LegalDocuments?.TermsAndConditions }
@@ -64,7 +74,7 @@ public static class StandaloneInstallerBuilder
         {
             if (options.ApplicationProjectPath is { } project)
             {
-                if (options.Runtime is not ("win-x64" or "win-x86" or "win-arm64")) throw new ArgumentException("Application runtime must be win-x64, win-x86, or win-arm64.");
+                if (!PackagePlatform.SupportedRuntimes.Contains(options.Runtime)) throw new ArgumentException("Unsupported application runtime.");
                 await PublishApplicationAsync(Path.GetFullPath(project), payload, options, progress, cancellationToken);
                 if (options.SigningKeyPath is { } publishedKey)
                 {
@@ -76,7 +86,7 @@ public static class StandaloneInstallerBuilder
             else
             {
                 var source = Path.GetFullPath(options.SourceDirectory!); PackageSafety.EnsureNoReparsePoints(source);
-                var injectedPath = manifest.UpdateCompanion?.ExecutablePath ?? "heirowUpdater.exe";
+                var injectedPath = manifest.UpdateCompanion?.ExecutablePath ?? "heirowUpdater" + (platform == "windows" ? ".exe" : "");
                 var injectedDeclaration = manifest.Payload.FirstOrDefault(x => x.Path.Equals(injectedPath, StringComparison.OrdinalIgnoreCase));
                 var injectedSource = injectedDeclaration is null ? injectedPath : injectedDeclaration.Source.Length > 0 ? injectedDeclaration.Source : injectedDeclaration.Path;
                 var files = manifest.Payload.Count == 0 ? EnumerateFiles(source).Select(path => Path.GetRelativePath(source, path)).ToList()
@@ -96,7 +106,8 @@ public static class StandaloneInstallerBuilder
             if (options.UpdateCompanionExecutablePath is { } updater)
             {
                 updater = Path.GetFullPath(updater); StandaloneRuntimeInspector.RequireEmbeddedRuntime(updater);
-                manifest.UpdateCompanion ??= new();
+                manifest.UpdateCompanion ??= new() { ExecutablePath = "heirowUpdater" + (platform == "windows" ? ".exe" : "") };
+                StandaloneRuntimeInspector.RequireTarget(updater, options.Runtime);
                 var feature = manifest.Features.FirstOrDefault(x => x.Id.Equals(manifest.UpdateCompanion.Feature, StringComparison.OrdinalIgnoreCase));
                 if (feature is null)
                 {
@@ -140,8 +151,8 @@ public static class StandaloneInstallerBuilder
         var process = System.Environment.ProcessPath;
         var candidates = new List<string>();
         if (process is not null && !Path.GetFileNameWithoutExtension(process).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
-            candidates.Add(Path.Combine(Path.GetDirectoryName(process)!, "heirowInstaller.exe"));
-        candidates.Add(Path.Combine(AppContext.BaseDirectory, "heirowInstaller.exe"));
+            candidates.Add(Path.Combine(Path.GetDirectoryName(process)!, "heirowInstaller" + InstallerPlatform.ExecutableSuffix));
+        candidates.Add(Path.Combine(AppContext.BaseDirectory, "heirowInstaller" + InstallerPlatform.ExecutableSuffix));
         return candidates.FirstOrDefault(File.Exists);
     }
     private static IEnumerable<string> EnumerateFiles(string directory)
@@ -179,13 +190,41 @@ public static class StandaloneInstallerBuilder
 /// <summary>Checks the .NET single-file manifest for an embedded runtime rather than assuming that any .exe is self-contained.</summary>
 public static class StandaloneRuntimeInspector
 {
+    public static void RequireTarget(string path, string runtime)
+    {
+        using var stream = File.OpenRead(path);
+        using var reader = new BinaryReader(stream);
+        var magic = reader.ReadUInt32();
+        string platform; string architecture;
+        if ((magic & 0xffff) == 0x5a4d)
+        {
+            stream.Position = 0; using var pe = new PEReader(stream);
+            platform = "windows"; architecture = pe.PEHeaders.CoffHeader.Machine switch { Machine.Amd64 => "x64", Machine.Arm64 => "arm64", _ => "unsupported" };
+        }
+        else if (magic == 0x464c457f)
+        {
+            if (reader.ReadByte() != 2 || reader.ReadByte() != 1) throw new InvalidDataException("A 64-bit little-endian ELF host is required.");
+            stream.Position = 18; platform = "linux"; architecture = reader.ReadUInt16() switch { 62 => "x64", 183 => "arm64", _ => "unsupported" };
+        }
+        else if (magic == 0xfeedfacf)
+        {
+            platform = "macos"; architecture = reader.ReadUInt32() switch { 0x01000007 => "x64", 0x0100000c => "arm64", _ => "unsupported" };
+        }
+        else throw new InvalidDataException("Unsupported native executable header.");
+        if (platform != PackagePlatform.PlatformForRuntime(runtime) || !runtime.EndsWith("-" + architecture, StringComparison.Ordinal))
+            throw new InvalidDataException("The supplied launcher does not match the selected target runtime.");
+    }
+
     // Format: https://github.com/dotnet/runtime/tree/main/src/installer/managed/Microsoft.NET.HostModel/Bundle
     private static readonly byte[] BundleSignature = Convert.FromHexString("8B1202B96A612038727B930214D7A03213F5B9E6EFAE3318EE3B2DCE24B36AAE");
     public static void RequireEmbeddedRuntime(string path)
     {
         using var stream = File.OpenRead(path);
         if (stream.Length < 64) throw new InvalidDataException("A published self-contained single-file executable is required.");
-        if (stream.ReadByte() != 'M' || stream.ReadByte() != 'Z') throw new InvalidDataException("The executable is not a Windows apphost.");
+        var magic = new byte[4]; stream.ReadExactly(magic);
+        var isWindows = magic[0] == 'M' && magic[1] == 'Z';
+        if (!isWindows && !magic.AsSpan().SequenceEqual(new byte[] { 127, 69, 76, 70 }) && BitConverter.ToUInt32(magic) != 0xfeedfacf)
+            throw new InvalidDataException("The executable is not a supported PE, ELF or Mach-O apphost.");
         stream.Position = 0;
         var buffer = new byte[128 * 1024]; var carried = 0; long scanned = 0; long marker = -1;
         var scanLimit = Math.Min(stream.Length, 64L * 1024 * 1024);
@@ -224,7 +263,7 @@ public static class StandaloneRuntimeInspector
             if (offset < 0 || size < 0 || compressed < 0 || offset > header || (compressed > 0 ? compressed : size) > header - offset || !names.Add(name))
                 throw new InvalidDataException("Invalid single-file bundle entry.");
         }
-        if (!names.Contains("System.Private.CoreLib.dll") || (!names.Contains("coreclr.dll") && !HasEmbeddedRuntimeExport(path)) || configurationSize is < 1 or > 4 * 1024 * 1024 ||
+        if (!names.Contains("System.Private.CoreLib.dll") || (!names.Contains("coreclr.dll") && !names.Contains("libcoreclr.so") && !names.Contains("libcoreclr.dylib") && !(isWindows && HasEmbeddedRuntimeExport(path))) || configurationSize is < 1 or > 4 * 1024 * 1024 ||
             configurationOffset < 0 || configurationOffset > header || configurationSize > header - configurationOffset)
             throw new InvalidDataException("The executable omits its .NET runtime. Publish with --self-contained true and IncludeNativeLibrariesForSelfExtract=true.");
         stream.Position = configurationOffset; var json = new byte[(int)configurationSize]; stream.ReadExactly(json);

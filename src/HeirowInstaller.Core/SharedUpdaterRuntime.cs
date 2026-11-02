@@ -35,7 +35,7 @@ public static class SharedUpdaterRuntime
     }
     public static string ApplicationStateDirectory(UpdateCompanionConfiguration configuration, bool create = false)
     {
-        var identity = configuration.ProductId.ToLowerInvariant() + "\n" + configuration.InstallDirectory.ToLowerInvariant();
+        var identity = configuration.ProductId.ToLowerInvariant() + "\n" + (OperatingSystem.IsWindows() ? configuration.InstallDirectory.ToLowerInvariant() : configuration.InstallDirectory);
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant()[..24];
         var parent = configuration.Isolated ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.StateRoot))!, "updater-lifecycle")
             : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "applications");
@@ -77,6 +77,7 @@ public static class SharedUpdaterRuntime
         try
         {
             File.Copy(source, temporary);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, File.GetUnixFileMode(source));
             VerifyFile(temporary, reference.Sha256, reference.Size);
             try { File.Move(temporary, destination); }
             catch (IOException) when (File.Exists(destination)) { VerifyFile(destination, reference.Sha256, reference.Size); }
@@ -151,7 +152,7 @@ public static class SharedUpdaterRuntime
             PackageSafety.EnsureNoReparsePoints(directory);
             var name = Path.GetFileName(directory); var version = name[..^(content.Sha256.Length + 1)];
             ValidateVersion(version);
-            var executable = Path.Combine(directory, "heirowUpdater.exe");
+            var executable = Path.Combine(directory, "heirowUpdater" + InstallerPlatform.ExecutableSuffix);
             if (!File.Exists(executable)) continue;
             VerifyFile(executable, content.Sha256, content.Size);
             if (ReadFileVersion(executable) != version) throw new InvalidDataException("The recovered updater runtime has a different file version.");
@@ -164,6 +165,7 @@ public static class SharedUpdaterRuntime
     private static string? ReadFileVersion(string path)
     {
         // The native version API still needs an extended path even when ordinary file I/O supports long paths.
+        if (!OperatingSystem.IsWindows()) return "0.0.0"; // Unix runtime identity is its signed content hash, not PE version resources.
         var absolute = Path.GetFullPath(path);
         if (OperatingSystem.IsWindows() && !absolute.StartsWith(@"\\?\", StringComparison.Ordinal))
             absolute = absolute.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + absolute[2..] : @"\\?\" + absolute;
@@ -196,7 +198,7 @@ public static class SharedUpdaterRuntime
     public static string ReferencePath(UpdateCompanionConfiguration configuration)
     {
         PackageSafety.ValidateId(configuration.ProductId);
-        var identity = configuration.ProductId.ToLowerInvariant() + "\n" + Path.GetFullPath(configuration.InstallDirectory).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant();
+        var identity = configuration.ProductId.ToLowerInvariant() + "\n" + (OperatingSystem.IsWindows() ? Path.GetFullPath(configuration.InstallDirectory).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant() : Path.GetFullPath(configuration.InstallDirectory).TrimEnd(Path.DirectorySeparatorChar));
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
         return PackageSafety.UnderRoot(Root(configuration), "references/" + key + ".json");
     }
@@ -205,7 +207,7 @@ public static class SharedUpdaterRuntime
     {
         var reference = configuration.SharedRuntime ?? throw new InvalidDataException("The shared runtime reference is missing.");
         ValidateReference(reference);
-        return PackageSafety.UnderRoot(Root(configuration), reference.Version + "-" + reference.Sha256.ToLowerInvariant() + "/heirowUpdater.exe");
+        return PackageSafety.UnderRoot(Root(configuration), reference.Version + "-" + reference.Sha256.ToLowerInvariant() + "/heirowUpdater" + InstallerPlatform.ExecutableSuffix);
     }
     private static byte[] ReferenceBytes(UpdateCompanionConfiguration configuration) => JsonSerializer.SerializeToUtf8Bytes(new ApplicationReference
     {
@@ -219,6 +221,7 @@ public static class SharedUpdaterRuntime
         PackageSafety.EnsureNoReparsePoints(Root(configuration));
         if (!OperatingSystem.IsWindows() || configuration.Isolated || configuration.Scope != "machine")
         {
+            if (!OperatingSystem.IsWindows() && configuration.Scope == "machine" && !configuration.Isolated) UnixStateSecurity.Validate(Root(configuration));
             if (create) Directory.CreateDirectory(Root(configuration));
             return null;
         }
@@ -226,6 +229,7 @@ public static class SharedUpdaterRuntime
         try
         {
             if (!lease.RootExists) throw new InvalidDataException("The protected shared updater namespace is missing.");
+            if (!OperatingSystem.IsWindows() && configuration.Scope == "machine" && !configuration.Isolated) UnixStateSecurity.Validate(Root(configuration));
             if (create) Directory.CreateDirectory(Root(configuration));
             if (Directory.Exists(Root(configuration)) && !MachineStateSecurity.IsStateObjectProtected(Root(configuration)))
                 throw new UnauthorizedAccessException("The shared updater namespace has an unsafe owner or ACL.");

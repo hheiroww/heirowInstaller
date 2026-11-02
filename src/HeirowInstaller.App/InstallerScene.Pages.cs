@@ -95,22 +95,22 @@ internal sealed partial class InstallerScene
         Action("workspace.publisher", Controller.SigningIn ? "Cancel sign-in" : Controller.PublisherSignedIn ? "Sign out" : "Sign in to SocketJack  ↗", Width - 252, 157, 199, () => _ = Controller.SignInPublisherAsync(), enabled: !Controller.Busy || Controller.SigningIn, accent: Theme.Orange);
         PathField("workspace.manifest", "PACKAGE MANIFEST", Controller.ManifestPath, 232 - compact / 4f, value => Controller.ManifestPath = value, () =>
         {
-            using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Choose package manifest", Filter = "Package manifest|*.json|All files|*.*", CheckFileExists = true };
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.ManifestPath = picker.FileName; if (string.IsNullOrWhiteSpace(Controller.SourceDirectory)) Controller.SourceDirectory = Path.GetDirectoryName(picker.FileName)!; Controller.Notify(); }
+            using var picker = new DesktopOpenFileDialog { Title = "Choose package manifest", Filter = "Package manifest|*.json|All files|*.*", CheckFileExists = true };
+            if (picker.ShowDialog() == PickerResult.OK) { Controller.ManifestPath = picker.FileName; if (string.IsNullOrWhiteSpace(Controller.SourceDirectory)) Controller.SourceDirectory = Path.GetDirectoryName(picker.FileName)!; Controller.Notify(); }
         });
         PathField("workspace.source", "APPLICATION FILES OR .NET PROJECT", Controller.SourceDirectory, 318 - compact / 2f, value => Controller.SourceDirectory = value, () =>
         {
-            using var picker = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose published application files", UseDescriptionForTitle = true, InitialDirectory = File.Exists(Controller.SourceDirectory) ? Path.GetDirectoryName(Controller.SourceDirectory) ?? "" : Controller.SourceDirectory };
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.SourceDirectory = picker.SelectedPath; Controller.Notify(); }
+            using var picker = new DesktopFolderDialog { Description = "Choose published application files", UseDescriptionForTitle = true, InitialDirectory = File.Exists(Controller.SourceDirectory) ? Path.GetDirectoryName(Controller.SourceDirectory) ?? "" : Controller.SourceDirectory };
+            if (picker.ShowDialog() == PickerResult.OK) { Controller.SourceDirectory = picker.SelectedPath; Controller.Notify(); }
         }, () =>
         {
-            using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Choose an application project to publish", Filter = ".NET application project|*.csproj;*.vbproj;*.fsproj", CheckFileExists = true };
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.SourceDirectory = picker.FileName; Controller.Notify(); }
+            using var picker = new DesktopOpenFileDialog { Title = "Choose an application project to publish", Filter = ".NET application project|*.csproj;*.vbproj;*.fsproj", CheckFileExists = true };
+            if (picker.ShowDialog() == PickerResult.OK) { Controller.SourceDirectory = picker.FileName; Controller.Notify(); }
         });
         PathField("workspace.output", "OUTPUT INSTALLER", Controller.OutputPath, 404 - 3 * compact / 4f, value => Controller.OutputPath = value, () =>
         {
-            using var picker = new System.Windows.Forms.SaveFileDialog { Title = "Choose output installer", Filter = "Standalone Windows setup|*.exe|heirowInstaller package|*.hinst", FileName = Path.GetFileName(Controller.OutputPath), DefaultExt = "exe", AddExtension = true };
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.OutputPath = picker.FileName; Controller.Notify(); }
+            using var picker = new DesktopSaveFileDialog { Title = "Choose output installer", Filter = "Standalone Windows setup|*.exe|heirowInstaller package|*.hinst", FileName = Path.GetFileName(Controller.OutputPath), DefaultExt = OperatingSystem.IsWindows() ? "exe" : "hinst", AddExtension = true };
+            if (picker.ShowDialog() == PickerResult.OK) { Controller.OutputPath = picker.FileName; Controller.Notify(); }
         });
         Text("RELEASE NOTES", Left, 490 - compact, BodyWidth, 22, 8.5f, Theme.Muted, true);
         Field("workspace.notes", Controller.ReleaseNotes, Left, 520 - compact, BodyWidth, value => Controller.ReleaseNotes = value, true, 52);
@@ -178,7 +178,7 @@ internal sealed partial class InstallerScene
     {
         Box(Left, 147, BodyWidth, 146, Theme.Surface, 12);
         Pill("HEIROWUPDATER", Left + 22, 168, 150, Theme.Orange);
-        Text(Controller.PublisherSignedIn ? Controller.PublisherAccount + " · sign-in renews when you open heirowInstaller" : "Sign in once. Remembered for 30 days after each app open.",
+        Text(Controller.PublisherSignedIn ? Controller.PublisherAccount + " · sign-in renews when you open heirowInstaller" : OperatingSystem.IsWindows() ? "Sign in once. Remembered for 30 days after each app open." : "Sign in for this session.",
             Left + 192, 173, BodyWidth - 216, 24, 9.5f, Theme.Muted);
         Text("Your next release, one step away.", Left + 23, 216, BodyWidth - 46, 40, 21, bold: true);
         Text("Check every installed application through its publisher's update feed.", Left + 24, 263, BodyWidth - 48, 26, 10.5f, Theme.Muted);

@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Buffers.Binary;
+#if WINDOWS
 using System.Drawing.Imaging;
+#endif
 using HeirowInstaller.Core;
 using HeirowUpdater.SocketJack;
 
@@ -71,15 +73,21 @@ internal sealed partial class AppController
                     !header.AsSpan(12, 4).SequenceEqual("IHDR"u8) || BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(16, 4)) is < 1 or > 2048 ||
                     BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(20, 4)) is < 1 or > 2048) return null;
             }
+#if WINDOWS
             using var bitmap = System.Drawing.Image.FromFile(source);
             if (bitmap.Width is < 1 or > 2048 || bitmap.Height is < 1 or > 2048) return null;
+#endif
             return source;
         }
+#if WINDOWS
         using var icon = new System.Drawing.Icon(source, 256, 256);
         using var converted = icon.ToBitmap();
         var png = Path.Combine(wizardArtworkDirectory, "verified-app-icon.png");
         converted.Save(png, ImageFormat.Png); wizardArtworkFiles.Add(png);
         return png;
+#else
+        return null;
+#endif
     }
 
     private void DisposeWizardArtwork()

@@ -29,6 +29,8 @@ public static class PackageBuilder
         if (manifest.NativeMigration is not null || manifest.Prerequisites.Any(x => x.Detection is not null) ||
             manifest.LaunchWorkingDirectory is not null || manifest.Shortcuts.Any(x => x.WorkingDirectory is not null))
             manifest.FormatVersion = Math.Max(manifest.FormatVersion, 3);
+        if (manifest.TargetRuntime is not null || manifest.TargetPlatform != "windows" || manifest.Payload.Any(x => x.UnixMode is not null) || manifest.Shortcuts.Any(x => x.ArgumentList is not null))
+            manifest.FormatVersion = Math.Max(manifest.FormatVersion, 4);
         if (manifest.Payload.Count == 0)
         {
             foreach (var path in EnumerateSafeFiles(sourceDirectory).Order(StringComparer.OrdinalIgnoreCase))
@@ -48,6 +50,9 @@ public static class PackageBuilder
                 throw new InvalidDataException("The signing key cannot be included as a payload source.");
             if (!File.Exists(input)) throw new FileNotFoundException($"Payload source does not exist: {file.Source}");
             if (input.Equals(outputPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Output cannot be a payload source.");
+            if (manifest.TargetPlatform != "windows" && file.UnixMode is null)
+                file.UnixMode = !OperatingSystem.IsWindows() ? ((int)File.GetUnixFileMode(input) & 0x1ed)
+                    : file.Path == manifest.EntryPoint || file.Path == manifest.UpdateCompanion?.ExecutablePath ? 493 : 420;
             file.Size = new FileInfo(input).Length;
             file.Sha256 = PackageSafety.HashFile(input);
         }
@@ -239,6 +244,7 @@ public sealed class PackageReader : IDisposable
             using (var output = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, FileOptions.Asynchronous))
                 await input.CopyToAsync(output, cancellationToken);
             if (!PackageSafety.HashEquals(PackageSafety.HashFile(outputPath), file.Sha256)) throw new CryptographicException($"Payload hash mismatch: {file.Path}");
+            if (!OperatingSystem.IsWindows() && declared.UnixMode is { } mode) File.SetUnixFileMode(outputPath, (UnixFileMode)mode);
             progress?.Report(new("extract", file.Path, i + 1, selected.Count));
         }
     }
@@ -294,6 +300,7 @@ public static class BundleBuilder
                 }
             }
             using (var verify = PackageReader.Open(temporary)) verify.VerifyAsync().GetAwaiter().GetResult();
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, File.GetUnixFileMode(launcher));
             File.Move(temporary, output, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }

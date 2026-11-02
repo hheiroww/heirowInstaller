@@ -27,6 +27,7 @@ public sealed class PackageManifest
     public string EntryPoint { get; set; } = "";
     /// <summary>Signed application target. Omission retains the legacy Windows default.</summary>
     public string TargetPlatform { get; set; } = "windows";
+    public string? TargetRuntime { get; set; }
     public string? LaunchWorkingDirectory { get; set; }
     public string InstallDirectory { get; set; } = "";
     public string Scope { get; set; } = "user";
@@ -126,6 +127,8 @@ public sealed class PayloadFile
     public long Size { get; set; }
     public string? Feature { get; set; }
     public string? TargetRoot { get; set; }
+    /// <summary>Signed Unix permissions (ordinary rwx bits only). Decimal 493 is octal 0755.</summary>
+    public int? UnixMode { get; set; }
 }
 
 public sealed class RegistryDefinition
@@ -144,6 +147,7 @@ public sealed class ShortcutDefinition
     public string Location { get; set; } = "startMenu";
     public string Target { get; set; } = "";
     public string Arguments { get; set; } = "";
+    public List<string>? ArgumentList { get; set; }
     public string? WorkingDirectory { get; set; }
     public string? Icon { get; set; }
     public string? Feature { get; set; }

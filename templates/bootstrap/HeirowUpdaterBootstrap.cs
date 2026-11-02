@@ -53,24 +53,35 @@ public static class HeirowUpdaterBootstrap
         if (new FileInfo(configuration).Length > 65536) throw new InvalidDataException("Updater profile is too large.");
         using var document = JsonDocument.Parse(File.ReadAllText(configuration)); var profile = document.RootElement;
         if (!Path.GetFullPath(profile.GetProperty("installDirectory").GetString()!).Equals(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Updater root mismatch.");
-        if (!profile.TryGetProperty("sharedRuntime", out var runtime) || runtime.ValueKind == JsonValueKind.Null) return Path.Combine(root, "heirowUpdater.exe");
+        if (!profile.TryGetProperty("sharedRuntime", out var runtime) || runtime.ValueKind == JsonValueKind.Null) return Path.Combine(root, "heirowUpdater" + (OperatingSystem.IsWindows() ? ".exe" : ""));
         var version = runtime.GetProperty("version").GetString()!; var hash = runtime.GetProperty("sha256").GetString()!; var size = runtime.GetProperty("size").GetInt64();
         if (!Version.TryParse(version, out _) || version.Length > 64 || version.Any(c => !char.IsAsciiDigit(c) && c != '.') || hash.Length != 64 || !hash.All(Uri.IsHexDigit) || size <= 0 || size > 536870912) throw new InvalidDataException("Invalid updater runtime binding.");
         var scope = profile.GetProperty("scope").GetString();
         if (scope is not ("user" or "machine")) throw new InvalidDataException("Invalid updater scope.");
         var isolated = profile.TryGetProperty("isolated", out var isolatedValue) && isolatedValue.GetBoolean();
-        var parent = isolated ? Path.GetDirectoryName(Path.GetFullPath(profile.GetProperty("stateRoot").GetString()!))! : scope == "machine"
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "heirowInstaller", "state")
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "state");
-        var executable = Path.Combine(parent, ".updater-runtime", version + "-" + hash.ToLowerInvariant(), "heirowUpdater.exe");
+        var parent = isolated ? Path.GetDirectoryName(Path.GetFullPath(profile.GetProperty("stateRoot").GetString()!))! : DefaultStateRoot(scope!);
+        var executable = Path.Combine(parent, ".updater-runtime", version + "-" + hash.ToLowerInvariant(), "heirowUpdater" + (OperatingSystem.IsWindows() ? ".exe" : ""));
         NoLinks(executable);
         using var input = File.OpenRead(executable);
         if (input.Length != size || !Convert.ToHexString(SHA256.HashData(input)).Equals(hash, StringComparison.OrdinalIgnoreCase) || ReadFileVersion(executable) != version) throw new CryptographicException("Updater runtime integrity failed.");
         return executable;
     }
+    private static string DefaultStateRoot(string scope)
+    {
+        if (OperatingSystem.IsWindows()) return scope == "machine"
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "heirowInstaller", "state")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "state");
+        if (scope == "machine") return OperatingSystem.IsMacOS() ? "/Library/Application Support/SocketJack/heirowInstaller/state" : "/var/lib/heirowInstaller/state";
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var configured = Environment.GetEnvironmentVariable("XDG_STATE_HOME");
+        var state = OperatingSystem.IsMacOS() ? Path.Combine(home, "Library", "Application Support")
+            : configured is { Length: > 0 } && Path.IsPathFullyQualified(configured) ? configured : Path.Combine(home, ".local", "state");
+        return Path.Combine(state, "SocketJack", "heirowInstaller", "state");
+    }
     private static string? ReadFileVersion(string path)
     {
         // Version metadata uses a native API that requires an extended path for long Windows filenames.
+        if (!OperatingSystem.IsWindows()) return "0.0.0";
         var absolute = Path.GetFullPath(path);
         if (OperatingSystem.IsWindows() && !absolute.StartsWith(@"\\?\", StringComparison.Ordinal))
             absolute = absolute.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + absolute[2..] : @"\\?\" + absolute;
@@ -79,7 +90,7 @@ public static class HeirowUpdaterBootstrap
     private static void NoLinks(string path)
     {
         for (string? current = Path.GetFullPath(path); current is not null; current = Path.GetDirectoryName(current))
-            if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new IOException("Updater paths cannot follow links.");
+            if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0 && !(OperatingSystem.IsMacOS() && (current is "/var" or "/tmp" or "/etc") && new DirectoryInfo(current).ResolveLinkTarget(true)?.FullName == "/private" + current)) throw new IOException("Updater paths cannot follow links.");
     }
 }
 

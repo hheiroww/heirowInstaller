@@ -12,7 +12,7 @@ public static class ApplicationHostRegistry
     {
         executable = Path.GetFullPath(executable);
         ApplicationProcesses.ValidateIdentity(executable, processId, creationTicks);
-        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(executable.ToUpperInvariant()))).ToLowerInvariant();
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? executable.ToUpperInvariant() : executable))).ToLowerInvariant();
         await ApplicationUpdater.WriteJsonAsync(Path.Combine(ApplicationUpdater.StateDirectory(configuration), "hosts", key + ".json"),
             new Host { Executable = executable, ProcessId = processId, CreationTicks = creationTicks }, token);
     }

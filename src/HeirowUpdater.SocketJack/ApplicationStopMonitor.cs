@@ -5,20 +5,29 @@ namespace HeirowUpdater.SocketJack;
 /// <summary>Polite per-root maintenance cancellation; it never terminates the application.</summary>
 public sealed class ApplicationStopMonitor : IDisposable
 {
-    private readonly EventWaitHandle signal;
+    private readonly EventWaitHandle? signal;
+    private readonly Timer? poller;
+    private readonly string? portablePath;
     private readonly CancellationTokenSource cancellation;
-    private readonly RegisteredWaitHandle registration;
+    private readonly RegisteredWaitHandle? registration;
     private readonly FileStream? observer;
     private readonly string? observerPath;
     public CancellationToken Token => cancellation.Token;
-    public bool StopRequested => signal.WaitOne(0);
-    public void RequestStop() => signal.Set();
+    public bool StopRequested => signal?.WaitOne(0) ?? cancellation.IsCancellationRequested;
+    public void RequestStop() { if (signal is not null) signal.Set(); else cancellation.Cancel(); }
 
     public ApplicationStopMonitor(string installDirectory, bool resetForOwner, CancellationToken token = default)
     {
+        cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+        if (!OperatingSystem.IsWindows())
+        {
+            portablePath = UpdateCompanionControl.PortableStopPath(installDirectory);
+            if (resetForOwner && File.Exists(portablePath)) File.Delete(portablePath);
+            poller = new Timer(_ => { try { if (File.Exists(portablePath)) cancellation.Cancel(); } catch (ObjectDisposedException) { } }, null, 0, 100);
+            return;
+        }
         signal = new EventWaitHandle(false, EventResetMode.ManualReset, UpdateCompanionControl.GetStopEventName(installDirectory));
         if (resetForOwner) signal.Reset();
-        cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         registration = ThreadPool.RegisterWaitForSingleObject(signal, (_, _) =>
         {
             try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
@@ -40,7 +49,7 @@ public sealed class ApplicationStopMonitor : IDisposable
     }
     public void Dispose()
     {
-        registration.Unregister(null); cancellation.Dispose(); signal.Dispose(); observer?.Dispose();
+        poller?.Dispose(); registration?.Unregister(null); cancellation.Dispose(); signal?.Dispose(); observer?.Dispose();
         if (observerPath is not null) try { File.Delete(observerPath); } catch (IOException) { }
     }
 }

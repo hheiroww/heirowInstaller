@@ -293,7 +293,7 @@ internal static class IncrementalPackageIO
         PayloadDestinations.ValidateUpgrade(before, after);
         if (before.LegacyMsi is not null || before.LegacyExecutable is not null || after.LegacyMsi is not null || after.LegacyExecutable is not null)
             throw new NotSupportedException("Incremental packages require native file manifests; opaque MSI/executable installers cannot be diffed or used as repair registration.");
-        if (before.Id != after.Id || before.Scope != after.Scope || before.TargetPlatform != after.TargetPlatform || PackageVersion.Parse(after.Version).CompareTo(PackageVersion.Parse(before.Version)) <= 0)
+        if (before.Id != after.Id || before.Scope != after.Scope || before.TargetPlatform != after.TargetPlatform || before.TargetRuntime != after.TargetRuntime || PackageVersion.Parse(after.Version).CompareTo(PackageVersion.Parse(before.Version)) <= 0)
             throw new InvalidDataException("An incremental update requires the same product, scope and target platform, and a newer target version.");
         foreach (var manifest in new[] { before, after })
         {

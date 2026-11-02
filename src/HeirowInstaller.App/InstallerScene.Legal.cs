@@ -61,8 +61,8 @@ internal sealed partial class InstallerScene
         {
             Action("legal.import", "Import file", x + 200, y + height - 64, 117, () =>
             {
-                using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Import legal document as text", Filter = "UTF-8 text or Markdown|*.txt;*.md;*.markdown", CheckFileExists = true };
-                if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) _ = Controller.ImportLegalDocumentAsync(picker.FileName, legalPrivacy);
+                using var picker = new DesktopOpenFileDialog { Title = "Import legal document as text", Filter = "UTF-8 text or Markdown|*.txt;*.md;*.markdown", CheckFileExists = true };
+                if (picker.ShowDialog() == PickerResult.OK) _ = Controller.ImportLegalDocumentAsync(picker.FileName, legalPrivacy);
             }, enabled: !Controller.Busy);
             Action("legal.load-saved", "Load saved", x + 327, y + height - 64, 125, () => _ = Controller.LoadLegalDraftAsync(true), enabled: !Controller.Busy);
             Action("legal.save-draft", "Save draft", x + width - 156, y + height - 64, 132, () => _ = Controller.SaveLegalDraftAsync(), enabled: !Controller.Busy);

@@ -68,7 +68,7 @@ internal static class NativeUpdatePrompt
         var requestPath = Path.Combine(directory, "prompt-" + Guid.NewGuid().ToString("N") + ".json");
         var resultPath = requestPath + ".result.json";
         request.CancelEvent = PromptCancellationEvent(requestPath);
-        using var cancel = new EventWaitHandle(false, EventResetMode.ManualReset, request.CancelEvent);
+        using var cancel = new PromptCancellation(requestPath, request.CancelEvent, owner: true);
         using var cancelRegistration = token.Register(() => cancel.Set());
         try
         {
@@ -126,14 +126,10 @@ internal static class NativeUpdatePrompt
             throw new InvalidDataException("Maintenance requests can only display the installed application's close-apps prompt.");
         if (!configuration.Isolated && (request.AcceptanceChoice is not null || request.CapturePath is not null || request.ReportPath is not null))
             throw new InvalidDataException("Automated native prompt controls require an isolated installation.");
-        if (request.CancelEvent != PromptCancellationEvent(requestPath) || !EventWaitHandle.TryOpenExisting(request.CancelEvent, out var promptCancel))
-            throw new InvalidDataException("The native prompt cancellation identity is invalid.");
-        using var promptSignal = promptCancel;
+        if (request.CancelEvent != PromptCancellationEvent(requestPath)) throw new InvalidDataException("The native prompt cancellation identity is invalid.");
+        using var promptSignal = new PromptCancellation(requestPath, request.CancelEvent, owner: false);
         using var maintenance = new ApplicationStopMonitor(configuration, resetForOwner: false, token);
-        using var promptCancellation = CancellationTokenSource.CreateLinkedTokenSource(maintenance.Token);
-        var cancellationRegistration = ThreadPool.RegisterWaitForSingleObject(promptSignal, (_, _) =>
-        { try { promptCancellation.Cancel(); } catch (ObjectDisposedException) { } }, null, Timeout.Infinite, true);
-        using var cancellationCleanup = new RegisteredWaitCleanup(cancellationRegistration);
+        using var promptCancellation = CancellationTokenSource.CreateLinkedTokenSource(maintenance.Token, promptSignal.Token);
         var context = request.Context with { Application = configuration };
         PromptResult result;
         if (request.RunningApplications is { } running)
@@ -153,11 +149,11 @@ internal static class NativeUpdatePrompt
     {
         if (acceptanceChoice is not null && acceptanceChoice is not ("postpone" or "update")) throw new ArgumentException("Prompt acceptance choice must be postpone or update.");
         var completion = new TaskCompletionSource<ApplicationUpdateChoice>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
+        ThreadStart run = () =>
         {
             try
             {
-                System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+                DesktopPlatform.Initialize();
                 using var game = new PromptGame(context, acceptanceChoice, capturePath, authentication, failure);
                 using var registration = cancellationToken.Register(() => game.Enqueue(game.Exit));
                 game.Run();
@@ -172,8 +168,13 @@ internal static class NativeUpdatePrompt
                 completion.SetResult(game.Choice);
             }
             catch (Exception error) { completion.SetException(error); }
-        }) { IsBackground = false, Name = "heirowUpdater native prompt" };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            var thread = new Thread(run) { IsBackground = false, Name = "heirowUpdater native prompt" };
+            thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        }
+        else DesktopPlatform.RunUi(() => run());
         return completion.Task;
     }
 
@@ -185,11 +186,11 @@ internal static class NativeUpdatePrompt
         if (acceptanceChoice == "force" && !request.Applications.Any(application => application.CanForceClose))
             throw new ArgumentException("Force-close acceptance requires an eligible listed app.");
         var completion = new TaskCompletionSource<RunningApplicationsChoice>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
+        ThreadStart run = () =>
         {
             try
             {
-                System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+                DesktopPlatform.Initialize();
                 using var game = new RunningApplicationsGame(request, acceptanceChoice, capturePath);
                 using var registration = token.Register(() => game.Enqueue(game.Exit));
                 game.Run();
@@ -204,8 +205,13 @@ internal static class NativeUpdatePrompt
                 completion.SetResult(game.Choice);
             }
             catch (Exception error) { completion.SetException(error); }
-        }) { IsBackground = false, Name = "heirowUpdater close-apps prompt" };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            var thread = new Thread(run) { IsBackground = false, Name = "heirowUpdater close-apps prompt" };
+            thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        }
+        else DesktopPlatform.RunUi(() => run());
         return completion.Task;
     }
 
@@ -299,7 +305,7 @@ internal static class NativeUpdatePrompt
             var resources = new ContentContainer(Content, GraphicsDevice); resources.LoadVectorFontsOnly();
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);
             var quality = GraphicsQuality.ForDevice(GraphicsDevice); quality.AntiAliasingSamples = 16; quality.Filtering = TextureFiltering.Anisotropic16x; quality.PpiPerfectText = true;
-            manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(780, 510), UseHardwareInput = true };
+            manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(780, 510) };
             scene = new PromptScene(manager, this, context, authentication, failure); manager.AddScene("update", scene); manager.ActiveScene = scene;
         }
         protected override void Update(GameTime time)
@@ -430,7 +436,7 @@ internal static class NativeUpdatePrompt
             var resources = new ContentContainer(Content, GraphicsDevice); resources.LoadVectorFontsOnly();
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);
             var quality = GraphicsQuality.ForDevice(GraphicsDevice); quality.AntiAliasingSamples = 16; quality.Filtering = TextureFiltering.Anisotropic16x; quality.PpiPerfectText = true;
-            manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(Width, Height), UseHardwareInput = true };
+            manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(Width, Height) };
             scene = new RunningApplicationsScene(manager, this, request, page, details, confirmForceClose); manager.AddScene("close-apps", scene); manager.ActiveScene = scene;
         }
         protected override void Update(GameTime time)

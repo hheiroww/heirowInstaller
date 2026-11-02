@@ -4,7 +4,7 @@ using HeirowInstaller.Core;
 using HeirowUpdater;
 using HeirowUpdater.SocketJack;
 
-return await UpdaterProgram.RunAsync(args);
+return DesktopPlatform.RunOnMainThread(() => UpdaterProgram.RunAsync(args));
 
 internal static partial class UpdaterProgram
 {

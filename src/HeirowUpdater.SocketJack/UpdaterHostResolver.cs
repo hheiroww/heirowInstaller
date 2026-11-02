@@ -1,3 +1,5 @@
+using HeirowInstaller.Core;
+
 namespace HeirowUpdater.SocketJack;
 
 /// <summary>Locates the installed updater beside the actual application host, including self-extracting single-file applications.</summary>
@@ -12,7 +14,7 @@ public static class UpdaterHostResolver
         {
             var profile = Path.Combine(directory, "heirowUpdater.json");
             if (File.Exists(profile)) return ApplicationUpdater.ResolveExecutable(ApplicationUpdater.ReadConfiguration(profile, requireEntryPoint: false));
-            var local = Path.Combine(directory, "heirowUpdater.exe");
+            var local = Path.Combine(directory, "heirowUpdater" + InstallerPlatform.ExecutableSuffix);
             if (File.Exists(local)) return local;
         }
         return null;

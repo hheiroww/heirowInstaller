@@ -114,7 +114,7 @@ public static class FileTransactionRecovery
     internal static bool TargetIsInstalled(FileTransactionRecoveryContext context, IReadOnlyList<JournalFileOperation>? operations = null)
     {
         var installed = InstallerEngine.ListInstalled(context.StateRoot).SingleOrDefault(product => product.Id == context.ProductId && product.Scope == context.Scope);
-        if (installed is null || installed.Version != context.TargetVersion || !Path.GetFullPath(installed.InstallDirectory).Equals(Path.GetFullPath(context.InstallDirectory), StringComparison.OrdinalIgnoreCase) ||
+        if (installed is null || installed.Version != context.TargetVersion || !Path.GetFullPath(installed.InstallDirectory).Equals(Path.GetFullPath(context.InstallDirectory), InstallerPlatform.PathComparison) ||
             !IncrementalPackageIO.NullableHashEquals(installed.PublisherKeySha256, context.PublisherKeySha256)) return false;
         try
         {
@@ -125,7 +125,7 @@ public static class FileTransactionRecovery
             var owned = installed.Files.ToDictionary(file => file.Path, StringComparer.OrdinalIgnoreCase);
             foreach (var file in package.Manifest.Payload.Where(file => !SharedUpdaterRuntime.IsRuntimePayload(package.Manifest, file.Path) && (file.Feature is null || installed.Features.Contains(file.Feature, StringComparer.OrdinalIgnoreCase))))
             {
-                if (!owned.TryGetValue(file.Path, out var actual) || !PackageSafety.HashEquals(actual.Sha256, file.Sha256) || !string.Equals(actual.TargetRoot, file.TargetRoot, StringComparison.OrdinalIgnoreCase)) return false;
+                if (!owned.TryGetValue(file.Path, out var actual) || !PackageSafety.HashEquals(actual.Sha256, file.Sha256) || !string.Equals(actual.TargetRoot, file.TargetRoot, InstallerPlatform.PathComparison)) return false;
                 IncrementalPackageIO.VerifyFile(PayloadDestinations.ResolveInstalled(installed, actual), file.Size, file.Sha256);
             }
             if (package.Manifest.UpdateCompanion is { RuntimeMode: "shared" } companion)
@@ -137,8 +137,8 @@ public static class FileTransactionRecovery
                 {
                     var configuration = JsonSerializer.Deserialize<UpdateCompanionConfiguration>(File.ReadAllText(PackageSafety.UnderRoot(installed.InstallDirectory, companion.ConfigurationPath)), InstallerJson.Options)!;
                     if (configuration.ProductId != installed.Id || configuration.CurrentVersion != installed.Version || configuration.Scope != installed.Scope || configuration.Isolated != installed.Isolated ||
-                        !Path.GetFullPath(configuration.StateRoot).Equals(Path.GetFullPath(context.StateRoot), StringComparison.OrdinalIgnoreCase) ||
-                        !Path.GetFullPath(configuration.InstallDirectory).Equals(Path.GetFullPath(installed.InstallDirectory), StringComparison.OrdinalIgnoreCase) ||
+                        !Path.GetFullPath(configuration.StateRoot).Equals(Path.GetFullPath(context.StateRoot), InstallerPlatform.PathComparison) ||
+                        !Path.GetFullPath(configuration.InstallDirectory).Equals(Path.GetFullPath(installed.InstallDirectory), InstallerPlatform.PathComparison) ||
                         !PackageSafety.HashEquals(configuration.PublisherKeySha256, installed.PublisherKeySha256!)) return false;
                     SharedUpdaterRuntime.ValidateBinding(configuration, package.Manifest); _ = SharedUpdaterRuntime.Resolve(configuration);
                 }
@@ -183,7 +183,7 @@ internal sealed class FileTransactionJournal : IDisposable
             BeforeSha256 = backup is null ? null : PackageSafety.HashFile(backup), BeforeSize = backup is null ? null : new FileInfo(backup).Length,
             AfterSha256 = afterHash, AfterSize = afterLength
         };
-        var target = context.Files.SingleOrDefault(file => context.Resolve(file).Equals(operation.Destination, StringComparison.OrdinalIgnoreCase));
+        var target = context.Files.SingleOrDefault(file => context.Resolve(file).Equals(operation.Destination, InstallerPlatform.PathComparison));
         if (target is null && afterHash is not null && backup is null && verifiedSource is not null && IsTargetPackagePath(context, destination, afterHash) && IsTargetPackage(context, verifiedSource))
             operation.PackageCache = true;
         operation.Recoverable = ValidateOperation(context, operation);
@@ -211,7 +211,7 @@ internal sealed class FileTransactionJournal : IDisposable
             !Regex.IsMatch(operation.Temporary[(operation.Destination.Length + 7)..], "^[a-f0-9]{32}\\.tmp$", RegexOptions.CultureInvariant))) return false;
         if (operation.PackageCache)
             return operation.BeforeSha256 is null && operation.AfterSha256 is not null && IsTargetPackagePath(context, operation.Destination, operation.AfterSha256);
-        var target = context.Files.SingleOrDefault(file => context.Resolve(file).Equals(operation.Destination, StringComparison.OrdinalIgnoreCase));
+        var target = context.Files.SingleOrDefault(file => context.Resolve(file).Equals(operation.Destination, InstallerPlatform.PathComparison));
         if (target is null || !IncrementalPackageIO.NullableHashEquals(target.BeforeSha256, operation.BeforeSha256) || (target.BeforeSize.HasValue && target.BeforeSize != operation.BeforeSize)) return false;
         return target.AllowGeneratedAfterContent ? operation.AfterSha256 is not null
             : IncrementalPackageIO.NullableHashEquals(target.AfterSha256, operation.AfterSha256) && target.AfterSize == operation.AfterSize;
@@ -221,11 +221,11 @@ internal sealed class FileTransactionJournal : IDisposable
     {
         if (!Path.IsPathFullyQualified(directory)) return false;
         var full = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar);
-        if (full.Equals(Path.GetFullPath(context.StateRoot).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase)) return false;
-        return context.Files.Any(file => context.Resolve(file).StartsWith(full + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) &&
+        if (full.Equals(Path.GetFullPath(context.StateRoot).TrimEnd(Path.DirectorySeparatorChar), InstallerPlatform.PathComparison)) return false;
+        return context.Files.Any(file => context.Resolve(file).StartsWith(full + Path.DirectorySeparatorChar, InstallerPlatform.PathComparison)) &&
             (Within(full, context.InstallDirectory) || Within(full, Path.Combine(context.StateRoot, context.ProductId)) ||
-             full.Equals(Path.GetFullPath(context.InstallDirectory), StringComparison.OrdinalIgnoreCase) ||
-             context.Files.Any(file => file.Location == "external" && (Within(full, file.TargetRootDirectory!) || full.Equals(Path.GetFullPath(file.TargetRootDirectory!), StringComparison.OrdinalIgnoreCase))));
+             full.Equals(Path.GetFullPath(context.InstallDirectory), InstallerPlatform.PathComparison) ||
+             context.Files.Any(file => file.Location == "external" && (Within(full, file.TargetRootDirectory!) || full.Equals(Path.GetFullPath(file.TargetRootDirectory!), InstallerPlatform.PathComparison))));
     }
 
     internal static void Restore(string root, FileTransactionRecoveryContext context, JournalFileOperation operation)
@@ -237,7 +237,8 @@ internal sealed class FileTransactionJournal : IDisposable
         {
             var backup = PackageSafety.UnderRoot(root, operation.Backup!);
             IncrementalPackageIO.VerifyFile(backup, operation.BeforeSize!.Value, operation.BeforeSha256);
-            if (!Matches(destination, operation.BeforeSha256, operation.BeforeSize))
+            if (!Matches(destination, operation.BeforeSha256, operation.BeforeSize) ||
+                !OperatingSystem.IsWindows() && File.GetUnixFileMode(destination) != File.GetUnixFileMode(backup))
             {
                 if (File.Exists(destination) && !Matches(destination, operation.AfterSha256, operation.AfterSize)) throw new CryptographicException("A recovery target was modified after the interrupted update; its backup was preserved.");
                 PackageSafety.EnsureNoReparsePoints(destination);
@@ -270,7 +271,7 @@ internal sealed class FileTransactionJournal : IDisposable
         return hash is not null && File.Exists(path) && (!size.HasValue || new FileInfo(path).Length == size) && PackageSafety.HashEquals(PackageSafety.HashFile(path), hash);
     }
     private static bool IsTargetPackagePath(FileTransactionRecoveryContext context, string path, string digest)
-        => Path.GetFullPath(path).Equals(PackageSafety.UnderRoot(context.StateRoot, context.ProductId + "/packages/" + digest.ToLowerInvariant() + ".hinst"), StringComparison.OrdinalIgnoreCase);
+        => Path.GetFullPath(path).Equals(PackageSafety.UnderRoot(context.StateRoot, context.ProductId + "/packages/" + digest.ToLowerInvariant() + ".hinst"), InstallerPlatform.PathComparison);
     private static bool IsTargetPackage(FileTransactionRecoveryContext context, string path)
     {
         try
@@ -288,6 +289,7 @@ internal sealed class FileTransactionJournal : IDisposable
         using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, FileOptions.WriteThrough);
         input.CopyTo(output); output.Flush(flushToDisk: true);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(output.SafeFileHandle, File.GetUnixFileMode(input.SafeFileHandle));
     }
     internal static void Append(string root, FileTransactionEvent value)
     {
@@ -342,8 +344,8 @@ internal sealed class FileTransactionJournal : IDisposable
     }
     internal static bool SameIdentity(FileTransactionOwner owner, FileTransactionRecoveryContext context, bool includeBase)
         => owner.Context.ProductId == context.ProductId && owner.Context.Scope == context.Scope &&
-           Path.GetFullPath(owner.Context.StateRoot).Equals(Path.GetFullPath(context.StateRoot), StringComparison.OrdinalIgnoreCase) &&
-           Path.GetFullPath(owner.Context.InstallDirectory).Equals(Path.GetFullPath(context.InstallDirectory), StringComparison.OrdinalIgnoreCase) &&
+           Path.GetFullPath(owner.Context.StateRoot).Equals(Path.GetFullPath(context.StateRoot), InstallerPlatform.PathComparison) &&
+           Path.GetFullPath(owner.Context.InstallDirectory).Equals(Path.GetFullPath(context.InstallDirectory), InstallerPlatform.PathComparison) &&
            IncrementalPackageIO.NullableHashEquals(owner.Context.PublisherKeySha256, context.PublisherKeySha256) &&
            PackageSafety.HashEquals(owner.Context.TargetManifestSha256, context.TargetManifestSha256) &&
            (!includeBase || IncrementalPackageIO.NullableHashEquals(owner.Context.BaseManifestSha256, context.BaseManifestSha256));
@@ -369,11 +371,11 @@ internal sealed class FileTransactionJournal : IDisposable
             if (Directory.Exists(path)) NoLinks(path);
         }
     }
-    private static bool Within(string path, string root) => Path.GetFullPath(path).StartsWith(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    private static bool Within(string path, string root) => Path.GetFullPath(path).StartsWith(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, InstallerPlatform.PathComparison);
     private static void ValidateRoot(string root, FileTransactionRecoveryContext context)
     {
         var expectedParent = Path.Combine(Path.GetFullPath(context.StateRoot), ".transactions");
-        if (!Guid.TryParseExact(Path.GetFileName(root), "N", out _) || !string.Equals(Path.GetDirectoryName(Path.GetFullPath(root)), expectedParent, StringComparison.OrdinalIgnoreCase))
+        if (!Guid.TryParseExact(Path.GetFileName(root), "N", out _) || !string.Equals(Path.GetDirectoryName(Path.GetFullPath(root)), expectedParent, InstallerPlatform.PathComparison))
             throw new InvalidDataException("A durable file workspace must be an exact installer-owned transaction child.");
         PackageSafety.EnsureNoReparsePoints(root);
     }

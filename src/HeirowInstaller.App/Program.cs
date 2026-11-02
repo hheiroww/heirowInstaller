@@ -28,7 +28,7 @@ internal static class Program
                 var result = engine.InstallAsync(package, install).GetAwaiter().GetResult();
                 return result.RebootRequired ? 3010 : 0;
             }
-            System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+            DesktopPlatform.Initialize();
             Task? startupCompanion = null;
             using (var game = new InstallerGame(options)) { game.Run(); startupCompanion = game.StartupCompanion; }
             // The window is disposed before this bounded shutdown grace period.
@@ -43,7 +43,7 @@ internal static class Program
             var path = Path.Combine(directory, "desktop-error.log");
             File.AppendAllText(path, $"{DateTimeOffset.Now:O}\n{error}\n\n");
             if (!args.Any(value => new[] { "--silent", "--quiet", "/quiet", "/qn", "/silent", "/verysilent", "--defer", "--wizard-smoke", "--ui-smoke", "--ui-performance" }.Contains(value, StringComparer.OrdinalIgnoreCase)))
-                System.Windows.Forms.MessageBox.Show($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}", "heirowInstaller", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
+                DesktopPlatform.ShowError($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}");
             return 1;
         }
     }
@@ -74,6 +74,7 @@ internal static class Program
 
     private static int Elevate(string[] args)
     {
+        if (!OperatingSystem.IsWindows()) throw new UnauthorizedAccessException("Run machine-scope maintenance from a terminal with sudo.");
         var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
         foreach (var argument in args) start.ArgumentList.Add(argument);
         using var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the elevated installer.");
@@ -88,6 +89,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal string? MaintenanceOperation { get; init; }
     internal bool MaintenanceConfirmed { get; init; }
     internal bool CloseOnComplete { get; init; }
+    internal bool RenderSmoke { get; init; }
     internal string? WizardSmokeDirectory { get; init; }
     internal string? PerformanceSmokeDirectory { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
@@ -108,12 +110,13 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? trustedKey = null, selfUpdateFeed = null, selfUpdateReport = null; var requireSignature = false;
         List<string> legacyArguments = []; string? logPath = null;
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
-        var closeOnComplete = false; var maintenanceConfirmed = false; string? wizardSmoke = null, performanceSmoke = null;
+        var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; string? wizardSmoke = null, performanceSmoke = null;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
             switch (args[i].ToLowerInvariant())
             {
+                case "--render-smoke": capture = Path.GetFullPath(Value()); renderSmoke = true; break;
                 case "--capture": capture = Path.GetFullPath(Value()); break;
                 case "--ui-smoke": smoke = Path.GetFullPath(Value()); break;
                 case "--wizard-smoke": wizardSmoke = Path.GetFullPath(Value()); break;
@@ -152,6 +155,14 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             }
         }
         if (!maintenanceInvocation && package is null && Environment.ProcessPath is { } self && PackageReader.HasEmbeddedPackage(self)) package = self;
+        if (!maintenanceInvocation && package is null && Environment.ProcessPath is { } host)
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(host))!;
+            var sibling = Path.Combine(directory, "Application.hinst");
+            var resource = Path.GetFullPath(Path.Combine(directory, "../Resources/Application.hinst"));
+            if (File.Exists(sibling)) package = sibling;
+            else if (OperatingSystem.IsMacOS() && directory.EndsWith(".app/Contents/MacOS", StringComparison.Ordinal) && File.Exists(resource)) package = resource;
+        }
         if (scope is not null && scope is not ("user" or "machine")) throw new ArgumentException("Scope must be user or machine.");
         if (smoke is not null) { state = Path.Combine(smoke, "state"); target = Path.Combine(smoke, "installed"); isolated = true; }
         if (wizardSmoke is not null)
@@ -177,6 +188,6 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             !Uri.TryCreate(selfUpdateFeed, UriKind.Absolute, out var smokeUri) || !smokeUri.IsLoopback || smokeUri.Scheme is not ("http" or "https")))
             throw new ArgumentException("Self-update acceptance requires an explicit isolated state, target, report, and loopback feed.");
         return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
-        { CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke };
+        { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke };
     }
 }

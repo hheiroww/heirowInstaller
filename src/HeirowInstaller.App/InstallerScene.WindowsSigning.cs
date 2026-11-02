@@ -128,13 +128,14 @@ internal sealed partial class InstallerScene
         Field(id, value ?? "", x + 24, top + 25, width - 168, changed);
         Action(id + ".browse", "Browse", x + width - 132, top + 25, 108, () =>
         {
-            using var picker = new System.Windows.Forms.OpenFileDialog { Title = label.Split('·')[0].Trim(), Filter = filter, CheckFileExists = true };
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { changed(picker.FileName); Controller.Notify(); }
+            using var picker = new DesktopOpenFileDialog { Title = label.Split('·')[0].Trim(), Filter = filter, CheckFileExists = true };
+            if (picker.ShowDialog() == PickerResult.OK) { changed(picker.FileName); Controller.Notify(); }
         }, enabled: !Controller.Busy);
     }
 
     private void ChooseWindowsSigningCertificate()
     {
+#if WINDOWS
         try
         {
             using var store = new X509Store(StoreName.My, windowsSigningDraft.UseMachineCertificateStore ? StoreLocation.LocalMachine : StoreLocation.CurrentUser);
@@ -167,18 +168,21 @@ internal sealed partial class InstallerScene
             finally { foreach (var certificate in all) certificate.Dispose(); }
         }
         catch (Exception error) { Controller.ShowWindowsSigningError(error); }
+#else
+        Controller.ShowWindowsSigningError(new PlatformNotSupportedException("Windows certificate selection requires Windows."));
+#endif
     }
 
     private void ImportWindowsSigningCertificate()
     {
         try
         {
-            using var picker = new System.Windows.Forms.OpenFileDialog
+            using var picker = new DesktopOpenFileDialog
             {
                 Title = "Open your purchased certificate in the Windows import wizard",
                 Filter = "Certificate or certificate bundle|*.pfx;*.p12;*.cer;*.crt", CheckFileExists = true
             };
-            if (picker.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+            if (picker.ShowDialog() != PickerResult.OK) return;
             if (Path.GetExtension(picker.FileName).ToLowerInvariant() is not (".pfx" or ".p12" or ".cer" or ".crt"))
                 throw new InvalidDataException("Choose a PFX, P12, CER or CRT certificate file.");
             Process.Start(new ProcessStartInfo(picker.FileName) { UseShellExecute = true });

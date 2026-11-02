@@ -287,11 +287,11 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         UpdateCompanionConfiguration? recoveryProfile = null)
     {
         var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
+        ThreadStart run = () =>
         {
             try
             {
-                System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+                DesktopPlatform.Initialize();
                 using var game = new FeedbackGame(first, readState, choice, capture, () =>
                 {
                     RecordFixtureEvent(fixtureEvents, "renderer-start", first);
@@ -324,8 +324,13 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
                 completion.SetResult(0);
             }
             catch (Exception error) { completion.SetException(error); }
-        }) { IsBackground = false, Name = "heirowUpdater manual feedback" };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            var thread = new Thread(run) { IsBackground = false, Name = "heirowUpdater manual feedback" };
+            thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        }
+        else DesktopPlatform.RunUi(() => run());
         return completion.Task;
     }
 
@@ -386,7 +391,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             var resources = new ContentContainer(Content, GraphicsDevice); resources.LoadVectorFontsOnly();
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);
             var quality = GraphicsQuality.ForDevice(GraphicsDevice); quality.AntiAliasingSamples = 16; quality.Filtering = TextureFiltering.Anisotropic16x; quality.PpiPerfectText = true;
-            manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(780, 510), UseHardwareInput = true };
+            manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(780, 510) };
             Rebuild();
         }
         private void Rebuild()

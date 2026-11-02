@@ -29,7 +29,7 @@ public static class SharedInstallerHost
         }
         var hash = Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
         using var protection = Guard(scope, stateRoot, isolated, create: true);
-        var destination = PackageSafety.UnderRoot(Root(scope, stateRoot, isolated), hash + "/heirowInstaller.exe");
+        var destination = PackageSafety.UnderRoot(Root(scope, stateRoot, isolated), hash + "/heirowInstaller" + InstallerPlatform.ExecutableSuffix);
         if (File.Exists(destination)) return Validate(destination, scope, stateRoot, isolated);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         var temporary = destination + ".incoming-" + Guid.NewGuid().ToString("N");
@@ -49,6 +49,7 @@ public static class SharedInstallerHost
             }
             if (!PackageSafety.HashEquals(PackageSafety.HashFile(temporary), hash)) throw new CryptographicException("The maintenance executable failed integrity verification.");
             StandaloneRuntimeInspector.RequireEmbeddedRuntime(temporary);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, File.GetUnixFileMode(source));
             try { File.Move(temporary, destination); }
             catch (IOException) when (File.Exists(destination)) { }
             return Validate(destination, scope, stateRoot, isolated);
@@ -69,7 +70,7 @@ public static class SharedInstallerHost
         path = Path.GetFullPath(path); PackageSafety.EnsureNoReparsePoints(path);
         var parent = Path.GetDirectoryName(path); var hash = Path.GetFileName(parent) ?? "";
         if (parent is null || Path.GetDirectoryName(parent)?.Equals(Root(scope, stateRoot, isolated), StringComparison.OrdinalIgnoreCase) != true ||
-            Path.GetFileName(path) != "heirowInstaller.exe" || hash.Length != 64 || !hash.All(Uri.IsHexDigit))
+            Path.GetFileName(path) != "heirowInstaller" + InstallerPlatform.ExecutableSuffix || hash.Length != 64 || !hash.All(Uri.IsHexDigit))
             throw new InvalidDataException("The maintenance host is outside its scope's immutable pool.");
         using var protection = Guard(scope, stateRoot, isolated, create: false);
         if (!File.Exists(path) || BundleBuilder.LauncherLength(path) is < 64 or > 512L * 1024 * 1024 || !PackageSafety.HashEquals(PackageSafety.HashFile(path), hash))
@@ -81,7 +82,7 @@ public static class SharedInstallerHost
     private static IDisposable? Guard(string scope, string stateRoot, bool isolated, bool create)
     {
         var root = Root(scope, stateRoot, isolated); PackageSafety.EnsureNoReparsePoints(root);
-        if (!OperatingSystem.IsWindows() || isolated || scope != "machine") { if (create) Directory.CreateDirectory(root); return null; }
+        if (!OperatingSystem.IsWindows() || isolated || scope != "machine") { if (!OperatingSystem.IsWindows() && scope == "machine" && !isolated) UnixStateSecurity.Validate(root); if (create) Directory.CreateDirectory(root); return null; }
         var lease = MachineStateSecurity.Acquire(InstallerEngine.DefaultStateRoot("machine"), create);
         try
         {

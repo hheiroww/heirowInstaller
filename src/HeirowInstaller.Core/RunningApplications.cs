@@ -259,7 +259,7 @@ public static partial class RunningApplications
     private static IReadOnlyList<RunningApplication> Inspect(RunningApplicationTarget target, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (!OperatingSystem.IsWindows()) return [];
+        if (!OperatingSystem.IsWindows()) return InspectPortable(target, token);
         var resources = new HashSet<string>(target.AffectedResourceFiles.Where(File.Exists), StringComparer.OrdinalIgnoreCase);
         if (target.ExecutablePath is { } entry && File.Exists(entry)) resources.Add(entry);
         if (Directory.Exists(target.InstallDirectory))
@@ -353,6 +353,36 @@ public static partial class RunningApplications
             { found.Add(dependency with { CanRequestClose = false, CanForceClose = false, Kind = "manual" }); }
         }
         return found.OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.ProcessId).ToArray();
+    }
+
+    private static IReadOnlyList<RunningApplication> InspectPortable(RunningApplicationTarget target, CancellationToken token)
+    {
+        var images = target.OwnedApplicationImages.Concat(target.WaitOnlyExecutables).ToHashSet(InstallerPlatform.PathComparer);
+        var found = new List<RunningApplication>();
+        foreach (var process in Process.GetProcesses())
+            using (process)
+            {
+                token.ThrowIfCancellationRequested();
+                if (process.Id == Environment.ProcessId) continue;
+                try
+                {
+                    var image = process.MainModule?.FileName;
+                    if (image is null || !images.Contains(Path.GetFullPath(image))) continue;
+                    found.Add(new(process.Id, process.StartTime.ToUniversalTime().Ticks, image, Path.GetFileName(image), image, "application", false));
+                }
+                catch (Exception error) when (error is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException) { }
+            }
+        foreach (var dependency in target.WaitOnlyProcesses)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(dependency.ProcessId);
+                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == dependency.StartTimeUtcTicks && !found.Any(x => x.ProcessId == process.Id))
+                    found.Add(dependency with { CanRequestClose = false, CanForceClose = false });
+            }
+            catch (Exception error) when (error is ArgumentException or InvalidOperationException) { }
+        }
+        return found;
     }
 
     private static RunningApplication Manual(RestartManager.Candidate candidate) =>

@@ -26,7 +26,7 @@ public static partial class PackageSafety
         relative = NormalizeRelativePath(relative);
         var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var result = Path.GetFullPath(Path.Combine(fullRoot, relative.Replace('/', Path.DirectorySeparatorChar)));
-        if (!result.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        if (!result.StartsWith(fullRoot + Path.DirectorySeparatorChar, InstallerPlatform.PathComparison))
             throw new InvalidDataException("Package path escapes its destination.");
         EnsureNoReparsePoints(result);
         return result;
@@ -47,12 +47,15 @@ public static partial class PackageSafety
         {
             if (File.Exists(current) || Directory.Exists(current))
             {
-                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0 && !IsMacSystemAlias(current))
                     throw new IOException($"Installer paths may not traverse symbolic links or reparse points: {current}");
             }
             current = Path.GetDirectoryName(current);
         }
     }
+
+    private static bool IsMacSystemAlias(string path) => OperatingSystem.IsMacOS() && (path is "/var" or "/tmp" or "/etc") &&
+        new DirectoryInfo(path).ResolveLinkTarget(true)?.FullName == "/private" + path;
 
     public static void ValidateId(string id)
     {
@@ -62,7 +65,7 @@ public static partial class PackageSafety
     public static void ValidateManifest(PackageManifest manifest, bool requireHashes)
     {
         ValidateId(manifest.Id);
-        if (manifest.FormatVersion is not (1 or 2 or 3)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
+        if (manifest.FormatVersion is not (1 or 2 or 3 or 4)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
         if (string.IsNullOrWhiteSpace(manifest.Name) || string.IsNullOrWhiteSpace(manifest.Publisher))
             throw new InvalidDataException("Package name and publisher are required.");
         _ = PackageVersion.Parse(manifest.Version);
@@ -84,6 +87,10 @@ public static partial class PackageSafety
             var resolved = RunningApplicationTarget.ResolveResourceFile(resource.Path, Path.Combine(Path.GetTempPath(), "heirowInstaller-resource-validation"));
             if (!affectedResources.Add(resolved)) throw new InvalidDataException("Duplicate affected-resource file.");
         }
+        if (manifest.FormatVersion < 4 && (manifest.TargetRuntime is not null || manifest.Payload.Any(x => x.UnixMode is not null) || manifest.Shortcuts.Any(x => x.ArgumentList is not null)))
+            throw new InvalidDataException("Runtime binding, Unix permissions and shortcut argument lists require package format 4.");
+        if (manifest.Shortcuts.Any(x => x.ArgumentList is not null && (x.Arguments.Length != 0 || x.ArgumentList.Any(a => a is null || a.Contains('\0')))))
+            throw new InvalidDataException("Shortcut arguments must use either arguments or a valid argumentList.");
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (manifest.Payload.Count == 0) throw new InvalidDataException("Package has no payload files.");
         foreach (var file in manifest.Payload)
@@ -91,6 +98,8 @@ public static partial class PackageSafety
             file.Path = NormalizeRelativePath(file.Path);
             if (!paths.Add(file.Path)) throw new InvalidDataException($"Duplicate payload destination: {file.Path}");
             if (file.Feature is not null && !featureIds.Contains(file.Feature)) throw new InvalidDataException($"Unknown payload feature: {file.Feature}");
+            if (file.UnixMode is { } mode && (manifest.TargetPlatform == "windows" || mode < 0 || (mode & ~0x1ed) != 0))
+                throw new InvalidDataException("Unix modes allow owner rwx and group/other rx only; privileged and shared-write modes are forbidden.");
             if (file.Size < 0) throw new InvalidDataException("Payload sizes cannot be negative.");
             if (requireHashes && !HashPattern().IsMatch(file.Sha256)) throw new InvalidDataException($"Invalid SHA256 for {file.Path}");
         }

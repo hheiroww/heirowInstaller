@@ -152,8 +152,8 @@ internal sealed partial class InstallerScene
         Field("setup.target", Controller.TargetDirectory, Left, y + 137, BodyWidth - 121, value => Controller.TargetDirectory = value);
         Action("setup.browseTarget", "Browse", Width - 142, y + 137, 108, () =>
         {
-            using var picker = new System.Windows.Forms.FolderBrowserDialog { Description = "Choose installation folder", UseDescriptionForTitle = true, InitialDirectory = Controller.TargetDirectory };
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) { Controller.TargetDirectory = picker.SelectedPath; Controller.Notify(); }
+            using var picker = new DesktopFolderDialog { Description = "Choose installation folder", UseDescriptionForTitle = true, InitialDirectory = Controller.TargetDirectory };
+            if (picker.ShowDialog() == PickerResult.OK) { Controller.TargetDirectory = picker.SelectedPath; Controller.Notify(); }
         });
         var width = (BodyWidth - 16) / 2f;
         ScopeCard("user", "Just for me", "Uses your local application folder.\nUsually no administrator access is needed.", Left, y + 214, width);

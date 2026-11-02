@@ -41,6 +41,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WorkingDirectoryProbe", "te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HeirowInstaller.CodeSigning.Tests", "tests\HeirowInstaller.CodeSigning.Tests\HeirowInstaller.CodeSigning.Tests.csproj", "{F383979E-A9D4-411D-A7A0-4372B8C88FDF}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HeirowInstaller.CrossPlatform.Tests", "tests\HeirowInstaller.CrossPlatform.Tests\HeirowInstaller.CrossPlatform.Tests.csproj", "{738F1C66-690F-4B17-A7E4-993CA1DA9070}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -255,6 +257,18 @@ Global
 		{F383979E-A9D4-411D-A7A0-4372B8C88FDF}.Release|x64.Build.0 = Release|Any CPU
 		{F383979E-A9D4-411D-A7A0-4372B8C88FDF}.Release|x86.ActiveCfg = Release|Any CPU
 		{F383979E-A9D4-411D-A7A0-4372B8C88FDF}.Release|x86.Build.0 = Release|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Debug|x64.Build.0 = Debug|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Debug|x86.Build.0 = Debug|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Release|Any CPU.Build.0 = Release|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Release|x64.ActiveCfg = Release|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Release|x64.Build.0 = Release|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Release|x86.ActiveCfg = Release|Any CPU
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -277,5 +291,6 @@ Global
 		{442755E2-BBEA-4F57-94A8-1C51A7B870FC} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{AABC8C67-5EB6-4227-B1FC-4E9154649B42} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{F383979E-A9D4-411D-A7A0-4372B8C88FDF} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{738F1C66-690F-4B17-A7E4-993CA1DA9070} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

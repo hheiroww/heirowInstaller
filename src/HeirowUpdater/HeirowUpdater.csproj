@@ -1,15 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0-windows7.0</TargetFramework><OutputType>WinExe</OutputType><AssemblyName>heirowUpdater</AssemblyName>
-    <UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF><PlatformTarget>x64</PlatformTarget>
+    <TargetFramework>$(InstallerDesktopFramework)</TargetFramework><OutputType>WinExe</OutputType><AssemblyName>heirowUpdater</AssemblyName>
+    <UseWindowsForms Condition="'$(InstallerDesktopPlatform)' == 'Windows'">true</UseWindowsForms><UseWPF Condition="'$(InstallerDesktopPlatform)' == 'Windows'">true</UseWPF><PlatformTarget>AnyCPU</PlatformTarget>
     <ApplicationIcon>../../assets/heirowInstaller.ico</ApplicationIcon>
     <Description>SocketJack-powered application update companion for heirowInstaller.</Description>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/DesktopPlatform.cs" Link="DesktopPlatform.cs" /><ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" /></ItemGroup>
   <ItemGroup>
-    <PackageReference Include="ProjectZ" Version="$(ProjectZPackageVersion)" Condition="'$(UseLocalProjectZ)' != 'true'" />
-    <ProjectReference Include="$(ProjectZRoot)/Project Z Windows.vbproj" Condition="'$(UseLocalProjectZ)' == 'true'" />
+    <PackageReference Include="$(InstallerProjectZPackage)" Version="$(ProjectZPackageVersion)" Condition="'$(UseLocalProjectZ)' != 'true'" />
+    <ProjectReference Include="$(InstallerProjectZProject)" Condition="'$(UseLocalProjectZ)' == 'true'" />
     <EmbeddedResource Include="../../assets/heirowInstaller-256.png" LogicalName="HeirowUpdater.Assets.Logo.png" />
     <Content Include="../../assets/heirowInstaller.png" Link="Assets/heirowInstaller.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="../../assets/heirowInstaller.ico" Link="Assets/heirowInstaller.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

@@ -71,7 +71,7 @@ Namespace Global.SocketJack
                 Dim profile = document.RootElement
                 If Not Path.GetFullPath(profile.GetProperty("installDirectory").GetString()).Equals(root, StringComparison.OrdinalIgnoreCase) Then Throw New InvalidDataException("Updater root mismatch.")
                 Dim runtime As JsonElement
-                If Not profile.TryGetProperty("sharedRuntime", runtime) OrElse runtime.ValueKind = JsonValueKind.Null Then Return Path.Combine(root, "heirowUpdater.exe")
+                If Not profile.TryGetProperty("sharedRuntime", runtime) OrElse runtime.ValueKind = JsonValueKind.Null Then Return Path.Combine(root, "heirowUpdater" & If(OperatingSystem.IsWindows(), ".exe", ""))
                 Dim version = runtime.GetProperty("version").GetString(), hash = runtime.GetProperty("sha256").GetString()
                 Dim size = runtime.GetProperty("size").GetInt64()
                 Dim parsedVersion As System.Version = Nothing
@@ -80,8 +80,8 @@ Namespace Global.SocketJack
                 If scope <> "user" AndAlso scope <> "machine" Then Throw New InvalidDataException("Invalid updater scope.")
                 Dim isolatedValue As JsonElement
                 Dim isolated = profile.TryGetProperty("isolated", isolatedValue) AndAlso isolatedValue.GetBoolean()
-                Dim parent = If(isolated, Path.GetDirectoryName(Path.GetFullPath(profile.GetProperty("stateRoot").GetString())), If(scope = "machine", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "heirowInstaller", "state"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "state")))
-                Dim executable = Path.Combine(parent, ".updater-runtime", version & "-" & hash.ToLowerInvariant(), "heirowUpdater.exe")
+                Dim parent = If(isolated, Path.GetDirectoryName(Path.GetFullPath(profile.GetProperty("stateRoot").GetString())), DefaultStateRoot(scope))
+                Dim executable = Path.Combine(parent, ".updater-runtime", version & "-" & hash.ToLowerInvariant(), "heirowUpdater" & If(OperatingSystem.IsWindows(), ".exe", ""))
                 NoLinks(executable)
                 Using input = File.OpenRead(executable)
                     If input.Length <> size OrElse Not Convert.ToHexString(SHA256.HashData(input)).Equals(hash, StringComparison.OrdinalIgnoreCase) OrElse ReadFileVersion(executable) <> version Then Throw New CryptographicException("Updater runtime integrity failed.")
@@ -90,8 +90,18 @@ Namespace Global.SocketJack
             End Using
         End Function
 
+        Private Shared Function DefaultStateRoot(scope As String) As String
+            If OperatingSystem.IsWindows() Then Return If(scope = "machine", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "heirowInstaller", "state"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "state"))
+            If scope = "machine" Then Return If(OperatingSystem.IsMacOS(), "/Library/Application Support/SocketJack/heirowInstaller/state", "/var/lib/heirowInstaller/state")
+            Dim userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            Dim configured = Environment.GetEnvironmentVariable("XDG_STATE_HOME")
+            Dim state = If(OperatingSystem.IsMacOS(), Path.Combine(userHome, "Library", "Application Support"), If(Not String.IsNullOrEmpty(configured) AndAlso Path.IsPathFullyQualified(configured), configured, Path.Combine(userHome, ".local", "state")))
+            Return Path.Combine(state, "SocketJack", "heirowInstaller", "state")
+        End Function
+
         Private Shared Function ReadFileVersion(pathValue As String) As String
             ' Version metadata uses a native API that requires an extended path for long Windows filenames.
+            If Not OperatingSystem.IsWindows() Then Return "0.0.0"
             Dim absolute = Path.GetFullPath(pathValue)
             If OperatingSystem.IsWindows() AndAlso Not absolute.StartsWith("\\?\", StringComparison.Ordinal) Then
                 absolute = If(absolute.StartsWith("\\", StringComparison.Ordinal), "\\?\UNC\" & absolute.Substring(2), "\\?\" & absolute)
@@ -102,7 +112,7 @@ Namespace Global.SocketJack
         Private Shared Sub NoLinks(pathValue As String)
             Dim current = Path.GetFullPath(pathValue)
             While current IsNot Nothing
-                If (File.Exists(current) OrElse Directory.Exists(current)) AndAlso (File.GetAttributes(current) And FileAttributes.ReparsePoint) <> 0 Then Throw New IOException("Updater paths cannot follow links.")
+                If (File.Exists(current) OrElse Directory.Exists(current)) AndAlso (File.GetAttributes(current) And FileAttributes.ReparsePoint) <> 0 AndAlso Not (OperatingSystem.IsMacOS() AndAlso (current = "/var" OrElse current = "/tmp" OrElse current = "/etc") AndAlso New DirectoryInfo(current).ResolveLinkTarget(True)?.FullName = "/private" & current) Then Throw New IOException("Updater paths cannot follow links.")
                 current = Path.GetDirectoryName(current)
             End While
         End Sub

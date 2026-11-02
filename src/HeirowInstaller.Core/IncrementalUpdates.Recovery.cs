@@ -38,7 +38,7 @@ public sealed class FileTransactionRecoveryContext
         PackageManifest? oldManifest = null;
         if (previous is not null)
         {
-            if (previous.Id != package.Manifest.Id || previous.Scope != plan.Scope || !Path.GetFullPath(previous.InstallDirectory).Equals(installRoot, StringComparison.OrdinalIgnoreCase))
+            if (previous.Id != package.Manifest.Id || previous.Scope != plan.Scope || !Path.GetFullPath(previous.InstallDirectory).Equals(installRoot, InstallerPlatform.PathComparison))
                 throw new InvalidDataException("Recovery receipt differs from the verified installation target.");
             using var old = PackageReader.Open(previous.PackagePath);
             old.VerifySignature(previous.PublisherKeySha256, previous.PublisherKeySha256 is not null);
@@ -65,9 +65,9 @@ public sealed class FileTransactionRecoveryContext
         cached.VerifySignature(installed.PublisherKeySha256, requireSignature: true);
         if (!PackageSafety.HashEquals(IncrementalPackageIO.Hash(ReadManifest(installed.PackagePath)), transition.BaseManifestSha256))
             throw new CryptographicException("Installed repair metadata differs from the signed incremental base.");
-        var selected = (options.Features ?? installed.Features.Where(id => target.Features.Any(feature => feature.Id.Equals(id, StringComparison.OrdinalIgnoreCase))).ToList()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selected = (options.Features ?? installed.Features.Where(id => target.Features.Any(feature => feature.Id.Equals(id, InstallerPlatform.PathComparison))).ToList()).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var feature in target.Features.Where(feature => feature.Required)) selected.Add(feature.Id);
-        if (selected.Any(id => !target.Features.Any(feature => feature.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))) throw new InvalidDataException("Unknown incremental feature selection.");
+        if (selected.Any(id => !target.Features.Any(feature => feature.Id.Equals(id, InstallerPlatform.PathComparison)))) throw new InvalidDataException("Unknown incremental feature selection.");
         var plan = new InstallPlan
         {
             Manifest = target, InstallDirectory = installed.InstallDirectory, Scope = installed.Scope, Features = selected.ToList(),
@@ -97,8 +97,8 @@ public sealed class FileTransactionRecoveryContext
         {
             oldFiles.TryGetValue(path, out var old);
             newFiles.TryGetValue(path, out var next);
-            var authoredOld = oldManifest?.Payload.FirstOrDefault(file => file.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
-            if (old is not null && authoredOld is not null && (!PackageSafety.HashEquals(old.Sha256, authoredOld.Sha256) || !string.Equals(old.TargetRoot, authoredOld.TargetRoot, StringComparison.OrdinalIgnoreCase)))
+            var authoredOld = oldManifest?.Payload.FirstOrDefault(file => file.Path.Equals(path, InstallerPlatform.PathComparison));
+            if (old is not null && authoredOld is not null && (!PackageSafety.HashEquals(old.Sha256, authoredOld.Sha256) || !string.Equals(old.TargetRoot, authoredOld.TargetRoot, InstallerPlatform.PathComparison)))
                 throw new CryptographicException("Recovery receipt ownership differs from the signed base manifest.");
             long? oldSize = authoredOld?.Size;
             var rootId = next?.TargetRoot ?? old?.TargetRoot;
@@ -134,7 +134,7 @@ public sealed class FileTransactionRecoveryContext
             var next = SharedUpdaterRuntime.GetReferenceBinding(manifest, identity, stateRoot, plan.UpdateCompanionEnabled);
             var old = oldManifest is not null && previous is not null ? SharedUpdaterRuntime.GetReferenceBinding(oldManifest, previous, stateRoot,
                 oldManifest.UpdateCompanion is { } definition && previous.Features.Contains(definition.Feature, StringComparer.OrdinalIgnoreCase)) : new SharedUpdaterReferenceBinding(next.Path, null);
-            if (!Path.GetFullPath(old.Path).Equals(Path.GetFullPath(next.Path), StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("A shared runtime reference cannot relocate during file recovery.");
+            if (!Path.GetFullPath(old.Path).Equals(Path.GetFullPath(next.Path), InstallerPlatform.PathComparison)) throw new InvalidDataException("A shared runtime reference cannot relocate during file recovery.");
             files["metadata:shared-reference"] = new()
             {
                 Location = "external", Path = "shared-updater/reference.json", TargetRootDirectory = Path.GetDirectoryName(next.Path), TargetRelativePath = Path.GetFileName(next.Path),
@@ -172,7 +172,7 @@ public sealed class FileTransactionRecoveryContext
     {
         if (!RequireExactBase) return;
         if (installed is null || installed.Id != ProductId || installed.Scope != Scope || installed.Version != BaseVersion ||
-            !Path.GetFullPath(installed.InstallDirectory).Equals(Path.GetFullPath(InstallDirectory), StringComparison.OrdinalIgnoreCase) ||
+            !Path.GetFullPath(installed.InstallDirectory).Equals(Path.GetFullPath(InstallDirectory), InstallerPlatform.PathComparison) ||
             !IncrementalPackageIO.NullableHashEquals(installed.PublisherKeySha256, PublisherKeySha256))
             throw new InvalidDataException("The installed incremental base changed while the update was being prepared.");
         using var package = PackageReader.Open(installed.PackagePath);

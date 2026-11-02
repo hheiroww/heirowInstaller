@@ -10,7 +10,7 @@ public static class UpdateCompanionControl
     public static async Task<bool> StopAsync(UpdateCompanionConfiguration configuration, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!OperatingSystem.IsWindows()) return false;
+        if (!OperatingSystem.IsWindows()) RequestPortableStop(configuration.InstallDirectory);
         EventWaitHandle? signal = null;
         var directory = SharedUpdaterRuntime.ApplicationStateDirectory(configuration);
         var timeout = Stopwatch.StartNew();
@@ -19,7 +19,7 @@ public static class UpdateCompanionControl
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (signal is null) EventWaitHandle.TryOpenExisting(GetStopEventName(configuration.InstallDirectory), out signal);
+                if (OperatingSystem.IsWindows() && signal is null) EventWaitHandle.TryOpenExisting(GetStopEventName(configuration.InstallDirectory), out signal);
                 signal?.Set();
                 try
                 {
@@ -37,13 +37,25 @@ public static class UpdateCompanionControl
                         var legacy = PackageSafety.UnderRoot(configuration.InstallDirectory, "heirowUpdater.exe");
                         if (File.Exists(legacy)) using (new FileStream(legacy, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
                     }
-                    return signal is not null; // Other apps may still execute the same immutable shared runtime.
+                    return !OperatingSystem.IsWindows() || signal is not null; // Other apps may still execute the same immutable shared runtime.
                 }
                 catch (IOException) when (timeout.Elapsed < TimeSpan.FromSeconds(10)) { await Task.Delay(100, cancellationToken); }
                 catch (IOException error) { throw new IOException("This application's updater did not stop in time. Close its update window and retry.", error); }
             }
         }
         finally { signal?.Dispose(); }
+    }
+
+    public static string PortableStopPath(string installDirectory)
+    {
+        var root = Path.GetFullPath(installDirectory).TrimEnd(Path.DirectorySeparatorChar);
+        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root))).ToLowerInvariant();
+        return PackageSafety.UnderRoot(Path.Combine(InstallerPlatform.UserState, "SocketJack", "heirowUpdater", "signals"), key + ".stop");
+    }
+    private static void RequestPortableStop(string installDirectory)
+    {
+        var path = PortableStopPath(installDirectory); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "stop");
     }
 
     public static string GetStopEventName(string installDirectory)
@@ -59,7 +71,7 @@ public static class UpdateCompanionControl
     {
         cancellationToken.ThrowIfCancellationRequested();
         var executable = PackageSafety.UnderRoot(installDirectory, relativeExecutablePath);
-        if (!OperatingSystem.IsWindows()) return false;
+        if (!OperatingSystem.IsWindows()) { RequestPortableStop(installDirectory); return true; }
         if (!EventWaitHandle.TryOpenExisting(GetStopEventName(installDirectory), out var signal)) return false;
         using (signal) signal.Set();
         var timeout = Stopwatch.StartNew();

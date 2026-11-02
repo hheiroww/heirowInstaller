@@ -316,8 +316,8 @@ internal sealed partial class InstallerScene : Scene
 
     private void BrowsePackage()
     {
-        using var picker = new System.Windows.Forms.OpenFileDialog { Title = "Open a heirowInstaller package", Filter = "heirowInstaller packages|*.hinst;*.exe|All files|*.*", CheckFileExists = true };
-        if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK) _ = Controller.OpenPackageAsync(picker.FileName);
+        using var picker = new DesktopOpenFileDialog { Title = "Open a heirowInstaller package", Filter = "heirowInstaller packages|*.hinst;*.exe|All files|*.*", CheckFileExists = true };
+        if (picker.ShowDialog() == PickerResult.OK) _ = Controller.OpenPackageAsync(picker.FileName);
     }
 
     private static string SizeLabel(long bytes) => bytes >= 1024 * 1024 ? $"{bytes / (1024d * 1024):0.0} MB" : $"{Math.Max(bytes, 0) / 1024d:0.0} KB";

@@ -25,8 +25,7 @@ internal static class ApplicationCommands
         }
         if (command == "stop")
         {
-            var found = EventWaitHandle.TryOpenExisting(UpdateCompanionControl.GetStopEventName(configuration.InstallDirectory), out var signal);
-            if (found && signal is not null) { using (signal) signal.Set(); }
+            var found = await UpdateCompanionControl.StopAsync(configuration, token);
             Console.WriteLine(JsonSerializer.Serialize(new { status = found ? "stop-requested" : "not-watching", productId = configuration.ProductId }, InstallerJson.Options));
             return 0;
         }

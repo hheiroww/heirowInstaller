@@ -42,7 +42,7 @@ internal sealed partial class InstallerGame : Game
             SynchronizeWithVerticalRetrace = true,
             GraphicsProfile = GraphicsProfile.HiDef
         };
-        if ((arguments.WizardSmokeDirectory is not null || arguments.SmokeDirectory is not null || arguments.PerformanceSmokeDirectory is not null) && arguments.Isolated)
+        if (OperatingSystem.IsWindows() && (arguments.WizardSmokeDirectory is not null || arguments.SmokeDirectory is not null || arguments.PerformanceSmokeDirectory is not null) && arguments.Isolated)
         {
             // Owned test rendering uses internal scene input, never the user's foreground window.
             var handle = Window.Handle;
@@ -65,7 +65,10 @@ internal sealed partial class InstallerGame : Game
         quality.AntiAliasingSamples = 16;
         quality.Filtering = TextureFiltering.Anisotropic16x;
         quality.PpiPerfectText = true;
-        manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(980, 760), UseHardwareInput = arguments.PerformanceSmokeDirectory is null };
+        manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(980, 760) };
+#if WINDOWS
+        manager.UseHardwareInput = arguments.PerformanceSmokeDirectory is null;
+#endif
         MainScene = new InstallerScene(manager, this, arguments);
         manager.AddScene("installer", MainScene);
         manager.ActiveScene = MainScene;
@@ -175,6 +178,7 @@ internal sealed partial class InstallerGame : Game
                 using var file = File.Create(request.Path);
                 target.SaveAsPng(file, width, height);
                 request.Completion?.SetResult(true);
+                if (arguments.RenderSmoke) Exit();
             }
             catch (Exception error) { request.Completion?.SetException(error); throw; }
         }

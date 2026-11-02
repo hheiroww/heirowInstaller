@@ -250,6 +250,7 @@ public static class ApplicationUpdater
         {
             if (supplied)
             {
+                if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Close the existing updater before changing application credentials on Linux or macOS.");
                 if (PendingIsAlive(ReadState(statePath))) return Result("update-staged");
                 if (!installedHost) throw new InvalidOperationException("Session delivery requires the verified installed updater process.");
                 ApplicationSessionRelay.Reply acknowledgement;
@@ -320,7 +321,7 @@ public static class ApplicationUpdater
             }
             stopMonitor = new ApplicationStopMonitor(configuration, resetForOwner: true, cancellationToken);
             cancellationToken = stopMonitor.Token;
-            if (installedHost)
+            if (installedHost && OperatingSystem.IsWindows())
             {
                 sessionRelay = new(ApplicationSessionRelay.Binding(configuration), trustedImage, async (replacement, requestId, token) =>
                 {

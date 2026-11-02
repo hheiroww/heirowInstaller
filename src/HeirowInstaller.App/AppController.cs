@@ -82,7 +82,7 @@ internal sealed partial class AppController : IDisposable
     {
         this.game = game;
         this.arguments = arguments;
-        OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe");
+        OutputPath = Path.Combine(Settings.DefaultOutputDirectory, OperatingSystem.IsWindows() ? "application-Setup.exe" : "application.hinst");
         AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
     }
 
@@ -94,7 +94,7 @@ internal sealed partial class AppController : IDisposable
             var settings = Task.Run(DesktopSettings.Load);
             if (IsWizard) await settings;
             else await Task.WhenAll(RefreshInstalledAsync(), RefreshUpdaterAvailabilityAsync(), RestoreAccountAsync(renew: true, Cancellation!.Token), settings);
-            await game.OnUiAsync(() => { Settings = settings.Result; OutputPath = Path.Combine(Settings.DefaultOutputDirectory, "application-Setup.exe"); End("Ready when you are", "Open a package or check your installed applications for updates."); });
+            await game.OnUiAsync(() => { Settings = settings.Result; OutputPath = Path.Combine(Settings.DefaultOutputDirectory, OperatingSystem.IsWindows() ? "application-Setup.exe" : "application.hinst"); End("Ready when you are", "Open a package or check your installed applications for updates."); });
         }
         catch (Exception error) { await ErrorAsync("Could not load applications", error); }
     }

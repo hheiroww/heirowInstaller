@@ -1,10 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows7.0</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
-    <UseWPF>true</UseWPF>
-    <PlatformTarget>x64</PlatformTarget>
+    <TargetFramework>$(InstallerDesktopFramework)</TargetFramework>
+    <UseWindowsForms Condition="'$(InstallerDesktopPlatform)' == 'Windows'">true</UseWindowsForms>
+    <UseWPF Condition="'$(InstallerDesktopPlatform)' == 'Windows'">true</UseWPF>
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>heirowInstaller</AssemblyName>
@@ -12,12 +12,13 @@
     <ApplicationIcon Condition="Exists('../../assets/heirowInstaller.ico')">../../assets/heirowInstaller.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/DesktopPlatform.cs" Link="DesktopPlatform.cs" />
     <Compile Include="../../templates/bootstrap/HeirowUpdaterBootstrap.cs" Link="Bootstrap/HeirowUpdaterBootstrap.cs" />
     <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
     <ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" />
     <ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" />
-    <PackageReference Include="ProjectZ" Version="$(ProjectZPackageVersion)" Condition="'$(UseLocalProjectZ)' != 'true'" />
-    <ProjectReference Include="$(ProjectZRoot)/Project Z Windows.vbproj" Condition="'$(UseLocalProjectZ)' == 'true'" />
+    <PackageReference Include="$(InstallerProjectZPackage)" Version="$(ProjectZPackageVersion)" Condition="'$(UseLocalProjectZ)' != 'true'" />
+    <ProjectReference Include="$(InstallerProjectZProject)" Condition="'$(UseLocalProjectZ)' == 'true'" />
     <Content Include="../../assets/heirowInstaller.png" Link="Assets/heirowInstaller.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('../../assets/heirowInstaller.png')" />
     <Content Include="../../assets/heirowInstaller.ico" Link="Assets/heirowInstaller.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('../../assets/heirowInstaller.ico')" />
   </ItemGroup>

@@ -23,11 +23,9 @@ public sealed class InstallerEngine
             if (!this.modules.TryAdd(module.Id, module)) throw new ArgumentException("Duplicate installer module: " + module.Id, nameof(modules));
         }
     }
-    public static string DefaultStateRoot(string scope = "user") => scope == "machine"
-        ? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData), "heirowInstaller", "state")
-        : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "state");
+    public static string DefaultStateRoot(string scope = "user") => InstallerPlatform.DefaultStateRoot(scope);
 
-    public static bool IsElevated => !OperatingSystem.IsWindows() || new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+    public static bool IsElevated => InstallerPlatform.IsElevated;
 
     public static IReadOnlyList<InstalledProduct> ListInstalled(string? stateRoot = null)
     {
@@ -63,8 +61,7 @@ public sealed class InstallerEngine
             throw new ArgumentException("Isolated validation requires explicit --state-root and --target directories.");
         var manifest = package.Manifest;
         PackageSafety.ValidateManifest(manifest, true);
-        if (PackagePlatform.Normalize(manifest.TargetPlatform) != "windows")
-            throw new PlatformNotSupportedException("This installer runtime installs Windows packages. Use a runtime for the package's declared target platform.");
+        PackagePlatform.RequireCurrentHost(manifest);
         package.VerifySignature(options.TrustedPublisherKeySha256, options.RequireSignature);
         var scope = options.Scope ?? manifest.Scope;
         if (scope is not ("user" or "machine")) throw new InvalidDataException("Scope must be user or machine.");
@@ -88,9 +85,7 @@ public sealed class InstallerEngine
         var reportedMsiDirectory = manifest.LegacyMsi is not null ? WindowsIntegration.GetMsiInstallLocation(previous?.MsiProductCode ?? manifest.LegacyMsi.ProductCode) : null;
         var target = options.TargetDirectory ?? reportedMsiDirectory ?? previous?.InstallDirectory;
         if (string.IsNullOrWhiteSpace(target)) target = manifest.InstallDirectory;
-        if (string.IsNullOrWhiteSpace(target)) target = scope == "machine"
-            ? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ProgramFiles), manifest.Id)
-            : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "Programs", manifest.Id);
+        if (string.IsNullOrWhiteSpace(target)) target = InstallerPlatform.DefaultInstallDirectory(manifest.Id, scope);
         target = Path.GetFullPath(Expand(target, ""));
         if (Path.GetDirectoryName(target) is null) throw new InvalidDataException("A volume root cannot be an installation directory.");
         PackageSafety.EnsureNoReparsePoints(target);
@@ -284,7 +279,8 @@ public sealed class InstallerEngine
                     }
                     // An incremental package reconstructs its verified repair cache locally;
                     // unchanged installed files retain their bytes and timestamps.
-                    if (!File.Exists(destination) || !PackageSafety.HashEquals(PackageSafety.HashFile(destination), file.Sha256))
+                    if (!File.Exists(destination) || !PackageSafety.HashEquals(PackageSafety.HashFile(destination), file.Sha256) ||
+                        !OperatingSystem.IsWindows() && file.UnixMode is { } mode && (int)File.GetUnixFileMode(destination) != mode)
                         transaction.ReplaceFile(destination, PackageSafety.UnderRoot(extracted, file.Path));
                     product.Files.Add(new() { Path = file.Path, Sha256 = file.Sha256, OriginalBackup = original, TargetRoot = file.TargetRoot });
                     progress?.Report(new("install", file.Path, i + 1, plan.Files.Count));
@@ -315,7 +311,7 @@ public sealed class InstallerEngine
             if (!File.Exists(product.PackagePath)) transaction.ReplaceFile(product.PackagePath, package.PackagePath);
             else if (!PackageSafety.HashEquals(PackageSafety.HashFile(product.PackagePath), digest)) throw new IOException("Cached package hash mismatch.");
             product.UninstallerPath ??= CacheUninstaller(options, cache, transaction, plan.Scope, package.Manifest) ?? previous?.UninstallerPath;
-            product.RegisteredProduct = options.RegisterProduct && !options.Isolated && (!(product.IsMsi || product.IsExecutable) || plan.UpdateCompanionEnabled) && product.UninstallerPath is not null;
+            product.RegisteredProduct = OperatingSystem.IsWindows() && options.RegisterProduct && !options.Isolated && (!(product.IsMsi || product.IsExecutable) || plan.UpdateCompanionEnabled) && product.UninstallerPath is not null;
             var registrationValues = product.RegisteredProduct ? WindowsIntegration.ProductRegistrationValues(product, root, package.Manifest) : null;
             if (migration is not null) await migration.PlanNativeMetadataAsync(registrationValues, cancellationToken);
             if (product.RegisteredProduct) WindowsIntegration.RegisterProduct(product, root, transaction, package.Manifest, registrationValues);
@@ -807,6 +803,8 @@ public sealed class InstallerEngine
     }
 
     internal static string Expand(string value, string installDirectory) => System.Environment.ExpandEnvironmentVariables(value
+        .Replace("{Home}", InstallerPlatform.UserHome, StringComparison.OrdinalIgnoreCase)
+        .Replace("{UserData}", InstallerPlatform.UserData, StringComparison.OrdinalIgnoreCase)
         .Replace("{InstallDir}", installDirectory, StringComparison.OrdinalIgnoreCase)
         .Replace("{LocalAppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), StringComparison.OrdinalIgnoreCase)
         .Replace("{AppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), StringComparison.OrdinalIgnoreCase)
@@ -818,7 +816,11 @@ public sealed class InstallerEngine
     {
         var root = Path.GetFullPath(options.StateRoot ?? DefaultStateRoot(scope));
         PackageSafety.EnsureNoReparsePoints(root);
-        if (OperatingSystem.IsWindows() && scope == "machine" && !options.Isolated) MachineStateSecurity.ValidateExistingRoot(root);
+        if (scope == "machine" && !options.Isolated)
+        {
+            if (OperatingSystem.IsWindows()) MachineStateSecurity.ValidateExistingRoot(root);
+            else UnixStateSecurity.Validate(root);
+        }
         return root;
     }
     private static IDisposable? GuardProductState(InstalledProduct product, InstallOptions options)
@@ -840,7 +842,7 @@ public sealed class InstallerEngine
         try { return new(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException ex) { throw new IOException($"Another installer operation is running for {id}.", ex); }
     }
-    private static bool IsWithin(string child, string parent) => child.Equals(parent, StringComparison.OrdinalIgnoreCase) || child.StartsWith(parent.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    private static bool IsWithin(string child, string parent) => child.Equals(parent, InstallerPlatform.PathComparison) || child.StartsWith(parent.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, InstallerPlatform.PathComparison);
     private static void RemoveEmptyDirectories(string current, string boundary)
     {
         while (IsWithin(current, boundary))

@@ -1,3 +1,4 @@
+#if WINDOWS
 using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -482,3 +483,5 @@ internal static class ElevatedInstallWorker
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out int pid);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out int pid);
 }
+
+#endif

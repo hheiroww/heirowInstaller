@@ -137,7 +137,8 @@ internal sealed class InstallTransaction : IDisposable
         if (File.Exists(destination))
         {
             var actual = PackageSafety.HashFile(destination);
-            if (PackageSafety.HashEquals(actual, PackageSafety.HashFile(backup))) return;
+            if (PackageSafety.HashEquals(actual, PackageSafety.HashFile(backup)) &&
+                (OperatingSystem.IsWindows() || File.GetUnixFileMode(destination) == File.GetUnixFileMode(backup))) return;
             if (afterHash is null || !PackageSafety.HashEquals(actual, afterHash))
                 throw new IOException("A transaction destination changed before rollback; its original backup was preserved.");
         }
