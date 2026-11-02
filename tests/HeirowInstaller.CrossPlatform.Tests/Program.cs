@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HeirowInstaller.Core;
+using HeirowUpdater.SocketJack;
 
 var root = Path.Combine(Path.GetTempPath(), "heirowinstaller-portable-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -42,7 +43,7 @@ try
     Check(Path.IsPathFullyQualified(InstallerPlatform.DefaultInstallDirectory(manifest.Id, "user")), "Install root must be absolute.");
     var engine = new InstallerEngine();
     var options = new InstallOptions { StateRoot = Path.Combine(root, "state"), TargetDirectory = Path.Combine(root, "installed"),
-        Isolated = true, RequireSignature = true, TrustedPublisherKeySha256 = package.PublisherKeySha256, RegisterProduct = false };
+        InstallerPath = Path.Combine(root, "absent-fixture-host"), Isolated = true, RequireSignature = true, TrustedPublisherKeySha256 = package.PublisherKeySha256, RegisterProduct = false };
     await engine.InstallAsync(package, options); checks++;
     var installedEntry = Path.Combine(options.TargetDirectory, entry);
     Check(File.ReadAllText(installedEntry).StartsWith("#!/bin/sh"), "Verified payload must be installed.");
@@ -53,6 +54,14 @@ try
         Check(await app.StandardOutput.ReadToEndAsync() == "portable app", "Installed app must actually execute.");
         await app.WaitForExitAsync();
         File.SetUnixFileMode(installedEntry, (UnixFileMode)420);
+        using var cancel = new CancellationTokenSource();
+        try
+        {
+            await engine.InstallAsync(package, options, new CallbackProgress(p => { if (p.Phase == "install" && p.Message == entry) cancel.Cancel(); }), cancel.Token);
+            throw new Exception("Cancellation must roll back permission repair.");
+        }
+        catch (OperationCanceledException) { checks++; }
+        Check((int)File.GetUnixFileMode(installedEntry) == 420, "Rollback must restore permissions even when the file bytes are identical.");
     }
     File.WriteAllText(Path.Combine(options.TargetDirectory, "data.txt"), "damaged");
     await engine.RepairAsync(manifest.Id, options); checks++;
@@ -92,10 +101,47 @@ try
         Reject<IOException>(() => PackageSafety.UnderRoot(link, entry));
         Directory.Delete(link);
     }
+    if (args is ["--updater", var updaterPath])
+    {
+        manifest.Shortcuts = [];
+        var updaterName = "heirowUpdater" + InstallerPlatform.ExecutableSuffix;
+        File.Copy(updaterPath, Path.Combine(source, updaterName));
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Path.Combine(source, updaterName), (UnixFileMode)493);
+        manifest.UpdateUrl = "https://example.com/portable-fixture/update.json";
+        manifest.Features = [new() { Id = "updates", Name = "Updates", Default = true }];
+        manifest.UpdateCompanion = new() { ExecutablePath = updaterName, RuntimeMode = "shared", UpdateMode = "files" };
+        manifest.Payload = [new() { Source = entry, Path = entry }, new() { Source = updaterName, Path = updaterName, Feature = "updates" }];
+        var runtimePackage = Build("4.0.0");
+        options.Isolated = true;
+        using var runtimeReader = PackageReader.Open(runtimePackage);
+        await engine.InstallAsync(runtimeReader, options);
+        var configuration = ApplicationUpdater.ReadConfiguration(Path.Combine(options.TargetDirectory, "heirowUpdater.json"));
+        var resolved = ApplicationUpdater.ResolveExecutable(configuration);
+        StandaloneRuntimeInspector.RequireEmbeddedRuntime(resolved); checks++;
+        StandaloneRuntimeInspector.RequireTarget(resolved, InstallerPlatform.RuntimeIdentifier); checks++;
+        using (var updater = Process.Start(new ProcessStartInfo(resolved) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, ArgumentList = { "--help" } })!)
+        {
+            var output = updater.StandardOutput.ReadToEndAsync(); var error = updater.StandardError.ReadToEndAsync();
+            await updater.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30)); await Task.WhenAll(output, error);
+            Check(updater.ExitCode == 0 && output.Result.Contains("heirowUpdater"), "The pooled self-contained updater must actually execute.");
+        }
+        var monitor = new ApplicationStopMonitor(configuration, resetForOwner: true);
+        var stopping = UpdateCompanionControl.StopAsync(configuration);
+        try { await Task.Delay(Timeout.InfiniteTimeSpan, monitor.Token).WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (OperationCanceledException) { checks++; }
+        monitor.Dispose();
+        Check(await stopping, "Cross-process maintenance stop must complete after the observer exits.");
+        await engine.UninstallAsync(manifest.Id, options);
+        if (!OperatingSystem.IsWindows()) File.Delete(UpdateCompanionControl.PortableStopPath(configuration.InstallDirectory));
+    }
     Console.WriteLine($"Passed {checks} cross-platform checks on {InstallerPlatform.RuntimeIdentifier}.");
 }
+
 finally
 {
     Environment.SetEnvironmentVariable("XDG_DATA_HOME", previousXdg);
     if (Directory.Exists(root)) Directory.Delete(root, true);
 }
+
+internal sealed class CallbackProgress(Action<InstallProgress> callback) : IProgress<InstallProgress>
+{ public void Report(InstallProgress value) => callback(value); }

@@ -40,18 +40,30 @@ jobs:
           dotnet-version: 10.0.x
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libopenal1 zenity
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libopenal1 zenity mesa-utils
       - name: Build the native setup archive
         shell: pwsh
         run: ./scripts/Build-Portable.ps1 -Runtime ${{ matrix.runtime }} -Version 0.0.0 -SkipTests
+      - name: Verify the pooled native updater
+        shell: pwsh
+        run: |
+          $updater = Get-ChildItem -Path 'artifacts/portable/0.0.0/${{ matrix.runtime }}/.build/*/payload/heirowUpdater' -File | Select-Object -First 1
+          if (-not $updater) { throw 'The published updater was not found.' }
+          dotnet run --project tests/HeirowInstaller.CrossPlatform.Tests -c Release -- --updater $updater.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Native shared updater checks failed.' }
       - name: Render the Linux desktop
         if: runner.os == 'Linux'
-        run: xvfb-run -a dotnet run --project src/HeirowInstaller.App -c Release -- --render-smoke artifacts/portable/desktop.png
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a dotnet run --project src/HeirowInstaller.App -c Release -- --isolated --state-root artifacts/portable/smoke-state --target artifacts/portable/installed --render-smoke artifacts/portable/desktop.png
       - name: Render the macOS desktop
         if: runner.os == 'macOS'
-        run: dotnet run --project src/HeirowInstaller.App -c Release -- --render-smoke artifacts/portable/desktop.png
+        run: dotnet run --project src/HeirowInstaller.App -c Release -- --isolated --state-root artifacts/portable/smoke-state --target artifacts/portable/installed --render-smoke artifacts/portable/desktop.png
       - name: Retain the native desktop capture
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.runtime }}
-          path: artifacts/portable/desktop.png
+          path: |
+            artifacts/portable/desktop.png
+            artifacts/portable/smoke-state/Logs/*.log

@@ -26,7 +26,7 @@ function Invoke-DotNet([string[]]$Arguments) {
     & dotnet @Arguments
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($Arguments[0]) failed." }
 }
-if (-not $SkipTests) { Invoke-DotNet @('run','--project',(Join-Path $projectRoot 'tests/HeirowInstaller.CrossPlatform.Tests'),'-c','Release') }
+if (-not $SkipTests) { Invoke-DotNet -Arguments @('run','--project',(Join-Path $projectRoot 'tests/HeirowInstaller.CrossPlatform.Tests'),'-c','Release') }
 foreach ($project in @('HeirowInstaller.App','HeirowInstaller.Cli','HeirowUpdater')) {
     $published = Join-Path $build $project
     $arguments = @('publish',(Join-Path $projectRoot "src/$project/$project.csproj"),'-c','Release','-r',$Runtime,'--self-contained','true',
