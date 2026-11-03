@@ -116,6 +116,7 @@ public static class ApplicationUpdater
                 "update", installed.Features, installed.Scope, installed.Isolated);
             configuration.AffectedResourceFiles = runningTarget.AffectedResourceFiles.ToList();
             configuration.VerifiedOwnedApplicationImages = runningTarget.OwnedApplicationImages.ToArray();
+            configuration.VerifiedInspectionResourceFiles = runningTarget.InspectionResourceFiles;
         }
         configuration.CurrentVersion = installed.Version;
         configuration.Features = installed.Features;

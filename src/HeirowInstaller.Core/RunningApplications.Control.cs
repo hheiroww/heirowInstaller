@@ -10,7 +10,9 @@ public static partial class RunningApplications
 {
     private static readonly object InspectionLock = new();
     private static Scan? activeScan;
-    private static readonly TimeSpan InspectionTimeout = TimeSpan.FromSeconds(3);
+    // Registering a legitimate signed payload with Restart Manager can take
+    // tens of seconds on a busy machine. Caller cancellation remains immediate.
+    private static readonly TimeSpan InspectionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CloseAttemptTimeout = TimeSpan.FromSeconds(8);
     private static Func<RunningApplicationTarget, IReadOnlyList<RunningApplication>>? inspectionTestProbe;
     private sealed record Scan(string Key, Task<IReadOnlyList<RunningApplication>> Task);
@@ -24,6 +26,7 @@ public static partial class RunningApplications
         var watch = Stopwatch.StartNew();
         var key = string.Join('\n', new[] { target.InstallDirectory, target.ExecutablePath ?? "" }
             .Concat(target.AffectedResourceFiles).Concat(target.WaitOnlyExecutables).Concat(target.ExcludedExecutables)
+            .Concat(target.OwnedApplicationImages).Concat(target.InspectionResourceFiles ?? ["<legacy-directory-discovery>"])
             .Concat(target.WaitOnlyProcesses.Select(p => $"{p.ProcessId}:{p.StartTimeUtcTicks}:{p.ExecutablePath}")));
         while (true)
         {

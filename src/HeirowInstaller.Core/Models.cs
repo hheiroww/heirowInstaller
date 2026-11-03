@@ -87,6 +87,9 @@ public sealed class UpdateCompanionConfiguration
     /// <summary>Runtime-only identities derived from the verified installed package, never from writable profile data.</summary>
     [JsonIgnore]
     public IReadOnlyList<string> VerifiedOwnedApplicationImages { get; set; } = [];
+    /// <summary>Runtime-only inspection files rebound to the verified signed installed payload.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string>? VerifiedInspectionResourceFiles { get; set; }
     public int FormatVersion { get; set; } = 1;
     public string ProductId { get; set; } = "";
     public string Name { get; set; } = "";

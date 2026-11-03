@@ -514,6 +514,17 @@ public sealed class InstallerEngine
     private static async Task EnsureApplicationsClosedAsync(InstallPlan plan, InstallOptions options, string operation,
         IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
+        // Removed or deselected payloads can still be loaded. Check the old signed
+        // inventory as well as the incoming one without scanning saved backup trees.
+        var previous = FindInstalled(plan.Manifest.Id, options, plan.Scope);
+        if (previous is not null)
+        {
+            using var package = PackageReader.Open(previous.PackagePath);
+            package.VerifySignature(previous.PublisherKeySha256, previous.PublisherKeySha256 is not null);
+            await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromManifest(package.Manifest,
+                previous.InstallDirectory, operation, previous.Features, previous.Scope, previous.Isolated),
+                options.RunningApplicationsPrompt, cancellationToken);
+        }
         await RunningApplications.EnsureClosedAsync(RunningApplicationTarget.FromPlan(plan, operation, options.Isolated), options.RunningApplicationsPrompt, cancellationToken);
         progress?.Report(new("applications", "Applications closed. Continuing " + operation + ".", 1, 1));
     }

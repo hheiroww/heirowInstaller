@@ -39,13 +39,16 @@ public sealed class RunningApplicationTarget
     public string InstallDirectory { get; }
     public string? ExecutablePath { get; }
     public IReadOnlyList<string> AffectedResourceFiles { get; }
+    /// <summary>Exact selected package files to inspect; null preserves legacy directory discovery.</summary>
+    public IReadOnlyList<string>? InspectionResourceFiles { get; }
     public IReadOnlyList<string> WaitOnlyExecutables { get; } = [];
     public IReadOnlyList<RunningApplication> WaitOnlyProcesses { get; private init; } = [];
     internal IReadOnlySet<string> ExcludedExecutables { get; }
     public IReadOnlySet<string> OwnedApplicationImages { get; }
 
     private RunningApplicationTarget(string id, string name, string operation, string directory, string entryPoint,
-        IEnumerable<string> resources, IEnumerable<string> excluded, IEnumerable<string>? ownedImages = null)
+        IEnumerable<string> resources, IEnumerable<string> excluded, IEnumerable<string>? ownedImages = null,
+        IEnumerable<string>? inspectionResources = null)
     {
         PackageSafety.ValidateId(id);
         ProductId = id; ProductName = name; Operation = operation;
@@ -62,6 +65,8 @@ public sealed class RunningApplicationTarget
         ExcludedExecutables = excluded.ToHashSet(StringComparer.OrdinalIgnoreCase);
         OwnedApplicationImages = (ownedImages ?? []).Select(ValidateResourceFile)
             .Concat(ExecutablePath is null ? [] : [ExecutablePath]).ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        InspectionResourceFiles = inspectionResources?.Select(ValidateResourceFile).Concat(AffectedResourceFiles)
+            .Concat(OwnedApplicationImages).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     public static RunningApplicationTarget FromPlan(InstallPlan plan, string operation = "install") =>
@@ -86,19 +91,24 @@ public sealed class RunningApplicationTarget
         return new(manifest.Id, manifest.Name, operation, installDirectory, manifest.EntryPoint,
             manifest.AffectedResources.Where(x => InstallerEngine.IsSelected(x.Feature, selected))
                 .Select(x => ResolveResourceFile(x.Path, installDirectory))
-                .Concat(owned), excluded, owned);
+                .Concat(owned), excluded, owned,
+            manifest.Payload.Count == 0 || manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null
+                ? null : manifest.Payload.Where(file => IsResourceExtension(file.Path) &&
+                InstallerEngine.IsSelected(file.Feature, selected) && !SharedUpdaterRuntime.IsRuntimePayload(manifest, file.Path))
+                .Select(file => PayloadDestinations.Resolve(manifest, installDirectory, scope, isolated, file)));
     }
 
     public static RunningApplicationTarget FromConfiguration(UpdateCompanionConfiguration configuration, string operation = "update") =>
         new(configuration.ProductId, configuration.Name, operation, configuration.InstallDirectory, configuration.EntryPoint,
             configuration.AffectedResourceFiles, [PackageSafety.UnderRoot(configuration.InstallDirectory, "heirowUpdater.exe")],
-            configuration.VerifiedOwnedApplicationImages);
+            configuration.VerifiedOwnedApplicationImages, configuration.VerifiedInspectionResourceFiles);
 
     private RunningApplicationTarget(RunningApplicationTarget source, IReadOnlyList<string> waitOnly)
     {
         ProductId = source.ProductId; ProductName = source.ProductName; Operation = source.Operation;
         InstallDirectory = source.InstallDirectory; ExecutablePath = source.ExecutablePath;
         AffectedResourceFiles = source.AffectedResourceFiles; ExcludedExecutables = source.ExcludedExecutables;
+        InspectionResourceFiles = source.InspectionResourceFiles;
         OwnedApplicationImages = source.OwnedApplicationImages;
         WaitOnlyExecutables = waitOnly;
         WaitOnlyProcesses = source.WaitOnlyProcesses;
@@ -190,13 +200,16 @@ public static partial class RunningApplications
         CancellationToken cancellationToken = default)
     {
         var retry = false;
+        var inspectionTimedOut = false;
         IReadOnlyList<RunningApplication> applications = [];
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var inspectionTimedOut = false;
-            try { applications = await InspectAsync(target, cancellationToken); }
-            catch (TimeoutException) when (prompt is not null) { inspectionTimedOut = true; }
+            if (!inspectionTimedOut)
+            {
+                try { applications = await InspectAsync(target, cancellationToken); }
+                catch (TimeoutException) when (prompt is not null) { inspectionTimedOut = true; }
+            }
             if (applications.Count == 0 && !inspectionTimedOut)
             {
                 // A short quiet interval catches an application restarting during the transition.
@@ -213,6 +226,7 @@ public static partial class RunningApplications
             var choice = await prompt(new(target.ProductId, target.ProductName, target.Operation, applications, retry, message)
                 { InspectionTimedOut = inspectionTimedOut }, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            inspectionTimedOut = false;
             if (choice == RunningApplicationsChoice.Cancel)
                 throw new OperationCanceledException("Installation cancelled before changing application files.", cancellationToken);
             retry = true;
@@ -229,8 +243,10 @@ public static partial class RunningApplications
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             attempt.CancelAfter(CloseAttemptTimeout);
             try { await CloseGracefullyAsync(target, applications, attempt.Token); }
-            catch (TimeoutException) { }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+            // An eight-second close attempt already used its entire inspection
+            // budget. Return to consent immediately instead of starting another scan.
+            catch (TimeoutException) { inspectionTimedOut = true; }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { inspectionTimedOut = true; }
         }
     }
 
@@ -260,9 +276,11 @@ public static partial class RunningApplications
     {
         token.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) return InspectPortable(target, token);
-        var resources = new HashSet<string>(target.AffectedResourceFiles.Where(File.Exists), StringComparer.OrdinalIgnoreCase);
+        var resources = new HashSet<string>((target.InspectionResourceFiles ?? target.AffectedResourceFiles).Where(File.Exists), StringComparer.OrdinalIgnoreCase);
         if (target.ExecutablePath is { } entry && File.Exists(entry)) resources.Add(entry);
-        if (Directory.Exists(target.InstallDirectory))
+        // Signed payload paths describe the files maintenance can change. Historical
+        // backups and unrelated runtimes under the same root are not update resources.
+        if (target.InspectionResourceFiles is null && Directory.Exists(target.InstallDirectory))
         {
             var enumeration = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
             foreach (var file in Directory.EnumerateFiles(target.InstallDirectory, "*", enumeration))
@@ -274,6 +292,7 @@ public static partial class RunningApplications
                 if (resources.Count > 8192) throw new InvalidDataException("The application has too many executable resources to inspect safely.");
             }
         }
+        if (resources.Count > 8192) throw new InvalidDataException("The application has too many executable resources to inspect safely.");
         var candidates = resources.Count == 0 ? new Dictionary<int, RestartManager.Candidate>() : RestartManager.Query(resources.ToArray());
         // Explicit executable matching also covers very short-lived startup transitions before RM reports the image.
         foreach (var executable in target.WaitOnlyExecutables.Concat(target.OwnedApplicationImages).Distinct(StringComparer.OrdinalIgnoreCase))

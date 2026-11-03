@@ -7,8 +7,14 @@ if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("These
 if (args.Length != 1) throw new ArgumentException("Pass the freshly published RunningApplicationProbe directory.");
 var source = Path.GetFullPath(args[0]);
 if (!File.Exists(Path.Combine(source, "RunningApplicationProbe.exe"))) throw new FileNotFoundException("Publish the owned fixture first.");
-var root = Path.Combine(Path.GetTempPath(), "heirowInstaller-process-tests-" + Guid.NewGuid().ToString("N"));
+var configuredRoot = Environment.GetEnvironmentVariable("HEIROWINSTALLER_TEST_OUTPUT_ROOT");
+var root = configuredRoot is null
+    ? Path.Combine(Path.GetTempPath(), "heirowInstaller-process-tests-" + Guid.NewGuid().ToString("N"))
+    : Path.GetFullPath(configuredRoot);
+if (Directory.Exists(root)) throw new IOException("Process acceptance requires a fresh owned output directory.");
+var keepOutputs = Environment.GetEnvironmentVariable("HEIROWINSTALLER_KEEP_TEST_OUTPUTS") == "1";
 Directory.CreateDirectory(root);
+Console.WriteLine("Process acceptance output: " + root);
 var checks = 0;
 void Check(bool condition, string description)
 {
@@ -56,6 +62,60 @@ try
     var oldProfile = JsonSerializer.Deserialize<UpdateCompanionConfiguration>("{}", InstallerJson.Options)!;
     Check(oldProfile.AffectedResourceFiles.Count == 0, "existing updater profiles preserve empty resource default");
     Check(!JsonSerializer.Serialize(new InstallOptions { RunningApplicationsPrompt = (_, _) => Task.FromResult(RunningApplicationsChoice.Cancel) }, InstallerJson.Options).Contains("runningApplicationsPrompt"), "runtime consent callback is never serialized");
+
+    var boundedManifest = Manifest();
+    boundedManifest.Features = [new() { Id = "optional", Name = "Optional plugin", Default = false }];
+    boundedManifest.Payload = [new() { Path = "RunningApplicationProbe.exe" }, new() { Path = "Required.dll" },
+        new() { Path = "Optional.dll", Feature = "optional" }, new() { Path = "settings.json" }];
+    boundedManifest.AffectedResources = [new() { Path = "{app}\\External.vst3", Feature = "optional" }];
+    var boundedTarget = RunningApplicationTarget.FromManifest(boundedManifest, authoringRoot);
+    Check(boundedTarget.InspectionResourceFiles is { } boundedFiles && boundedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase)
+        .SetEquals([Path.Combine(authoringRoot, "RunningApplicationProbe.exe"), Path.Combine(authoringRoot, "Required.dll")]),
+        "verified payload limits inspection to selected executable resources");
+    var optionalTarget = RunningApplicationTarget.FromManifest(boundedManifest, authoringRoot, features: ["optional"]);
+    Check(optionalTarget.InspectionResourceFiles is { } optionalFiles && optionalFiles.Contains(Path.Combine(authoringRoot, "Optional.dll")) &&
+        optionalFiles.Contains(Path.Combine(authoringRoot, "External.vst3")) && !optionalFiles.Contains(Path.Combine(authoringRoot, "settings.json")),
+        "selected executable payload and exact declared plugin resources are inspected together");
+    Check(RunningApplicationTarget.FromManifest(Manifest(), authoringRoot).InspectionResourceFiles is null,
+        "metadata-free legacy targets retain conservative root discovery");
+    var opaqueMsi = Manifest(); opaqueMsi.Payload = [new() { Path = "backend.msi" }]; opaqueMsi.LegacyMsi = new();
+    Check(RunningApplicationTarget.FromManifest(opaqueMsi, authoringRoot).InspectionResourceFiles is null,
+        "opaque MSI backend targets retain discovery of files absent from the wrapper payload");
+    var opaqueExecutable = Manifest(); opaqueExecutable.Payload = [new() { Path = "backend.exe" }]; opaqueExecutable.LegacyExecutable = new();
+    Check(RunningApplicationTarget.FromManifest(opaqueExecutable, authoringRoot).InspectionResourceFiles is null,
+        "opaque executable backend targets retain discovery of files absent from the wrapper payload");
+    var boundedProfile = new UpdateCompanionConfiguration { ProductId = "process-safety-fixture", Name = "Fixture",
+        InstallDirectory = authoringRoot, EntryPoint = "RunningApplicationProbe.exe", VerifiedInspectionResourceFiles = boundedTarget.InspectionResourceFiles };
+    Check(RunningApplicationTarget.FromConfiguration(boundedProfile).InspectionResourceFiles!.SequenceEqual(boundedTarget.InspectionResourceFiles!),
+        "verified runtime payload resources survive configuration target construction");
+    Check(!JsonSerializer.Serialize(boundedProfile, InstallerJson.Options).Contains("verifiedInspectionResourceFiles", StringComparison.OrdinalIgnoreCase) &&
+        JsonSerializer.Deserialize<UpdateCompanionConfiguration>("{\"verifiedInspectionResourceFiles\":[\"forged.dll\"]}", InstallerJson.Options)!.VerifiedInspectionResourceFiles is null,
+        "writable updater profiles cannot supply inspection scope authority");
+
+    var scopedRoot = Path.Combine(root, "signed-payload-scope"); Directory.CreateDirectory(scopedRoot);
+    await using (var current = await Probe.Start(source, scopedRoot, "App", true))
+    await using (var backup = await Probe.Start(source, scopedRoot, "App.backup-20000101-000000-0123456789abcdef0123456789abcdef", true))
+    {
+        var scopedManifest = Manifest(); scopedManifest.EntryPoint = "App/RunningApplicationProbe.exe";
+        scopedManifest.Payload = [new() { Path = "App/RunningApplicationProbe.exe" }, new() { Path = "App/RunningApplicationProbe.dll" }];
+        var target = RunningApplicationTarget.FromManifest(scopedManifest, scopedRoot);
+        var snapshot = await RunningApplications.InspectAsync(target);
+        Check(snapshot.Count == 1 && snapshot[0].ProcessId == current.Process.Id && snapshot[0].CanForceClose,
+            "signed current payload detects the active app without inspecting preserved backup images");
+        Check(current.Requests == 0 && backup.Requests == 0 && !backup.Process.HasExited,
+            "bounded payload inspection preserves both current and backup processes");
+        var helperManifest = Manifest(); helperManifest.EntryPoint = "App/AnotherApplication.exe";
+        helperManifest.Payload = [new() { Path = "App/AnotherApplication.exe" }, new() { Path = "App/RunningApplicationProbe.exe" },
+            new() { Path = "App/RunningApplicationProbe.dll" }];
+        var helperSnapshot = await RunningApplications.InspectAsync(RunningApplicationTarget.FromManifest(helperManifest, scopedRoot));
+        Check(helperSnapshot.Count == 1 && helperSnapshot[0].ProcessId == current.Process.Id &&
+            !helperSnapshot[0].CanRequestClose && !helperSnapshot[0].CanForceClose,
+            "inspected payload helpers never gain entrypoint closure authority");
+        var fallback = Manifest(); fallback.EntryPoint = scopedManifest.EntryPoint;
+        var legacySnapshot = await RunningApplications.InspectAsync(RunningApplicationTarget.FromManifest(fallback, scopedRoot));
+        Check(legacySnapshot.Any(x => x.ProcessId == current.Process.Id) && legacySnapshot.Any(x => x.ProcessId == backup.Process.Id),
+            "legacy discovery still inspects executable resources throughout its unscoped installation root");
+    }
 
     await using (var app = await Probe.Start(source, root, "precise", true))
     await using (var unrelated = await Probe.Start(source, root, "same-name-other-root", true))
@@ -270,9 +330,11 @@ try
 finally
 {
     // This test owns one freshly generated direct child of TEMP; a running refusing fixture is never force-terminated for cleanup.
-    if (Path.GetDirectoryName(root)?.Equals(Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) == true &&
+    if (!keepOutputs && configuredRoot is null &&
+        Path.GetDirectoryName(root)?.Equals(Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) == true &&
         Path.GetFileName(root).StartsWith("heirowInstaller-process-tests-", StringComparison.Ordinal))
         try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    else Console.WriteLine("Retained process acceptance output: " + root);
 }
 
 sealed class Probe : IAsyncDisposable
