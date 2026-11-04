@@ -86,8 +86,17 @@ internal static class DirectX11Fallback
         // Reparse it from the caller's directory, exactly as the primary did.
         var start = new ProcessStartInfo(host) { UseShellExecute = false, WorkingDirectory = Environment.CurrentDirectory, CreateNoWindow = true };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
-        start.Environment["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = Path.Combine(Path.GetDirectoryName(host)!, "bundle");
+        start.Environment["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = BundleExtractionRoot(host);
         return start;
+    }
+
+    internal static string BundleExtractionRoot(string host)
+    {
+        // The native .NET host adds its own executable/bundle-id directories.
+        // Keep those outside the 64-character version key to avoid MAX_PATH.
+        var cacheRoot = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(host)))
+            ?? throw new InvalidDataException("The verified graphics cache root is unavailable.");
+        return Path.Combine(cacheRoot, "bundle");
     }
 
     internal static string[] BuildChildArguments(string[] original, string? package, string? packageHash, string primary, string primaryHash, int parentId, long parentTicks)
@@ -192,9 +201,9 @@ internal static class DirectX11Fallback
                 finally { if (File.Exists(temporary)) { PackageSafety.EnsureNoReparsePoints(temporary); File.Delete(temporary); } }
             }
             PackageSafety.EnsureNoReparsePoints(path);
+            ProtectDirectory(BundleExtractionRoot(path));
             var lease = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (!MatchesIdentity(identity, lease.Length, Hash(lease))) { lease.Dispose(); throw new CryptographicException("The cached DirectX 11 host changed."); }
-            ProtectDirectory(Path.Combine(folder, "bundle"));
             return lease; // Held through child exit; no replacement or deletion can race launch.
         }
         finally { gate.ReleaseMutex(); }

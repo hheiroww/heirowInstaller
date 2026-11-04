@@ -111,12 +111,21 @@ internal static partial class Program
             Check(form.Controller.Stage == SetupStage.Destination && form.Controller.Scope == "machine"
                 && form.Controller.TargetDirectory == custom,
                 "editing the actual CPU destination marks a custom choice and preserves it when selected features promote machine scope");
-            if (form.Controller.Failed)
-                Check(form.Controller.StatusDetail.StartsWith("Unsafe machine installer state at ", StringComparison.Ordinal),
-                    "normal machine-scope planning still rejects an ordinary user-owned fixture namespace instead of weakening protected-state validation");
+            InstallPlan? expectedPlan = null;
+            UnauthorizedAccessException? expectedStateError = null;
+            using (var package = PackageReader.Open(edited.Package))
+            {
+                try { expectedPlan = new InstallerEngine().Plan(package, form.Controller.Options()); }
+                catch (UnauthorizedAccessException error) when (error.Message.StartsWith("Unsafe machine installer state at ", StringComparison.Ordinal))
+                { expectedStateError = error; }
+            }
+            if (expectedStateError is not null)
+                Check(form.Controller.Failed && form.Controller.StatusDetail == expectedStateError.Message,
+                    "normal destination planning preserves Core's exact protected-state guard for the actual fixture namespace");
             else
-                Check(form.Controller.Plan?.InstallDirectory == custom,
-                    "a trusted machine-state namespace plans the exact custom UI destination");
+                Check(!form.Controller.Failed && expectedPlan is { Scope: "machine" } && expectedPlan.InstallDirectory == custom
+                    && form.Controller.Plan?.Scope == expectedPlan.Scope && form.Controller.Plan.InstallDirectory == expectedPlan.InstallDirectory,
+                    "a namespace accepted independently by Core retains the same valid custom destination in the wizard plan");
             // This normal-argument UI fixture deliberately starts without a
             // target override. Its temporary namespace is not production
             // machine state. Validate the same chosen target using Core's

@@ -48,6 +48,8 @@ After acceptance and free-space review, `-UseRawBuild` with the same `BuildDirec
 validates the exact source, configuration, signing policy, runtime and file inventory
 before packaging. Compiler caches can be reused. Existing published inputs, payloads
 and release outputs are preserved and rejected rather than merged or overwritten.
+`CompilerArtifactsDirectory` can retain the same compiler caches when a corrected
+raw build uses a fresh `BuildDirectory`; previous raw executables remain intact.
 
 The companion is extracted into a protected current-user cache keyed by its
 digest. Reparse points, wrong ownership, extra writers, changed bytes and changed

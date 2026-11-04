@@ -21,6 +21,15 @@ jobs:
         run: ./scripts/Test-ProcessSafety.ps1 -OutputDirectory artifacts/ci/process-safety
       - name: Native Project-Z application
         run: dotnet build src/HeirowInstaller.App/HeirowInstaller.App.csproj -c Release --nologo
+      - name: Windowless DX11 renderer and primary worker handoff
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'graphics-handoff'
+          ./scripts/Build.ps1 -BuildOnly -SkipTests -OutputDirectory (Join-Path $root 'release') -BuildDirectory (Join-Path $root 'raw')
+          $primary = Join-Path $root 'raw/app/heirowInstaller.exe'
+          ./scripts/Test-GraphicsHandoff.ps1 -LauncherPath $primary -ExpectedLauncherSha256 (Get-FileHash -LiteralPath $primary -Algorithm SHA256).Hash -OutputDirectory (Join-Path $root 'acceptance')
       - name: CLI
         run: dotnet build src/HeirowInstaller.Cli/HeirowInstaller.Cli.csproj -c Release --nologo
 

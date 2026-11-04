@@ -6,6 +6,7 @@ param(
     [string]$Version,
     [string]$OutputDirectory,
     [string]$BuildDirectory,
+    [string]$CompilerArtifactsDirectory,
     [switch]$BuildOnly,
     [switch]$UseRawBuild,
     [string]$SigningKey,
@@ -81,6 +82,7 @@ function Invoke-DotNet([string[]]$Arguments) {
 if (-not $SkipTests) { & (Join-Path $PSScriptRoot 'Test.ps1') -Configuration $Configuration -PackageCache $PackageCache }
 if ($BuildDirectory) { $buildDirectory = [IO.Path]::GetFullPath($BuildDirectory) }
 else { $buildDirectory = Join-Path $OutputDirectory ('.build/' + [Guid]::NewGuid().ToString('N')) }
+$compilerRoot = if ($CompilerArtifactsDirectory) { [IO.Path]::GetFullPath($CompilerArtifactsDirectory) } else { Join-Path $buildDirectory 'work' }
 $appDirectory = Join-Path $buildDirectory 'app'
 $cliDirectory = Join-Path $buildDirectory 'cli'
 $updaterDirectory = Join-Path $buildDirectory 'updater'
@@ -95,7 +97,7 @@ foreach ($publishedOutput in @($appDirectory,$cliDirectory,$updaterDirectory,$dx
 $rawReceiptPath = Join-Path $buildDirectory 'raw-build.json'
 if (!$UseRawBuild) {
 $cliArguments = @('publish',(Join-Path $projectRoot 'src/HeirowInstaller.Cli/HeirowInstaller.Cli.csproj'),'-c',$Configuration,'-r',$Runtime,'--self-contained','true',
-    '--artifacts-path',(Join-Path $buildDirectory 'work/cli'),
+    '--artifacts-path',(Join-Path $compilerRoot 'cli'),
     '-p:PublishSingleFile=true','-p:IncludeNativeLibrariesForSelfExtract=true','-p:IncludeAllContentForSelfExtract=true',
     '-p:EnableCompressionInSingleFile=true','-p:CopyOutputSymbolsToPublishDirectory=false','-p:DebugType=embedded',"-p:Version=$Version",'-o',$cliDirectory,'--nologo',
     "-p:SourceRevisionId=$sourceCommit", "-p:RepositoryCommit=$sourceCommit",'-m:1','-nodeReuse:false','-p:UseSharedCompilation=false')
@@ -109,7 +111,7 @@ if ($windowsSigningArguments.Count) {
 }
 $dx11Runtime = & (Join-Path $PSScriptRoot 'Resolve-ProjectZDx11Runtime.ps1') -OutputDirectory (Join-Path $buildDirectory 'dependencies') -Vsix $ProjectZVsix
 $dx11Arguments = @('publish',(Join-Path $projectRoot 'src/HeirowInstaller.App/HeirowInstaller.App.csproj'),'-c',$Configuration,'-r',$Runtime,'--self-contained','true',
-    '--artifacts-path',(Join-Path $buildDirectory 'work/dx11'),
+    '--artifacts-path',(Join-Path $compilerRoot 'dx11'),
     '-p:InstallerGraphicsBackend=DirectX11',"-p:InstallerProjectZDx11RuntimePath=$($dx11Runtime.path)",
     '-p:PublishSingleFile=true','-p:IncludeNativeLibrariesForSelfExtract=true','-p:IncludeAllContentForSelfExtract=true',
     '-p:EnableCompressionInSingleFile=true','-p:CopyOutputSymbolsToPublishDirectory=false','-p:DebugType=embedded',"-p:Version=$Version",'-o',$dx11Directory,'--nologo',
@@ -117,7 +119,7 @@ $dx11Arguments = @('publish',(Join-Path $projectRoot 'src/HeirowInstaller.App/He
 if ($PackageCache) { $dx11Arguments += "-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
 Invoke-DotNet -Arguments $dx11Arguments
 $dx11Executable = Join-Path $dx11Directory 'heirowInstaller.exe'
-& (Join-Path $PSScriptRoot 'Test-RuntimeSize.ps1') -Project (Join-Path $projectRoot 'src/HeirowInstaller.App/HeirowInstaller.App.csproj') -PublishedExecutable $dx11Executable -AssetsPath (Join-Path $buildDirectory 'work/dx11/obj/HeirowInstaller.App/project.assets.json')
+& (Join-Path $PSScriptRoot 'Test-RuntimeSize.ps1') -Project (Join-Path $projectRoot 'src/HeirowInstaller.App/HeirowInstaller.App.csproj') -PublishedExecutable $dx11Executable -AssetsPath (Join-Path $compilerRoot 'dx11/obj/HeirowInstaller.App/project.assets.json')
 if ($windowsSigningArguments.Count) {
     & $signingCli sign $dx11Executable @windowsSigningArguments
     if ($LASTEXITCODE -ne 0) { throw 'DX11 fallback Windows code signing failed.' }
@@ -125,7 +127,7 @@ if ($windowsSigningArguments.Count) {
 foreach ($project in @(@('src/HeirowInstaller.App/HeirowInstaller.App.csproj',$appDirectory),@('src/HeirowUpdater/HeirowUpdater.csproj',$updaterDirectory))) {
     $backendWork = if ($project[0] -like '*HeirowInstaller.App*') { 'native' } else { 'updater' }
     $publishArguments = @('publish',(Join-Path $projectRoot $project[0]),'-c',$Configuration,'-r',$Runtime,'--self-contained','true',
-        '--artifacts-path',(Join-Path $buildDirectory ('work/' + $backendWork)),
+        '--artifacts-path',(Join-Path $compilerRoot $backendWork),
         '-p:PublishSingleFile=true','-p:IncludeNativeLibrariesForSelfExtract=true','-p:IncludeAllContentForSelfExtract=true',
         '-p:EnableCompressionInSingleFile=true','-p:CopyOutputSymbolsToPublishDirectory=false','-p:DebugType=embedded',"-p:Version=$Version",'-o',$project[1],'--nologo',
         '-m:1','-nodeReuse:false','-p:UseSharedCompilation=false')
@@ -139,7 +141,7 @@ foreach ($project in @(@('src/HeirowInstaller.App/HeirowInstaller.App.csproj',$a
         $executableName = if ($project[0] -like '*HeirowInstaller.App*') { 'heirowInstaller.exe' } else { 'heirowUpdater.exe' }
         $maximumBytes = if ($project[0] -like '*HeirowInstaller.App*') { 90MB + (Get-Item -LiteralPath $dx11Executable).Length } else { 90MB }
         $projectName = [IO.Path]::GetFileNameWithoutExtension($project[0])
-        & (Join-Path $PSScriptRoot 'Test-RuntimeSize.ps1') -Project (Join-Path $projectRoot $project[0]) -PublishedExecutable (Join-Path $project[1] $executableName) -MaximumBytes $maximumBytes -AssetsPath (Join-Path $buildDirectory ('work/' + $backendWork + '/obj/' + $projectName + '/project.assets.json'))
+        & (Join-Path $PSScriptRoot 'Test-RuntimeSize.ps1') -Project (Join-Path $projectRoot $project[0]) -PublishedExecutable (Join-Path $project[1] $executableName) -MaximumBytes $maximumBytes -AssetsPath (Join-Path $compilerRoot ($backendWork + '/obj/' + $projectName + '/project.assets.json'))
     }
 }
 $launcher = Join-Path $appDirectory 'heirowInstaller.exe'
@@ -158,7 +160,7 @@ $rawFiles = @(foreach ($directory in @($appDirectory,$cliDirectory,$updaterDirec
         [ordered]@{path=$_.FullName;bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
 })
-[ordered]@{version=$Version;sourceCommit=$sourceCommit;configuration=$Configuration;runtime=$Runtime;windowsSigning=$WindowsSigning;windowsSigningArguments=$windowsSigningArguments;dx11Runtime=$dx11Runtime;files=$rawFiles} |
+[ordered]@{version=$Version;sourceCommit=$sourceCommit;configuration=$Configuration;runtime=$Runtime;windowsSigning=$WindowsSigning;windowsSigningArguments=$windowsSigningArguments;compilerArtifactsDirectory=$compilerRoot;dx11Runtime=$dx11Runtime;files=$rawFiles} |
     ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rawReceiptPath -Encoding utf8NoBOM
 } else {
     $rawBuild = Get-Content -LiteralPath $rawReceiptPath -Raw | ConvertFrom-Json
