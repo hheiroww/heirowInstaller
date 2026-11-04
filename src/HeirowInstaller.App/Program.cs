@@ -30,7 +30,18 @@ internal static class Program
             }
             DesktopPlatform.Initialize();
             Task? startupCompanion = null;
-            using (var game = new InstallerGame(options)) { game.Run(); startupCompanion = game.StartupCompanion; }
+            InstallerGame? game = null;
+            GraphicsStartup.Run(
+                hardware: () =>
+                {
+                    using var candidate = new InstallerGame(options);
+                    game = candidate;
+                    candidate.Run();
+                    startupCompanion = candidate.StartupCompanion;
+                },
+                software: () => RunSoftwareDesktop(options),
+                contentStarted: () => game?.ContentLoadingStarted == true,
+                windows: OperatingSystem.IsWindows(), forceSoftware: options.SoftwareRendering);
             // The window is disposed before this bounded shutdown grace period.
             // Startup verification never delays creating or drawing the UI.
             startupCompanion?.Wait(TimeSpan.FromSeconds(3));
@@ -46,6 +57,16 @@ internal static class Program
                 DesktopPlatform.ShowError($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}");
             return 1;
         }
+    }
+
+    private static void RunSoftwareDesktop(AppArguments options)
+    {
+#if WINDOWS
+        using var form = new CpuInstallerForm(options);
+        System.Windows.Forms.Application.Run(form);
+#else
+        throw new PlatformNotSupportedException("The CPU-rendered compatibility wizard requires Windows.");
+#endif
     }
 
     private static int Maintain(string[] args, AppArguments options)
@@ -92,6 +113,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal bool RenderSmoke { get; init; }
     internal string? WizardSmokeDirectory { get; init; }
     internal string? PerformanceSmokeDirectory { get; init; }
+    internal bool SoftwareRendering { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
     {
         if (ExpectedProductId is not null && !package.Manifest.Id.Equals(ExpectedProductId, StringComparison.OrdinalIgnoreCase))
@@ -110,12 +132,13 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? trustedKey = null, selfUpdateFeed = null, selfUpdateReport = null; var requireSignature = false;
         List<string> legacyArguments = []; string? logPath = null;
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
-        var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; string? wizardSmoke = null, performanceSmoke = null;
+        var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; var softwareRendering = false; string? wizardSmoke = null, performanceSmoke = null;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
             switch (args[i].ToLowerInvariant())
             {
+                case "--software-rendering": softwareRendering = true; break;
                 case "--render-smoke": capture = Path.GetFullPath(Value()); renderSmoke = true; break;
                 case "--capture": capture = Path.GetFullPath(Value()); break;
                 case "--ui-smoke": smoke = Path.GetFullPath(Value()); break;
@@ -188,6 +211,6 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             !Uri.TryCreate(selfUpdateFeed, UriKind.Absolute, out var smokeUri) || !smokeUri.IsLoopback || smokeUri.Scheme is not ("http" or "https")))
             throw new ArgumentException("Self-update acceptance requires an explicit isolated state, target, report, and loopback feed.");
         return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
-        { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke };
+        { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke, SoftwareRendering = softwareRendering };
     }
 }

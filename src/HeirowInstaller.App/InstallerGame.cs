@@ -8,7 +8,7 @@ using ProjectZ.Shared.Drawing;
 
 namespace HeirowInstaller.App;
 
-internal sealed partial class InstallerGame : Game
+internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
 {
     private readonly GraphicsDeviceManager graphics;
     private readonly ConcurrentQueue<Action> actions = new();
@@ -22,6 +22,10 @@ internal sealed partial class InstallerGame : Game
     private bool automaticCapture;
     private bool startupStarted;
     internal Task? StartupCompanion { get; private set; }
+    internal bool ContentLoadingStarted { get; private set; }
+    string IInstallerDesktopHost.Title { set => Window.Title = value; }
+    void IInstallerDesktopHost.Enqueue(Action action) => Enqueue(action);
+    Task IInstallerDesktopHost.OnUiAsync(Action action) => OnUiAsync(action);
     private NavigationCapture? navigationCapture;
 
     public InstallerGame(AppArguments arguments)
@@ -55,6 +59,7 @@ internal sealed partial class InstallerGame : Game
 
     protected override void LoadContent()
     {
+        ContentLoadingStarted = true;
         spriteBatch = new SpriteBatch(GraphicsDevice);
         var resources = new ContentContainer(Content, GraphicsDevice);
         resources.LoadVectorFontsOnly();

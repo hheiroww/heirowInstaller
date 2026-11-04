@@ -14,7 +14,7 @@ internal sealed record ActivityEntry(DateTimeOffset Time, string Title, string D
 
 internal sealed partial class AppController : IDisposable
 {
-    private readonly InstallerGame game;
+    private readonly IInstallerDesktopHost game;
     private readonly AppArguments arguments;
     private readonly InstallerEngine engine = new();
     private PublisherSession? publisherSession;
@@ -78,12 +78,12 @@ internal sealed partial class AppController : IDisposable
     internal event Action? Changed;
     internal event Action? ProgressChanged;
 
-    internal AppController(InstallerGame game, AppArguments arguments)
+    internal AppController(IInstallerDesktopHost game, AppArguments arguments)
     {
         this.game = game;
         this.arguments = arguments;
         OutputPath = Path.Combine(Settings.DefaultOutputDirectory, OperatingSystem.IsWindows() ? "application-Setup.exe" : "application.hinst");
-        AddActivity("Desktop ready", "Project-Z native graphics · 16× AA · 16× AF");
+        AddActivity("Desktop ready", "Choose an application package to review its installation settings.");
     }
 
     internal async Task InitializeDesktopAsync()
@@ -156,7 +156,7 @@ internal sealed partial class AppController : IDisposable
                 PackagePath = Path.GetFullPath(path);
                 Manifest = metadata;
                 WizardArtworkPath = loaded.Artwork;
-                if (IsWizard) game.Window.Title = metadata.Name + " Setup";
+                if (IsWizard) game.Title = metadata.Name + " Setup";
                 LicenseText = loaded.License;
                 LicenseAccepted = arguments.AcceptLicense;
                 Features.Clear();
@@ -207,7 +207,7 @@ internal sealed partial class AppController : IDisposable
 
     internal void NextStage() => _ = NextStageAsync();
 
-    private async Task NextStageAsync()
+    internal async Task NextStageAsync()
     {
         if (Manifest is null || Busy) return;
         if (Stage == SetupStage.Review) { await InstallAsync(); return; }

@@ -12,6 +12,7 @@
     <ApplicationIcon Condition="Exists('../../assets/heirowInstaller.ico')">../../assets/heirowInstaller.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="HeirowInstaller.GraphicsFallback.Tests" />
     <Compile Include="../Shared/DesktopPlatform.cs" Link="DesktopPlatform.cs" />
     <Compile Include="../../templates/bootstrap/HeirowUpdaterBootstrap.cs" Link="Bootstrap/HeirowUpdaterBootstrap.cs" />
     <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />

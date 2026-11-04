@@ -44,7 +44,7 @@ internal sealed partial class AppController
                 if (MaintenanceOperation == "uninstall") OpenApplicationOnFinish = false;
                 Features.Clear(); foreach (var feature in product.Features) Features.Add(feature);
                 Plan = loaded.Plan;
-                game.Window.Title = product.Name + " Setup";
+                game.Title = product.Name + " Setup";
                 End(MaintenanceOperation == "repair" ? "Ready to repair" : "Ready to uninstall", product.Name + " " + product.Version);
             });
             if (arguments.MaintenanceConfirmed || arguments.CloseOnComplete && MaintenanceOperation == "repair")
