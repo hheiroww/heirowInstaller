@@ -12,9 +12,16 @@ internal static class GraphicsStartup
     /// </summary>
     internal static void Run(Action hardware, Action software, Func<bool> contentStarted,
         bool windows, bool forceSoftware = false)
+        => Run(hardware, () => null, software, contentStarted, windows, forceSoftware);
+
+    // The alternate callback runs a separately compiled WindowsDX process. A
+    // reserved pre-content graphics status alone permits the final CPU path.
+    internal static int? Run(Action hardware, Func<int?> directX11, Action software, Func<bool> contentStarted,
+        bool windows, bool forceSoftware = false)
     {
         ArgumentNullException.ThrowIfNull(hardware);
         ArgumentNullException.ThrowIfNull(software);
+        ArgumentNullException.ThrowIfNull(directX11);
         ArgumentNullException.ThrowIfNull(contentStarted);
 
         if (forceSoftware)
@@ -22,7 +29,7 @@ internal static class GraphicsStartup
             if (!windows)
                 throw new PlatformNotSupportedException("CPU presentation is available on Windows only.");
             software();
-            return;
+            return null;
         }
 
         try
@@ -33,8 +40,11 @@ internal static class GraphicsStartup
         {
             // Never retry an installation, content load, or software failure. Only the
             // presentation callback is replaced, and it is invoked at most once.
-            software();
+            var exit = directX11();
+            if (exit is null || exit == DirectX11Fallback.GraphicsStartupFailed) software();
+            else return exit;
         }
+        return null;
     }
 
     internal static bool ShouldUseSoftwareFallback(Exception error, bool contentStarted, bool windows)
@@ -62,5 +72,6 @@ internal static class GraphicsStartup
         "Failed to initialize SDL platform!" or
         "Failed to initialize SDL window!" or
         "Failed to initialize graphics system!" or
-        "No graphics adapters were found!";
+        "No graphics adapters were found!" || message.Length <= 4096 && message.StartsWith("Adapter '", StringComparison.Ordinal) &&
+        (message.EndsWith("' does not support the HiDef profile.", StringComparison.Ordinal) || message.EndsWith("' does not support the Reach profile.", StringComparison.Ordinal));
 }

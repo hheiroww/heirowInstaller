@@ -10,6 +10,7 @@
     <AssemblyName>heirowInstaller</AssemblyName>
     <RootNamespace>HeirowInstaller.App</RootNamespace>
     <ApplicationIcon Condition="Exists('../../assets/heirowInstaller.ico')">../../assets/heirowInstaller.ico</ApplicationIcon>
+    <DefineConstants Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">$(DefineConstants);INSTALLER_DIRECTX11</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HeirowInstaller.GraphicsFallback.Tests" />
@@ -18,9 +19,60 @@
     <ProjectReference Include="../HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
     <ProjectReference Include="../HeirowUpdater.SocketJack/HeirowUpdater.SocketJack.csproj" />
     <ProjectReference Include="../HeirowInstaller.Publishing/HeirowInstaller.Publishing.csproj" />
-    <PackageReference Include="$(InstallerProjectZPackage)" Version="$(ProjectZPackageVersion)" Condition="'$(UseLocalProjectZ)' != 'true'" />
+    <PackageReference Include="$(InstallerProjectZPackage)" Version="$(ProjectZPackageVersion)" GeneratePathProperty="true" Condition="'$(UseLocalProjectZ)' != 'true'">
+      <ExcludeAssets Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">compile;runtime</ExcludeAssets>
+    </PackageReference>
     <ProjectReference Include="$(InstallerProjectZProject)" Condition="'$(UseLocalProjectZ)' == 'true'" />
     <Content Include="../../assets/heirowInstaller.png" Link="Assets/heirowInstaller.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('../../assets/heirowInstaller.png')" />
     <Content Include="../../assets/heirowInstaller.ico" Link="Assets/heirowInstaller.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('../../assets/heirowInstaller.ico')" />
   </ItemGroup>
+  <ItemGroup Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">
+    <PackageReference Include="LibTessDotNet" Version="1.1.15" />
+    <PackageReference Include="MonoGame.Framework.Native" Version="3.8.5.1" ExcludeAssets="all" />
+    <PackageReference Include="MonoGame.Runtime.Windows.DX12" Version="3.8.5.1" ExcludeAssets="all" />
+    <PackageReference Include="MonoGame.Framework.WindowsDX" Version="3.8.5.1" />
+    <PackageReference Include="System.Net.Http" Version="4.3.4" />
+    <PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
+    <Reference Include="ProjectZ"><HintPath>$(InstallerProjectZDx11RuntimePath)</HintPath><Private>true</Private></Reference>
+    <Reference Include="ProjectZ.VectorText"><HintPath>$(PkgProjectZ)/lib/net8.0-windows7.0/ProjectZ.VectorText.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="InstallerGraphicsBackend" Value="$(InstallerGraphicsBackend)" />
+    <AssemblyMetadata Include="InstallerDx11FallbackRequired" Value="$(InstallerRequireDx11Fallback)" />
+    <EmbeddedResource Include="$(InstallerDx11FallbackExecutable)" LogicalName="HeirowInstaller.Graphics.DirectX11Host.exe" Condition="'$(InstallerGraphicsBackend)' != 'DirectX11' and '$(InstallerDx11FallbackExecutable)' != '' and Exists('$(InstallerDx11FallbackExecutable)')" />
+  </ItemGroup>
+  <Target Name="ValidateInstallerGraphicsBackend" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(InstallerGraphicsBackend)' != 'DirectX12' and '$(InstallerGraphicsBackend)' != 'DirectX11'" Text="InstallerGraphicsBackend must be DirectX12 or DirectX11." />
+    <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and ('$(InstallerDesktopPlatform)' != 'Windows' or '$(UseLocalProjectZ)' == 'true' or !Exists('$(InstallerProjectZDx11RuntimePath)'))" Text="The Windows DX11 host requires the reviewed official Project-Z template runtime via InstallerProjectZDx11RuntimePath." />
+    <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and '$(ProjectZPackageVersion)' != '[2026.11.2.2]'" Text="The reviewed DirectX 11 template runtime requires the matching exact ProjectZ [2026.11.2.2] package." />
+    <Error Condition="'$(InstallerGraphicsBackend)' != 'DirectX11' and '$(InstallerRequireDx11Fallback)' == 'true' and !Exists('$(InstallerDx11FallbackExecutable)')" Text="Release launchers must embed the verified signed DX11 host via InstallerDx11FallbackExecutable." />
+    <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and '$(InstallerDx11FallbackExecutable)' != ''" Text="The secondary must not embed another fallback host." />
+  </Target>
+  <Target Name="ValidateInstallerDx11Runtime" BeforeTargets="ResolveAssemblyReferences" Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">
+    <GetFileHash Files="$(InstallerProjectZDx11RuntimePath)" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_InstallerDx11RuntimeHash" /></GetFileHash>
+    <Error Condition="'%(_InstallerDx11RuntimeHash.FileHash)' != '61138878B47F176FFF2A08B7E448E8757AF293C605310DF99427D458A561E1CD'" Text="The DX11 framework differs from the reviewed official 2026.11.2.2 VSIX payload." />
+    <PropertyGroup><AssemblySearchPaths>{HintPathFromItem};$(AssemblySearchPaths)</AssemblySearchPaths></PropertyGroup>
+  </Target>
+  <Target Name="RequirePublishedInstallerDx11Fallback" BeforeTargets="PrepareForPublish" Condition="'$(InstallerDesktopPlatform)' == 'Windows' and '$(InstallerGraphicsBackend)' == 'DirectX12'">
+    <Error Condition="'$(InstallerRequireDx11Fallback)' != 'true' and '$(InstallerAllowUnbundledDevelopmentPublish)' != 'true'" Text="Published Windows launchers require InstallerRequireDx11Fallback=true and the verified embedded DX11 host. Only explicit development publishes may use InstallerAllowUnbundledDevelopmentPublish=true." />
+  </Target>
+  <UsingTask TaskName="ReadInstallerFallbackLength" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup><InputPath ParameterType="System.String" Required="true" /><ByteLength ParameterType="System.Int64" Output="true" /></ParameterGroup>
+    <Task><Using Namespace="System.IO" /><Code Type="Fragment" Language="cs"><![CDATA[ByteLength = new FileInfo(InputPath).Length;]]></Code></Task>
+  </UsingTask>
+  <Target Name="BindInstallerDx11Fallback" BeforeTargets="GetAssemblyAttributes" Condition="'$(InstallerGraphicsBackend)' != 'DirectX11' and '$(InstallerDx11FallbackExecutable)' != ''">
+    <GetFileHash Files="$(InstallerDx11FallbackExecutable)" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_InstallerDx11FallbackHash" /></GetFileHash>
+    <ReadInstallerFallbackLength InputPath="$(InstallerDx11FallbackExecutable)"><Output TaskParameter="ByteLength" PropertyName="_InstallerDx11FallbackLength" /></ReadInstallerFallbackLength>
+    <Error Condition="$(_InstallerDx11FallbackLength) &lt;= 0 or $(_InstallerDx11FallbackLength) &gt; 94371840" Text="The DX11 fallback host must remain within the 90 MiB runtime budget." />
+    <ItemGroup>
+      <AssemblyMetadata Include="InstallerDx11FallbackSha256" Value="%(_InstallerDx11FallbackHash.FileHash)" />
+      <AssemblyMetadata Include="InstallerDx11FallbackBytes" Value="$(_InstallerDx11FallbackLength)" />
+    </ItemGroup>
+  </Target>
+  <Target Name="ExcludeInstallerDx12NativeContent" BeforeTargets="AssignTargetPaths" Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">
+    <ItemGroup><Content Remove="@(_ProjectZNativePayload)" /></ItemGroup>
+  </Target>
+  <Target Name="ExcludeInstallerDx12PublishedRuntime" AfterTargets="ComputeResolvedFilesToPublishList;SelectProjectZPublishedNativeRuntime" BeforeTargets="_HandleFileConflictsForPublish;GenerateSingleFileBundle" Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">
+    <ItemGroup><ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'mgruntime.dll'" /></ItemGroup>
+  </Target>
 </Project>

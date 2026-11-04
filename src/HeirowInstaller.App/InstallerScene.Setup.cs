@@ -144,10 +144,12 @@ internal sealed partial class InstallerScene
             Pill("ORIGINAL INSTALLER DEFAULT", Left + 23, y + 135, 240, Theme.Orange);
             Text("Application destination", Left + 24, y + 186, BodyWidth - 48, 32, 16, bold: true);
             Text("The original application setup chooses its authored installation folder and scope.\nThis keeps existing installs, shortcuts and application updates compatible.", Left + 24, y + 231, BodyWidth - 48, 56, 11, Theme.Muted, wrap: true);
+            if (Controller.Failed) Text(Controller.StatusDetail, Left, y + 328, BodyWidth, 84, 10, Theme.Orange, wrap: true);
             return;
         }
         Text("Choose where it belongs.", Left, y, BodyWidth, 40, 21, bold: true);
-        Text("Install for yourself or make the application available to everyone on this computer.", Left, y + 50, BodyWidth, 29, 10.5f, Theme.Muted);
+        Text(Controller.RequiresMachineScope ? "The selected components require installation for everyone on this computer."
+            : "Install for yourself or make the application available to everyone on this computer.", Left, y + 50, BodyWidth, 29, 10.5f, Theme.Muted);
         Text("INSTALL LOCATION", Left, y + 104, BodyWidth, 22, 8.5f, Theme.Muted, true);
         Field("setup.target", Controller.TargetDirectory, Left, y + 137, BodyWidth - 121, value => Controller.TargetDirectory = value);
         Action("setup.browseTarget", "Browse", Width - 142, y + 137, 108, () =>
@@ -158,7 +160,8 @@ internal sealed partial class InstallerScene
         var width = (BodyWidth - 16) / 2f;
         ScopeCard("user", "Just for me", "Uses your local application folder.\nUsually no administrator access is needed.", Left, y + 214, width);
         ScopeCard("machine", "Everyone on this computer", "Installs for every user.\nWindows will request administrator access.", Left + width + 16, y + 214, width);
-        Text("The review step shows the final destination and every planned change.", Left, y + 382, BodyWidth, 30, 10, Theme.Muted);
+        Text(Controller.Failed ? Controller.StatusDetail : "The review step shows the final destination and every planned change.",
+            Left, y + 382, BodyWidth, 58, 10, Controller.Failed ? Theme.Orange : Theme.Muted, wrap: true);
     }
 
     private void ScopeCard(string scope, string title, string description, float x, float y, float width)
@@ -166,11 +169,9 @@ internal sealed partial class InstallerScene
         var selected = Controller.Scope == scope;
         var button = Action("setup.scope." + scope, "", x, y, width, () =>
         {
-            if (Controller.Busy) return;
-            Controller.Scope = scope;
-            Controller.TargetDirectory = "";
-            _ = Controller.ReplanChoicesAsync();
-        }, enabled: !Controller.Busy);
+            if (Controller.Busy || scope == "user" && Controller.RequiresMachineScope) return;
+            _ = Controller.SelectScopeAsync(scope);
+        }, enabled: !Controller.Busy && (scope != "user" || !Controller.RequiresMachineScope));
         button.Size = new(width, 140);
         button.BackgroundColor = selected ? Theme.GreenSurface : Theme.Surface;
         button.BorderColor = selected ? Theme.Lime : Theme.Border;

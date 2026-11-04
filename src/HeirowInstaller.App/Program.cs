@@ -15,6 +15,17 @@ internal static class Program
         {
             var maintenance = args.Length >= 2 && args[0] is "uninstall" or "repair";
             options = maintenance ? AppArguments.Parse(args.Skip(2).ToArray(), maintenanceInvocation: true) with { MaintenanceProductId = args[1], MaintenanceOperation = args[0] } : AppArguments.Parse(args);
+            using var graphicsContext = DirectX11Fallback.EnterChildContext(options);
+#if WINDOWS
+            if (options.GraphicsHandoffSmokeRoot is { } handoffSmoke)
+            {
+                GraphicsHandoffSmoke.ValidateArguments(options);
+                if (options.DirectX11Child) return GraphicsHandoffSmoke.RunAsync(handoffSmoke).GetAwaiter().GetResult();
+                return DirectX11Fallback.Run(options, args) ?? throw new InvalidOperationException("The graphics handoff fixture requires the embedded DX11 host.");
+            }
+#else
+            if (options.GraphicsHandoffSmokeRoot is not null) throw new PlatformNotSupportedException("Graphics handoff diagnostics require Windows.");
+#endif
             if (options.Silent)
             {
                 EnsureRequestedDependencyExited(options);
@@ -23,7 +34,7 @@ internal static class Program
                 using var package = PackageReader.Open(options.PackagePath);
                 options.ValidatePackageIdentity(package);
                 var engine = new InstallerEngine();
-                var install = new InstallOptions { TargetDirectory = options.TargetDirectory, StateRoot = options.StateRoot, Scope = options.Scope, Features = options.Features, Silent = true, InstallerPath = Environment.ProcessPath, Isolated = options.Isolated, RegisterProduct = !options.Isolated && !options.NoRegister, Launch = options.Launch, TrustedPublisherKeySha256 = options.TrustedPublisherKeySha256, RequireSignature = options.RequireSignature, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
+                var install = new InstallOptions { TargetDirectory = options.TargetDirectory, StateRoot = options.StateRoot, Scope = options.Scope, Features = options.Features, Silent = true, InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath, Isolated = options.Isolated, RegisterProduct = !options.Isolated && !options.NoRegister, Launch = options.Launch, TrustedPublisherKeySha256 = options.TrustedPublisherKeySha256, RequireSignature = options.RequireSignature, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
                 if (engine.Plan(package, install).RequiresElevation && !InstallerEngine.IsElevated && !options.Isolated) return Elevate(args);
                 var result = engine.InstallAsync(package, install).GetAwaiter().GetResult();
                 return result.RebootRequired ? 3010 : 0;
@@ -31,17 +42,28 @@ internal static class Program
             DesktopPlatform.Initialize();
             Task? startupCompanion = null;
             InstallerGame? game = null;
-            GraphicsStartup.Run(
-                hardware: () =>
+            void Hardware()
+            {
+                using var candidate = new InstallerGame(options);
+                game = candidate;
+                candidate.Run();
+                startupCompanion = candidate.StartupCompanion;
+            }
+            if (options.DirectX11Child && options.SoftwareRendering) RunSoftwareDesktop(options);
+            else if (options.DirectX11Child)
+            {
+                try { Hardware(); }
+                catch (Exception error) when (GraphicsStartup.ShouldUseSoftwareFallback(error, game?.ContentLoadingStarted == true, OperatingSystem.IsWindows()))
                 {
-                    using var candidate = new InstallerGame(options);
-                    game = candidate;
-                    candidate.Run();
-                    startupCompanion = candidate.StartupCompanion;
-                },
-                software: () => RunSoftwareDesktop(options),
-                contentStarted: () => game?.ContentLoadingStarted == true,
-                windows: OperatingSystem.IsWindows(), forceSoftware: options.SoftwareRendering);
+                    return DirectX11Fallback.GraphicsStartupFailed;
+                }
+            }
+            else
+            {
+                var rendererExit = GraphicsStartup.Run(Hardware, () => DirectX11Fallback.Run(options, args), () => RunSoftwareDesktop(options),
+                    () => game?.ContentLoadingStarted == true, OperatingSystem.IsWindows(), options.SoftwareRendering);
+                if (rendererExit is { } code) return code;
+            }
             // The window is disposed before this bounded shutdown grace period.
             // Startup verification never delays creating or drawing the UI.
             startupCompanion?.Wait(TimeSpan.FromSeconds(3));
@@ -53,7 +75,7 @@ internal static class Program
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, "desktop-error.log");
             File.AppendAllText(path, $"{DateTimeOffset.Now:O}\n{error}\n\n");
-            if (!args.Any(value => new[] { "--silent", "--quiet", "/quiet", "/qn", "/silent", "/verysilent", "--defer", "--wizard-smoke", "--ui-smoke", "--ui-performance" }.Contains(value, StringComparer.OrdinalIgnoreCase)))
+            if (!args.Any(value => new[] { "--silent", "--quiet", "/quiet", "/qn", "/silent", "/verysilent", "--defer", "--wizard-smoke", "--ui-smoke", "--ui-performance", "--graphics-handoff-smoke" }.Contains(value, StringComparer.OrdinalIgnoreCase)))
                 DesktopPlatform.ShowError($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}");
             return 1;
         }
@@ -71,7 +93,7 @@ internal static class Program
 
     private static int Maintain(string[] args, AppArguments options)
     {
-        var install = new InstallOptions { StateRoot = options.StateRoot, Scope = options.Scope, Isolated = options.Isolated, Silent = options.Silent, InstallerPath = Environment.ProcessPath, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
+        var install = new InstallOptions { StateRoot = options.StateRoot, Scope = options.Scope, Isolated = options.Isolated, Silent = options.Silent, InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
         var product = InstallerEngine.ListInstalled(options.StateRoot).FirstOrDefault(value => value.Id.Equals(args[1], StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException("The application is not installed.");
         if (AppController.NeedsMaintenanceElevation(product)) return Elevate(args);
         var engine = new InstallerEngine();
@@ -96,7 +118,7 @@ internal static class Program
     private static int Elevate(string[] args)
     {
         if (!OperatingSystem.IsWindows()) throw new UnauthorizedAccessException("Run machine-scope maintenance from a terminal with sudo.");
-        var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
+        var start = new ProcessStartInfo(DirectX11Fallback.CurrentPrimaryHostPath) { UseShellExecute = true, Verb = "runas" };
         foreach (var argument in args) start.ArgumentList.Add(argument);
         using var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the elevated installer.");
         child.WaitForExit();
@@ -114,6 +136,13 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal string? WizardSmokeDirectory { get; init; }
     internal string? PerformanceSmokeDirectory { get; init; }
     internal bool SoftwareRendering { get; init; }
+    internal bool DirectX11Child { get; init; }
+    internal string? GraphicsPrimaryHost { get; init; }
+    internal string? GraphicsPrimarySha256 { get; init; }
+    internal int? GraphicsParentPid { get; init; }
+    internal long? GraphicsParentStart { get; init; }
+    internal string? GraphicsPackageSha256 { get; init; }
+    internal string? GraphicsHandoffSmokeRoot { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
     {
         if (ExpectedProductId is not null && !package.Manifest.Id.Equals(ExpectedProductId, StringComparison.OrdinalIgnoreCase))
@@ -133,12 +162,21 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         List<string> legacyArguments = []; string? logPath = null;
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
         var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; var softwareRendering = false; string? wizardSmoke = null, performanceSmoke = null;
+        bool directX11Child = false; string? primaryHost = null, primaryHash = null, graphicsPackageHash = null, handoffSmoke = null; int? graphicsParent = null; long? graphicsStart = null;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
             switch (args[i].ToLowerInvariant())
             {
                 case "--software-rendering": softwareRendering = true; break;
+                case "--graphics-directx11-child": directX11Child = true; break;
+                case "--graphics-primary-host": primaryHost = Path.GetFullPath(Value()); break;
+                case "--graphics-primary-sha256": primaryHash = Value(); break;
+                case "--graphics-parent-pid": graphicsParent = int.Parse(Value(), System.Globalization.CultureInfo.InvariantCulture); break;
+                case "--graphics-parent-start": graphicsStart = long.Parse(Value(), System.Globalization.CultureInfo.InvariantCulture); break;
+                case "--graphics-package": package = Path.GetFullPath(Value()); break;
+                case "--graphics-package-sha256": graphicsPackageHash = Value(); break;
+                case "--graphics-handoff-smoke": handoffSmoke = Path.GetFullPath(Value()); break;
                 case "--render-smoke": capture = Path.GetFullPath(Value()); renderSmoke = true; break;
                 case "--capture": capture = Path.GetFullPath(Value()); break;
                 case "--ui-smoke": smoke = Path.GetFullPath(Value()); break;
@@ -211,6 +249,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             !Uri.TryCreate(selfUpdateFeed, UriKind.Absolute, out var smokeUri) || !smokeUri.IsLoopback || smokeUri.Scheme is not ("http" or "https")))
             throw new ArgumentException("Self-update acceptance requires an explicit isolated state, target, report, and loopback feed.");
         return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
-        { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke, SoftwareRendering = softwareRendering };
+        { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke, SoftwareRendering = softwareRendering,
+          DirectX11Child = directX11Child, GraphicsPrimaryHost = primaryHost, GraphicsPrimarySha256 = primaryHash, GraphicsParentPid = graphicsParent, GraphicsParentStart = graphicsStart, GraphicsPackageSha256 = graphicsPackageHash, GraphicsHandoffSmokeRoot = handoffSmoke };
     }
 }

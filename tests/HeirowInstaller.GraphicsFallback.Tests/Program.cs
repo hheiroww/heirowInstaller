@@ -6,7 +6,7 @@ using HeirowInstaller.App;
 using HeirowInstaller.Core;
 using Microsoft.Xna.Framework.Graphics;
 
-internal static class Program
+internal static partial class Program
 {
     static readonly List<string> checks = [];
     static string root = "";
@@ -39,6 +39,8 @@ internal static class Program
                 signingPin = Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo()));
             }
             Wizard();
+            WizardScope();
+            GraphicsBackendChecks.Run(checks);
             RejectedIdentity();
             CancelAndClose();
             Check(!Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Any(m => m.ModuleName.Equals("mgruntime.dll", StringComparison.OrdinalIgnoreCase)), "CPU form and controller operations never loaded the MonoGame native graphics runtime");

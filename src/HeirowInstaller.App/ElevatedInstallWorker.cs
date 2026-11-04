@@ -14,7 +14,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace HeirowInstaller.App;
 
-/// <summary>The existing wizard owns all UI; this same-image child only runs the verified engine.</summary>
+/// <summary>The existing wizard owns all UI; the bound primary-image worker only runs the verified engine.</summary>
 internal static class ElevatedInstallWorker
 {
     private const string Switch = "--install-worker";
@@ -28,12 +28,14 @@ internal static class ElevatedInstallWorker
         Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>> prompt,
         IProgress<InstallProgress>? progress, string? isolatedFixtureRoot, CancellationToken token, string operation = "install")
     {
-        var image = Path.GetFullPath(Environment.ProcessPath ?? throw new InvalidOperationException("The setup image is unavailable."));
+        var image = Path.GetFullPath(DirectX11Fallback.CurrentPrimaryHostPath ?? throw new InvalidOperationException("The setup image is unavailable."));
         PackageSafety.EnsureNoReparsePoints(image);
         // Hold both inputs unchanged across the human UAC decision and the entire operation.
         using var imageLock = File.Open(image, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var packageLock = File.Open(packagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         var imageHash = PackageSafety.HashFile(image);
+        if (DirectX11Fallback.CurrentPrimaryHostSha256 is { } primaryHash && !PackageSafety.HashEquals(imageHash, primaryHash))
+            throw new CryptographicException("The original setup image changed before administrator approval.");
         var hostBinding = ReadHostBinding(image);
         var parent = ProcessIdentity.Read(Environment.ProcessId);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -136,7 +138,10 @@ internal static class ElevatedInstallWorker
             var hostBinding = ReadHostBinding(image);
             var parent = ProcessIdentity.Read(parentPid);
             if (parent.StartTicks != parentTicks) throw new InvalidDataException("The original wizard is no longer running.");
-            parent.RequireImage(image, imageHash);
+            // Normal wizards must still be the exact same image. The only alternate
+            // parent is the immutable DX11 companion embedded in this primary host.
+            // No caller-supplied hash or request field can authorize that exception.
+            using var companionParentLock = VerifyWizardParent(parent, image, imageHash);
             // Anonymous SQOS prevents a medium-integrity server from impersonating this elevated client.
             using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Anonymous);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
@@ -251,7 +256,7 @@ internal static class ElevatedInstallWorker
     internal static async Task<IReadOnlyList<string>> VerifyProtocolRejectionsAsync(string root, string packagePath, InstallPlan plan, InstallOptions options, int alternateParentPid)
     {
         ValidateFixture(root, plan.Manifest.Id, options, plan.InstallDirectory);
-        var image = Path.GetFullPath(Environment.ProcessPath!);
+        var image = Path.GetFullPath(DirectX11Fallback.CurrentPrimaryHostPath!);
         var parent = ProcessIdentity.Read(Environment.ProcessId);
         var user = WindowsIdentity.GetCurrent().User!;
         var checks = new List<string>();
@@ -316,6 +321,24 @@ internal static class ElevatedInstallWorker
         try { return Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the installation worker."); }
         catch (Win32Exception error) when (error.NativeErrorCode == 1223)
         { throw new OperationCanceledException("Administrator approval was canceled. You can try again when you are ready.", error, token); }
+    }
+
+    private static FileStream? VerifyWizardParent(ProcessIdentity parent, string image, string imageHash)
+    {
+        if (SamePath(parent.Image, image))
+        {
+            parent.RequireImage(image, imageHash);
+            return null;
+        }
+        PackageSafety.EnsureNoReparsePoints(parent.Image);
+        var lease = File.Open(parent.Image, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            if (!DirectX11Fallback.MatchesEmbeddedCompanion(lease.Length, PackageSafety.HashFile(parent.Image)))
+                throw new CryptographicException("The original wizard is not this setup's declared DirectX 11 companion.");
+            return lease;
+        }
+        catch { lease.Dispose(); throw; }
     }
 
     private static void ValidateRequest(WorkerRequest request)

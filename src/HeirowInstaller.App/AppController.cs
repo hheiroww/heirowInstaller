@@ -31,11 +31,15 @@ internal sealed partial class AppController : IDisposable
     internal PackageManifest? Manifest { get; private set; }
     internal InstallPlan? Plan { get; private set; }
     internal string PackagePath { get; private set; } = "";
-    internal string TargetDirectory { get; set; } = "";
+    private string targetDirectory = "";
+    private bool hasExplicitTarget;
+    internal string TargetDirectory { get => targetDirectory; set { targetDirectory = value; hasExplicitTarget = true; } }
     internal bool OriginalInstallerDestination => Manifest is { } manifest && (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null) && string.IsNullOrWhiteSpace(manifest.InstallDirectory) && arguments.TargetDirectory is null;
     internal string DisplayInstallDirectory => !IsMaintenanceWizard && OriginalInstallerDestination ? "Original installer default" : TargetDirectory;
     internal string Scope { get; set; } = "user";
     internal HashSet<string> Features { get; } = new(StringComparer.OrdinalIgnoreCase);
+    internal bool RequiresMachineScope => Manifest is { } manifest && InstallerEngine.RequiresMachineScope(manifest,
+        Features.Concat(manifest.Features.Where(feature => feature.Required).Select(feature => feature.Id)));
     internal IReadOnlyList<InstalledProduct> Installed { get; private set; } = [];
     internal InstalledProduct? SelectedProduct { get; set; }
     internal UpdateCheckResult? Update { get; private set; }
@@ -161,13 +165,14 @@ internal sealed partial class AppController : IDisposable
                 LicenseAccepted = arguments.AcceptLicense;
                 Features.Clear();
                 foreach (var feature in metadata.Features.Where(f => f.Required || f.Default)) Features.Add(feature.Id);
-                Scope = arguments.Scope ?? metadata.Scope;
-                TargetDirectory = arguments.TargetDirectory ?? "";
+                targetDirectory = arguments.TargetDirectory ?? "";
+                hasExplicitTarget = arguments.TargetDirectory is not null;
                 if (arguments.Features is not null)
                 {
                     Features.Clear();
                     foreach (var feature in arguments.Features) Features.Add(feature);
                 }
+                Scope = arguments.Scope ?? (RequiresMachineScope ? "machine" : metadata.Scope);
                 Plan = null;
             });
             await ReplanAsync();
@@ -201,7 +206,7 @@ internal sealed partial class AppController : IDisposable
         await game.OnUiAsync(() =>
         {
             Plan = plan;
-            if (string.IsNullOrWhiteSpace(TargetDirectory) && !OriginalInstallerDestination) TargetDirectory = plan.InstallDirectory;
+            if (string.IsNullOrWhiteSpace(TargetDirectory) && !OriginalInstallerDestination) targetDirectory = plan.InstallDirectory;
         });
     }
 
@@ -214,7 +219,21 @@ internal sealed partial class AppController : IDisposable
         if (Stage >= SetupStage.Review) return;
         // Features and location do not display the operation plan. Revalidate
         // the chosen configuration when entering Review and again before install.
-        if (Stage < SetupStage.Destination) { Stage++; Notify(); return; }
+        if (Stage < SetupStage.Destination)
+        {
+            Stage++;
+            // A component selected after a previous location choice can require
+            // machine scope. Keep an explicit command-line scope fail-closed;
+            // the interactive default follows the signed selected components.
+            if (Stage == SetupStage.Destination && RequiresMachineScope && Scope == "user" && arguments.Scope is null)
+            {
+                Scope = "machine";
+                if (!hasExplicitTarget) targetDirectory = "";
+                await ReplanChoicesAsync();
+            }
+            else Notify();
+            return;
+        }
         var next = Stage + 1;
         Begin("Checking installation choices", "Checking the selected features and installation location.");
         try
@@ -233,6 +252,14 @@ internal sealed partial class AppController : IDisposable
         catch (Exception error) { await ErrorAsync("Location needs attention", error); }
     }
 
+    internal async Task SelectScopeAsync(string scope)
+    {
+        if (Busy || Scope == scope || scope is not ("user" or "machine") || scope == "user" && RequiresMachineScope) return;
+        Scope = scope;
+        if (!hasExplicitTarget) targetDirectory = "";
+        await ReplanChoicesAsync();
+    }
+
     internal void PreviousStage()
     {
         if (Stage > SetupStage.Package && Stage < SetupStage.Progress) { Stage--; Notify(); }
@@ -248,7 +275,7 @@ internal sealed partial class AppController : IDisposable
         Isolated = arguments.Isolated,
         Silent = IsWizard || arguments.Silent,
         Launch = !IsWizard && arguments.SmokeDirectory is null && (arguments.Launch || Settings.LaunchAfterInstall),
-        InstallerPath = Environment.ProcessPath,
+        InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath,
         TrustedPublisherKeySha256 = arguments.TrustedPublisherKeySha256,
         RequireSignature = arguments.RequireSignature,
         LegacyArguments = arguments.LegacyArguments,
@@ -377,7 +404,7 @@ internal sealed partial class AppController : IDisposable
         Features = product.Features.ToList(),
         RegisterProduct = product.RegisteredProduct,
         Isolated = product.Isolated,
-        InstallerPath = Environment.ProcessPath,
+        InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath,
         Silent = IsWizard || arguments.Silent,
         TrustedPublisherKeySha256 = product.PublisherKeySha256,
         RequireSignature = product.PublisherKeySha256 is not null,
@@ -480,7 +507,7 @@ internal sealed partial class AppController : IDisposable
                 var buildOptions = new StandaloneBuildOptions
                 {
                     SourceDirectory = project ? null : source, ApplicationProjectPath = project ? source : null,
-                    LauncherPath = Environment.GetEnvironmentVariable("HEIROWINSTALLER_LAUNCHER_PATH") ?? Environment.ProcessPath,
+                    LauncherPath = Environment.GetEnvironmentVariable("HEIROWINSTALLER_LAUNCHER_PATH") ?? DirectX11Fallback.CurrentPrimaryHostPath,
                     SigningKeyPath = signingKey, UpdateCompanionExecutablePath = string.IsNullOrEmpty(updater) ? null : updater,
                     WindowsCodeSigning = windowsSigning,
                     LegalDocuments = legal

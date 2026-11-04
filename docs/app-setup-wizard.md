@@ -4,6 +4,14 @@ A bundled setup executable, or a desktop invocation bound to a package, opens a 
 
 Launching heirowInstaller without a package retains the authoring workspace. Opening a package from that workspace retains its existing navigation.
 
+The destination step offers only scopes supported by the selected package components.
+Windows services and machine registry entries require **Everyone on this computer**;
+the wizard explains that requirement and disables **Just for me**. Selecting a component
+that adds machine integration updates the interactive scope while preserving a custom
+destination. Explicit command-line scope requests still pass through the engine's
+validation. A location error stays visible on the destination page until corrected,
+and Continue advances to the checked review when the choices are valid.
+
 The workspace's updater actions use the SDK's verified shared/app-local resolver. Missing or invalid updater configuration makes the actions unavailable; an invalid shared profile never falls back to an arbitrary sibling executable. App-root and shared-runtime signature/hash checks stay in the SDK.
 
 Explicit repair/uninstall invocations, including a cached app host, open an app-specific **Review → Progress → Finish** wizard. It binds the receipt, scope, version, install root, publisher pin and cached-package digest before review, then rejects a changed receipt/package before maintenance begins. Repair offers the same optional Open-app choice; uninstall hides it. Choosing an installed app from the authoring workspace retains that workspace.

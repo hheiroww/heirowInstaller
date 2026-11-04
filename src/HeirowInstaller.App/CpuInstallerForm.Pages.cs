@@ -100,20 +100,21 @@ internal sealed partial class CpuInstallerForm
     private void BuildDestinationPage(Forms.TableLayoutPanel page)
     {
         AddRow(page, Paragraph("Choose where to install", true));
-        AddRow(page, Paragraph("Install for your account or for everyone on this computer. Machine-wide changes may request administrator approval."));
+        AddRow(page, Paragraph(Controller.RequiresMachineScope
+            ? "The selected components require installation for everyone on this computer. Windows may request administrator approval."
+            : "Install for your account or for everyone on this computer. Machine-wide changes may request administrator approval."));
         var scopePanel = new Forms.FlowLayoutPanel { AutoSize = true, FlowDirection = Forms.FlowDirection.TopDown, WrapContents = false };
         foreach (var scope in new[] { "user", "machine" })
         {
             var radio = Remember("setup.scope." + scope, new Forms.RadioButton
             {
-                AutoSize = true, Text = scope == "user" ? "Just for me" : "Everyone on this computer", Checked = Controller.Scope == scope, Enabled = !Controller.Busy
+                AutoSize = true, Text = scope == "user" ? "Just for me" : "Everyone on this computer", Checked = Controller.Scope == scope,
+                Enabled = !Controller.Busy && (scope != "user" || !Controller.RequiresMachineScope)
             });
             radio.CheckedChanged += (_, _) =>
             {
-                if (!radio.Checked || Controller.Scope == scope || Controller.Busy) return;
-                Controller.Scope = scope;
-                Controller.TargetDirectory = "";
-                _ = RunCommandAsync(Controller.ReplanChoicesAsync);
+                if (!radio.Checked || Controller.Scope == scope || Controller.Busy || scope == "user" && Controller.RequiresMachineScope) return;
+                _ = RunCommandAsync(() => Controller.SelectScopeAsync(scope));
             };
             scopePanel.Controls.Add(radio);
         }
@@ -137,6 +138,12 @@ internal sealed partial class CpuInstallerForm
         }, enabled: !Controller.Busy && !Controller.OriginalInstallerDestination));
         if (Controller.OriginalInstallerDestination)
             AddRow(page, Paragraph("This package delegates its destination to the original installer."));
+        if (Controller.Failed)
+        {
+            var error = Remember("setup.destination.error", Paragraph(Controller.StatusDetail));
+            error.ForeColor = Drawing.Color.Firebrick;
+            AddRow(page, error);
+        }
     }
 
     private void BuildReviewPage(Forms.TableLayoutPanel page)

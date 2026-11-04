@@ -1,0 +1,10 @@
+{
+  "version": "2026.11.2.2",
+  "sourceCommit": "949a836ea006f2f98db74138bf9a02476782d4d7",
+  "url": "https://github.com/hheiroww/Project-Z/releases/download/v2026.11.2.2/ProjectZ.VisualStudio2026.vsix",
+  "bytes": 60692770,
+  "sha256": "b1b70ab149a6693f8208bb0fffd68a14100024845b82b3d5e83fdf2a9f0836ab",
+  "entry": "ProjectTemplates/CSharp/ProjectZ/ProjectZ.CSharp/ProjectZ/Runtime/DirectX11/ProjectZ.dll",
+  "runtimeBytes": 663040,
+  "runtimeSha256": "61138878b47f176fff2a08b7e448e8757af293c605310df99427d458a561e1cd"
+}

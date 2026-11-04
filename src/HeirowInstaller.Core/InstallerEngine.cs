@@ -98,8 +98,7 @@ public sealed class InstallerEngine
         foreach (var feature in manifest.Features.Where(x => x.Required)) selected.Add(feature.Id);
         if (selected.Any(x => !manifest.Features.Any(f => f.Id.Equals(x, StringComparison.OrdinalIgnoreCase))))
             throw new InvalidDataException("An unknown feature was selected.");
-        if (scope == "user" && (manifest.Services.Any(x => IsSelected(x.Feature, selected)) ||
-            manifest.Registry.Any(x => x.Hive == "machine" && IsSelected(x.Feature, selected))))
+        if (scope == "user" && RequiresMachineScope(manifest, selected))
             throw new InvalidDataException("Machine registry values and Windows services require machine installation scope. Select --scope machine.");
         var companionEnabled = manifest.UpdateCompanion is { } companion && IsSelected(companion.Feature, selected);
         if (companionEnabled && package.PublisherKeySha256 is null)
@@ -137,7 +136,7 @@ public sealed class InstallerEngine
             Manifest = manifest, InstallDirectory = target, Scope = scope, Features = selected.ToList(), Files = files,
             UpdateCompanionEnabled = companionEnabled,
             TotalBytes = files.Sum(x => x.Size), IsUpgrade = previous is not null,
-            PreviousVersion = previous?.Version, RequiresElevation = scope == "machine" || manifest.Services.Any(x => IsSelected(x.Feature, selected)) || manifest.Registry.Any(x => x.Hive == "machine" && IsSelected(x.Feature, selected))
+            PreviousVersion = previous?.Version, RequiresElevation = scope == "machine" || RequiresMachineScope(manifest, selected)
         };
         plan.UseOriginalInstallDirectory = (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null) &&
             options.TargetDirectory is null && string.IsNullOrWhiteSpace(manifest.InstallDirectory);
@@ -821,6 +820,10 @@ public sealed class InstallerEngine
         .Replace("{AppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), StringComparison.OrdinalIgnoreCase)
         .Replace("{CommonAppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData), StringComparison.OrdinalIgnoreCase)
         .Replace("{ProgramFiles}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.ProgramFiles), StringComparison.OrdinalIgnoreCase));
+
+    public static bool RequiresMachineScope(PackageManifest manifest, IEnumerable<string> selected) =>
+        manifest.Services.Any(value => IsSelected(value.Feature, selected)) ||
+        manifest.Registry.Any(value => value.Hive == "machine" && IsSelected(value.Feature, selected));
 
     internal static bool IsSelected(string? feature, IEnumerable<string> selected) => feature is null || selected.Contains(feature, StringComparer.OrdinalIgnoreCase);
     private static string GetStateRoot(InstallOptions options, string scope)
