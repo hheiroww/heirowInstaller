@@ -3,6 +3,10 @@
 param([ValidateSet('Debug','Release')][string]$Configuration = 'Release', [string]$PackageCache, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
+$administratorName = 'bootstrap-administrator-' + [Guid]::NewGuid().ToString('N')
+$administratorFixtures = if ($OutputDirectory) { Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) $administratorName }
+    else { Join-Path ([IO.Path]::GetTempPath()) ('heirowinstaller-' + $administratorName) }
+& (Join-Path $PSScriptRoot 'Test-BootstrapAdministratorRequirement.ps1') -OutputDirectory $administratorFixtures
 foreach ($project in @(
     'tests/HeirowInstaller.CrossPlatform.Tests/HeirowInstaller.CrossPlatform.Tests.csproj',
     'tests/HeirowInstaller.CodeSigning.Tests/HeirowInstaller.CodeSigning.Tests.csproj',

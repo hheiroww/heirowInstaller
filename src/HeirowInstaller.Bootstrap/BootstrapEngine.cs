@@ -17,6 +17,15 @@ internal sealed class BootstrapEngine
     internal BootstrapEngine(BootstrapDescriptor descriptor, HttpClient http, IProgress<BootstrapProgress> progress)
     { Validate(descriptor); this.descriptor = descriptor; this.http = http; this.progress = progress; }
 
+    internal void AppendStartupArguments(ProcessStartInfo start, IEnumerable<string> arguments)
+    {
+        // Scope remains a setup choice. Its verified installation plan requests
+        // approval when Install is selected; explicit signed requirements can
+        // prepare the administrator worker before downloading the application.
+        if (descriptor.HostKind == "installer" && descriptor.RequiresAdministrator) start.ArgumentList.Add("--request-admin-on-open");
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+    }
+
     internal static BootstrapDescriptor ReadEmbeddedDescriptor()
     {
         var binding = HeirowInstaller.BootstrapContract.WebBootstrapBindings.Read(Environment.ProcessPath!);

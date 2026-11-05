@@ -15,6 +15,12 @@ worker receives keepalives and makes no installation changes. Install consumes
 that same worker; cancellation closes the idle connection. Human Windows consent
 is never simulated or bypassed.
 
+A signed machine-scope default opens setup in the original user's session.
+Choosing a per-user plan that needs no administrator privileges proceeds
+without approval. Choosing machine scope requests approval when Install is
+selected. Explicit signed setup or application administrator requirements still
+prepare the worker on opening, independently of the chosen installation scope.
+
 The elevated native bootstrap provisions the signed host in the protected machine
 namespace. Loose user-writable framework-dependent apphosts cannot be elevated
 directly. The legacy path accepts only a sealed self-contained single-file host.

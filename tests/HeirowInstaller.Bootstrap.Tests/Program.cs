@@ -49,6 +49,25 @@ var start = await engine.PrepareAsync(shared, Path.Combine(root, "first"), defau
 Check(File.ReadAllText(start.FileName) == "owned runtime bytes for fixture.host", "signed runtime is verified and extracted before launch");
 Check(start.ArgumentList.SequenceEqual(new[] { "--scope", "user" }), "per-user scope reaches the installer without requiring an administrator launcher");
 Check(reports.Any(x => x.Phase == "Downloading") && reports.Any(x => x.Phase == "Preparing shared files"), "download and extraction report bounded byte progress");
+foreach (var scope in new[] { "user", "machine" })
+foreach (bool required in new[] { false, true })
+foreach (var chosenScope in new string?[] { null, "user", "machine" })
+{
+    var choice = Descriptor(payload); choice.Scope = scope; choice.RequiresAdministrator = required;
+    var choiceEngine = new BootstrapEngine(choice, client, new ImmediateProgress([]));
+    var choiceStart = await choiceEngine.PrepareAsync(shared, Path.Combine(root, $"choice-{scope}-{required}-{chosenScope ?? "default"}"), default);
+    string[] forwarded = chosenScope is null ? [] : ["--scope", chosenScope];
+    choiceEngine.AppendStartupArguments(choiceStart, forwarded);
+    Check(choiceStart.ArgumentList.Contains("--request-admin-on-open") == required,
+        $"startup approval follows the signed requirement for {scope} default and {chosenScope ?? "default"} choice");
+    Check(choiceStart.ArgumentList.Take(2).SequenceEqual(["--scope", scope]) &&
+        (chosenScope is null || choiceStart.ArgumentList.TakeLast(2).SequenceEqual(forwarded)),
+        "startup keeps the authored default and forwards the user's scope choice unchanged");
+}
+var updaterChoice = Descriptor(payload); updaterChoice.HostKind = "updater"; updaterChoice.Scope = "machine"; updaterChoice.RequiresAdministrator = true;
+var updaterStartupEngine = new BootstrapEngine(updaterChoice, client, new ImmediateProgress([]));
+var updaterStartupInfo = new System.Diagnostics.ProcessStartInfo(); updaterStartupEngine.AppendStartupArguments(updaterStartupInfo, ["--scope", "machine"]);
+Check(updaterStartupInfo.ArgumentList.SequenceEqual(["--scope", "machine"]), "installer startup approval flag is never injected into an updater host");
 var calls = handler.Calls;
 await engine.PrepareAsync(shared, Path.Combine(root, "cached"), default);
 Check(handler.Calls == calls, "second setup reuses verified shared bytes without a network download");

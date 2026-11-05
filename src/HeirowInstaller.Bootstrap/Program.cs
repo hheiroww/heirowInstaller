@@ -59,8 +59,7 @@ internal static class Program
                     start.Environment["SOCKETJACK_BOOTSTRAP_START"] = parent.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     start.Environment["SOCKETJACK_BOOTSTRAP_LAUNCHER"] = Environment.ProcessPath!;
                 }
-                if (descriptor.HostKind == "installer" && (descriptor.Scope == "machine" || descriptor.RequiresAdministrator)) start.ArgumentList.Add("--request-admin-on-open");
-                foreach (var argument in args) start.ArgumentList.Add(argument);
+                engine.AppendStartupArguments(start, args);
                 window.Report(new(descriptor.HostKind == "application" ? "Opening application" : "Opening setup", "Shared files are ready."));
                 var readyName = @"Local\SocketJack.BootstrapReady." + Guid.NewGuid().ToString("N");
                 using var ready = descriptor.HostKind is "installer" or "updater"
