@@ -106,6 +106,7 @@ internal sealed partial class CpuInstallerForm
         }
         else
         {
+            if (Controller.CanDismissRunningApplications) ActionButton("running.dismiss", "Close", Controller.DismissRunningApplications);
             var canClose = !dialog.ManualOnly && dialog.Applications.Any(item => item.CanRequestClose);
             var canForce = !dialog.ManualOnly && dialog.Applications.Any(item => item.CanForceClose);
             if (canForce) ActionButton("running.force", "Force close…", Controller.ConfirmForceCloseRunningApplications);

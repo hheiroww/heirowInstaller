@@ -14,6 +14,7 @@ internal sealed record RunningApplicationsDialogState(string ProductName, string
     internal string ProductId { get; init; } = "";
     internal bool InspectionTimedOut { get; init; }
     internal bool ConfirmForceClose { get; init; }
+    internal string GuardId { get; init; } = "";
 }
 
 internal sealed partial class AppController
@@ -23,12 +24,37 @@ internal sealed partial class AppController
     private bool runningApplicationsCanceled;
     internal RunningApplicationsDialogState? RunningApplicationsDialog { get; private set; }
 
-    private Task<RunningApplicationsChoice> PromptRunningApplicationsAsync(RunningApplicationsRequest request, CancellationToken token) =>
-        ShowRunningApplicationsAsync(new(request.ProductName, request.Operation,
+    private async Task<RunningApplicationsChoice> PromptRunningApplicationsAsync(RunningApplicationsRequest request, CancellationToken token)
+    {
+        if (request.Completed)
+        {
+            await game.OnUiAsync(() =>
+            {
+                if (request.GuardId.Length > 0 && RunningApplicationsDialog is { } dialog &&
+                    dialog.GuardId == request.GuardId && dialog.ProductId == request.ProductId)
+                { ClearRunningApplicationsDialog(); Notify(); }
+            });
+            return RunningApplicationsChoice.CheckAgain; // Terminal notifications never grant consent.
+        }
+        request.NotifyCompletion = true;
+        return await ShowRunningApplicationsAsync(new(request.ProductName, request.Operation,
             request.Applications.Select(application => new RunningApplicationRow(application.ProcessId, application.DisplayName,
                 application.ExecutablePath, application.AffectedPath, application.CanRequestClose)
                 { StartTimeUtcTicks = application.StartTimeUtcTicks, CanForceClose = application.CanForceClose }).ToList(), request.IsRetry, request.Message)
-                { ProductId = request.ProductId, InspectionTimedOut = request.InspectionTimedOut }, token);
+                { ProductId = request.ProductId, InspectionTimedOut = request.InspectionTimedOut, GuardId = request.GuardId }, token);
+    }
+
+    // Dismiss only an already answered prompt. Hiding its presentation cannot
+    // answer a pending guard, cancel inspection, or authorize process closure.
+    internal bool CanDismissRunningApplications => RunningApplicationsDialog is { Waiting: true } &&
+        (runningApplicationsChoice is null || runningApplicationsChoice.Task.IsCompleted);
+
+    internal void DismissRunningApplications()
+    {
+        if (!CanDismissRunningApplications) return;
+        ClearRunningApplicationsDialog();
+        Notify();
+    }
 
     private async Task<RunningApplicationsChoice> ShowRunningApplicationsAsync(RunningApplicationsDialogState dialog, CancellationToken token)
     {
@@ -105,7 +131,7 @@ internal sealed partial class AppController
     }
 
     private static bool SameRunningApplications(RunningApplicationsDialogState first, RunningApplicationsDialogState second) =>
-        first.ProductId == second.ProductId && first.ProductName == second.ProductName && first.Operation == second.Operation && first.ManualOnly == second.ManualOnly &&
+        first.GuardId == second.GuardId && first.ProductId == second.ProductId && first.ProductName == second.ProductName && first.Operation == second.Operation && first.ManualOnly == second.ManualOnly &&
         first.Applications.Count == second.Applications.Count && first.Applications.All(application => second.Applications.Any(other =>
             application.ProcessId == other.ProcessId && application.StartTimeUtcTicks == other.StartTimeUtcTicks &&
             application.ExecutablePath.Equals(other.ExecutablePath, StringComparison.OrdinalIgnoreCase) && application.CanForceClose == other.CanForceClose));

@@ -12,6 +12,10 @@ surfaces follow the heirowSnap desktop application. The default client size is
 1180 × 800, with a 980 × 760 minimum viewport. Graphics request 16× anti-aliasing
 and 16× anisotropic filtering, with pixel-aligned vector text.
 
+Installer and updater windows initially center in the owner monitor's usable
+work area, or the pointer monitor when there is no owner. Placement runs once
+before the initial frame and rechecks window bounds after a DPI change.
+
 ## Screens and actions
 
 - **Install a package** verifies the payload before showing package details,
@@ -39,6 +43,14 @@ and 16× anisotropic filtering, with pixel-aligned vector text.
   applies only to the displayed, revalidated owned application identities, including
   eligible windowless instances. Plugin hosts, wait-only dependencies, services,
   system processes and unrelated model workers require manual closure.
+  The waiting panel clears when its correlated process guard finishes, even
+  while installation continues. **Close** can dismiss an already answered
+  waiting panel; it never answers a new prompt or bypasses the process guard.
+  Stateful SDK prompt adapters can set `request.NotifyCompletion = true` to
+  receive one informational `Completed` callback with the same `GuardId` when
+  the guard exits. Its return value is ignored; cleanup is bounded and cannot
+  replace the original guard error. Existing callbacks receive only consent
+  requests unless they opt in.
 - **Build & publish** builds a verified `.hinst` from a manifest and application
   files and publishes through the shared SocketJack publisher client. Publisher
   credentials come from `SOCKETJACK_PUBLISHER_TOKEN` or `SOCKETJACK_PUBLISHER_COOKIE`; they are not saved in the

@@ -51,6 +51,7 @@ internal sealed partial class CpuInstallerForm : Forms.Form, IInstallerDesktopHo
         ClientSize = new Drawing.Size(850, 680);
         MinimumSize = new Drawing.Size(660, 520);
         StartPosition = Forms.FormStartPosition.CenterScreen;
+        Load += (_, _) => { if (!arguments.Isolated) DesktopWindowPlacement.Center(Handle, Owner?.Handle ?? 0); };
         Font = Drawing.SystemFonts.DefaultFont;
         BackColor = Drawing.SystemColors.Window;
         ForeColor = Drawing.SystemColors.WindowText;

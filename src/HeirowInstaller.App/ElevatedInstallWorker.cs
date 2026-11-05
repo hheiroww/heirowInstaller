@@ -85,7 +85,7 @@ internal static class ElevatedInstallWorker
                     RunningApplicationsChoice choice;
                     try { choice = await prompt(applications, token); }
                     catch (OperationCanceledException) { choice = RunningApplicationsChoice.Cancel; }
-                    await SendOperationMessageAsync(channel, new("choice") { RequestId = message.RequestId, Choice = choice }, token);
+                    await SendOperationMessageAsync(channel, new("choice") { RequestId = message.RequestId, Choice = choice, NotifyCompletion = applications.NotifyCompletion }, token);
                     break;
                 case "result" when message.Result is { Success: true } completed:
                     if (completed.ProductId != request.ProductId || completed.Version != request.Version ||
@@ -158,7 +158,7 @@ internal static class ElevatedInstallWorker
                 throw new InvalidDataException("The installation request was rejected.");
             using var operation = new CancellationTokenSource();
             using var listener = new CancellationTokenSource();
-            var choices = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<RunningApplicationsChoice>>();
+            var choices = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<WorkerMessage>>();
             var commands = ReadCommandsAsync(channel, choices, operation, listener.Token);
             try
             {
@@ -197,13 +197,15 @@ internal static class ElevatedInstallWorker
                         prompt = prompt with { Operation = "repair" };
                     if (prompt.Operation != request.Operation) throw new InvalidDataException("The engine maintenance operation changed.");
                     var id = Guid.NewGuid().ToString("N");
-                    var answer = new TaskCompletionSource<RunningApplicationsChoice>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var answer = new TaskCompletionSource<WorkerMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
                     if (prompt.Applications.Count > 64 || !choices.TryAdd(id, answer)) throw new InvalidDataException("Too many applications require attention.");
                     using var registration = cancellation.Register(() => answer.TrySetCanceled(cancellation));
                     try
                     {
                         await channel.SendAsync(new("applications") { RequestId = id, Applications = prompt }, cancellation);
-                        return await answer.Task;
+                        var response = await answer.Task;
+                        prompt.NotifyCompletion = response.NotifyCompletion;
+                        return response.Choice!.Value;
                     }
                     finally { choices.TryRemove(id, out _); }
                 };
@@ -236,7 +238,7 @@ internal static class ElevatedInstallWorker
     }
 
     private static async Task ReadCommandsAsync(WorkerChannel channel,
-        System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<RunningApplicationsChoice>> choices,
+        System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<WorkerMessage>> choices,
         CancellationTokenSource operation, CancellationToken token)
     {
         try
@@ -245,7 +247,7 @@ internal static class ElevatedInstallWorker
             {
                 var message = await channel.ReadAsync(token);
                 if (message.Kind == "cancel") operation.Cancel();
-                else if (message.Kind == "choice" && message.RequestId is { } id && message.Choice is { } choice && Enum.IsDefined(choice) && choices.TryGetValue(id, out var answer)) answer.TrySetResult(choice);
+                else if (message.Kind == "choice" && message.RequestId is { } id && message.Choice is { } choice && Enum.IsDefined(choice) && choices.TryGetValue(id, out var answer)) answer.TrySetResult(message);
                 else throw new InvalidDataException("The wizard sent an unexpected command.");
             }
         }
@@ -445,6 +447,8 @@ internal static class ElevatedInstallWorker
         public RunningApplicationsRequest? Applications { get; init; }
         public string? RequestId { get; init; }
         public RunningApplicationsChoice? Choice { get; init; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+        public bool NotifyCompletion { get; init; }
         public InstallResult? Result { get; init; }
         public string? Error { get; init; }
     }

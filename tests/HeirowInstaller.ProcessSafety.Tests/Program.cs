@@ -166,6 +166,52 @@ try
         Check(prompts == 1 && app.Process.HasExited && app.Requests == 1, "consented normal window close succeeds without termination");
     }
 
+    await using (var app = await Probe.Start(source, root, "guard-completion", false))
+    await using (var unrelated = await Probe.Start(source, root, "guard-unrelated", true))
+    {
+        string? guardId = null; var prompts = 0; var completions = 0;
+        await RunningApplications.EnsureClosedAsync(Target(app), (request, _) =>
+        {
+            if (request.Completed)
+            {
+                completions++;
+                Check(request.GuardId == guardId && request.Applications.Count == 0 && app.Process.HasExited,
+                    "successful guard sends its correlated terminal event only after affected applications exit");
+                return Task.FromResult(RunningApplicationsChoice.ForceCloseListedApps);
+            }
+            request.NotifyCompletion = true; guardId = request.GuardId; prompts++;
+            return Task.FromResult(RunningApplicationsChoice.CloseAppsAndContinue);
+        });
+        Check(prompts == 1 && completions == 1 && !unrelated.Process.HasExited && unrelated.Requests == 0,
+            "terminal callback return never grants process closure authority");
+    }
+
+    await using (var app = await Probe.Start(source, root, "guard-completion-failures", true))
+    {
+        foreach (var failure in new[] { "cancel", "error", "disposed-ui", "unresponsive-ui" })
+        {
+            var completed = false; var watch = Stopwatch.StartNew();
+            Task<RunningApplicationsChoice> Prompt(RunningApplicationsRequest request, CancellationToken token)
+            {
+                if (request.Completed)
+                {
+                    completed = true;
+                    if (failure == "unresponsive-ui") return new TaskCompletionSource<RunningApplicationsChoice>().Task;
+                    throw new ObjectDisposedException("Fixture UI");
+                }
+                request.NotifyCompletion = true;
+                if (failure == "error") throw new InvalidDataException("Original fixture failure");
+                return Task.FromResult(RunningApplicationsChoice.Cancel);
+            }
+            if (failure == "error")
+                await Throws<InvalidDataException>(() => RunningApplications.EnsureClosedAsync(Target(app), Prompt), "terminal presentation failure preserves original guard error");
+            else
+                await Throws<OperationCanceledException>(() => RunningApplications.EnsureClosedAsync(Target(app), Prompt), "terminal presentation failure preserves guard cancellation");
+            Check(completed && watch.Elapsed < TimeSpan.FromSeconds(5) && !app.Process.HasExited && app.Requests == 0,
+                "guard cleanup remains bounded and cannot bypass cancellation or touch an application");
+        }
+    }
+
     var raceTarget = Path.Combine(root, "starts-during-verification"); Directory.CreateDirectory(raceTarget);
     foreach (var file in Directory.EnumerateFiles(source)) File.Copy(file, Path.Combine(raceTarget, Path.GetFileName(file)));
     Probe? lateApp = null;

@@ -41,6 +41,7 @@ internal static class NativeUpdatePrompt
     {
         if (!request.ProductId.Equals(profile.ProductId, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The close-apps prompt does not match this installed application.");
+        if (request.Completed) return RunningApplicationsChoice.CheckAgain;
         string? Fixture(string name) => profile.Isolated ? Environment.GetEnvironmentVariable(name) : null;
         var choice = Fixture("HEIROWUPDATER_TEST_CLOSE_APPS_CHOICE");
         if (Fixture("HEIROWUPDATER_TEST_CLOSE_APPS_CHOICE_FILE") is { } choiceFile && File.Exists(choiceFile))
@@ -301,6 +302,7 @@ internal static class NativeUpdatePrompt
         }
         protected override void LoadContent()
         {
+            if (frames == 0) DesktopWindowPlacement.Center(Window.Handle);
             batch = new SpriteBatch(GraphicsDevice);
             var resources = new ContentContainer(Content, GraphicsDevice); resources.LoadVectorFontsOnly();
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);
@@ -432,6 +434,7 @@ internal static class NativeUpdatePrompt
         }
         protected override void LoadContent()
         {
+            if (frames == 0) DesktopWindowPlacement.Center(Window.Handle);
             batch = new SpriteBatch(GraphicsDevice);
             var resources = new ContentContainer(Content, GraphicsDevice); resources.LoadVectorFontsOnly();
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);

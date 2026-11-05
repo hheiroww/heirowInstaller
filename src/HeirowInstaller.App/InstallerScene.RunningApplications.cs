@@ -67,10 +67,12 @@ internal sealed partial class InstallerScene
         }
         var canClose = !dialog.ManualOnly && dialog.Applications.Any(application => application.CanRequestClose);
         var canForce = !dialog.ManualOnly && dialog.Applications.Any(application => application.CanForceClose);
-        var buttonCount = 2 + (canClose ? 1 : 0) + (canForce ? 1 : 0);
+        var canDismiss = Controller.CanDismissRunningApplications;
+        var buttonCount = 2 + (canClose ? 1 : 0) + (canForce ? 1 : 0) + (canDismiss ? 1 : 0);
         var buttonWidth = (width - 54 - (buttonCount - 1) * 12) / buttonCount;
         var buttonX = x + 27;
         Action("running.cancel", cancelLabel, buttonX, y + height - 65, buttonWidth, Controller.CancelRunningApplications); buttonX += buttonWidth + 12;
+        if (canDismiss) { Action("running.dismiss", "Close", buttonX, y + height - 65, buttonWidth, Controller.DismissRunningApplications); buttonX += buttonWidth + 12; }
         Action("running.check", "Check again", buttonX, y + height - 65, buttonWidth, Controller.CheckRunningApplications, !canClose); buttonX += buttonWidth + 12;
         if (canClose) { Action("running.close", "Close apps", buttonX, y + height - 65, buttonWidth, Controller.CloseRunningApplications, true, !dialog.Waiting); buttonX += buttonWidth + 12; }
         if (canForce) Action("running.force", "Force close…", buttonX, y + height - 65, buttonWidth, Controller.ConfirmForceCloseRunningApplications, accent: Theme.Orange);

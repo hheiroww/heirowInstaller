@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json.Serialization;
 
 namespace HeirowInstaller.Core;
 
@@ -20,6 +21,14 @@ public sealed record RunningApplicationsRequest(string ProductId, string Product
     IReadOnlyList<RunningApplication> Applications, bool IsRetry, string Message)
 {
     public bool InspectionTimedOut { get; init; }
+    /// <summary>Correlates retries and the terminal notification for one process guard.</summary>
+    public string GuardId { get; init; } = "";
+    /// <summary>Informational only: the guard has ended. The callback's return value is ignored.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Completed { get; init; }
+    /// <summary>UI adapters opt in during a prompt; legacy consent callbacks receive no terminal event.</summary>
+    [JsonIgnore]
+    public bool NotifyCompletion { get; set; }
 }
 
 public sealed class RunningApplicationsException : InvalidOperationException
@@ -202,6 +211,10 @@ public static partial class RunningApplications
         var retry = false;
         var inspectionTimedOut = false;
         IReadOnlyList<RunningApplication> applications = [];
+        var guardId = Guid.NewGuid().ToString("N");
+        var notifyCompletion = false;
+        try
+        {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -223,8 +236,11 @@ public static partial class RunningApplications
                 : retry
                 ? "Some applications are still open or restarted. Save your work, finish any save dialogs, then retry or cancel installation."
                 : "These applications use files that must be updated. Save your work before closing them. Applications that cannot be verified must be closed manually.";
-            var choice = await prompt(new(target.ProductId, target.ProductName, target.Operation, applications, retry, message)
-                { InspectionTimedOut = inspectionTimedOut }, cancellationToken);
+            var request = new RunningApplicationsRequest(target.ProductId, target.ProductName, target.Operation, applications, retry, message)
+                { InspectionTimedOut = inspectionTimedOut, GuardId = guardId };
+            RunningApplicationsChoice choice;
+            try { choice = await prompt(request, cancellationToken); }
+            finally { notifyCompletion |= request.NotifyCompletion; }
             cancellationToken.ThrowIfCancellationRequested();
             inspectionTimedOut = false;
             if (choice == RunningApplicationsChoice.Cancel)
@@ -247,6 +263,22 @@ public static partial class RunningApplications
             // budget. Return to consent immediately instead of starting another scan.
             catch (TimeoutException) { inspectionTimedOut = true; }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { inspectionTimedOut = true; }
+        }
+        }
+        finally
+        {
+            if (notifyCompletion && prompt is not null)
+            {
+                // Presentation cleanup cannot mask a guard failure, alter its result,
+                // or hold installation open after a window/IPC peer has disappeared.
+                try
+                {
+                    using var notificationTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await prompt(new(target.ProductId, target.ProductName, target.Operation, [], false, "")
+                        { GuardId = guardId, Completed = true }, notificationTimeout.Token).WaitAsync(notificationTimeout.Token);
+                }
+                catch (Exception) { }
+            }
         }
     }
 

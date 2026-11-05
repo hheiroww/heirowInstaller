@@ -59,6 +59,7 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
 
     protected override void LoadContent()
     {
+        if (!ContentLoadingStarted && !arguments.Isolated) HeirowInstaller.Core.DesktopWindowPlacement.Center(Window.Handle);
         ContentLoadingStarted = true;
         spriteBatch = new SpriteBatch(GraphicsDevice);
         var resources = new ContentContainer(Content, GraphicsDevice);

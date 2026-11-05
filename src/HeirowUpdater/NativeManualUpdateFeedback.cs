@@ -387,6 +387,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         }
         protected override void LoadContent()
         {
+            if (frames == 0) DesktopWindowPlacement.Center(Window.Handle);
             batch = new SpriteBatch(GraphicsDevice);
             var resources = new ContentContainer(Content, GraphicsDevice); resources.LoadVectorFontsOnly();
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);

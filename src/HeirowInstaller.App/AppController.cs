@@ -734,7 +734,6 @@ internal sealed partial class AppController : IDisposable
     internal IProgress<InstallProgress> Reporter() => new UiProgress(game.Enqueue, values =>
     {
         var value = values[^1];
-        if (values.Any(item => item.Phase.Equals("applications", StringComparison.OrdinalIgnoreCase))) ClearRunningApplicationsDialog();
         Progress = IsWizard && Stage == SetupStage.Progress ? Math.Max(Progress, value.Phase.ToLowerInvariant() switch
         {
             "verify" => value.Fraction * 0.10,
