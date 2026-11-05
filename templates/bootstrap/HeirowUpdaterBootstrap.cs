@@ -37,7 +37,7 @@ public static class HeirowUpdaterBootstrap
             start.ArgumentList.Add("--config"); start.ArgumentList.Add(configuration);
             start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(application.Id.ToString(CultureInfo.InvariantCulture));
             start.ArgumentList.Add("--application-start"); start.ArgumentList.Add(application.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture));
-            if (host is not null && !Path.GetFullPath(host).StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            if (host is not null)
             { start.ArgumentList.Add("--application-host"); start.ArgumentList.Add(Path.GetFullPath(host)); }
             foreach (var name in new[] { "HEIROWUPDATER_TOKEN", "HEIROWUPDATER_COOKIE", "HEIROWUPDATER_SESSION_SUPPLIED", "HEIROWUPDATER_SESSION_CAPTURED_AT", "HEIROWUPDATER_SESSION_ID", "HEIROWUPDATER_SESSION_SOURCE_PID", "HEIROWUPDATER_SESSION_SOURCE_START", "HEIROWUPDATER_SESSION_SEQUENCE" }) start.Environment.Remove(name);
             session?.Apply(start);

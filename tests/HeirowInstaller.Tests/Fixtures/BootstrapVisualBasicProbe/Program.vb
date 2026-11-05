@@ -29,6 +29,7 @@ Module Program
         Dim childRoot = Guard(Path.GetDirectoryName(Path.GetFullPath(args(configIndex + 1))))
         Dim temporary = Path.Combine(childRoot, "child.json.tmp")
         File.WriteAllText(temporary, JsonSerializer.Serialize(New With {
+            .applicationHost = args(Array.IndexOf(args, "--application-host") + 1),
             .cookieCorrect = Environment.GetEnvironmentVariable("HEIROWUPDATER_COOKIE") = "wshare_hash=fixture-bootstrap-native",
             .noBearer = Environment.GetEnvironmentVariable("HEIROWUPDATER_TOKEN") Is Nothing,
             .capturedAt = Long.Parse(Environment.GetEnvironmentVariable("HEIROWUPDATER_SESSION_CAPTURED_AT")),

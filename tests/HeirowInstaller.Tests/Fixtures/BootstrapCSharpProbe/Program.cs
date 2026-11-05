@@ -51,6 +51,7 @@ var childRoot = Guard(Path.GetDirectoryName(Path.GetFullPath(args[configIndex + 
 var temporary = Path.Combine(childRoot, "child.json.tmp");
 File.WriteAllText(temporary, JsonSerializer.Serialize(new
 {
+    applicationHost = args[Array.IndexOf(args, "--application-host") + 1],
     cookieCorrect = Environment.GetEnvironmentVariable("HEIROWUPDATER_COOKIE") == "wshare_hash=fixture-bootstrap-native",
     noBearer = Environment.GetEnvironmentVariable("HEIROWUPDATER_TOKEN") is null,
     capturedAt = long.Parse(Environment.GetEnvironmentVariable("HEIROWUPDATER_SESSION_CAPTURED_AT")!),

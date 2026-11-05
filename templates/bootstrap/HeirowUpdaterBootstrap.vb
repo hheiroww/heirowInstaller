@@ -48,7 +48,7 @@ Namespace Global.SocketJack
                     start.ArgumentList.Add("--config") : start.ArgumentList.Add(configuration)
                     start.ArgumentList.Add("--application-pid") : start.ArgumentList.Add(application.Id.ToString(CultureInfo.InvariantCulture))
                     start.ArgumentList.Add("--application-start") : start.ArgumentList.Add(application.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture))
-                    If host IsNot Nothing AndAlso Not Path.GetFullPath(host).StartsWith(root & Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) Then
+                    If host IsNot Nothing Then
                         start.ArgumentList.Add("--application-host") : start.ArgumentList.Add(Path.GetFullPath(host))
                     End If
                     For Each name In {"HEIROWUPDATER_TOKEN", "HEIROWUPDATER_COOKIE", "HEIROWUPDATER_SESSION_SUPPLIED", "HEIROWUPDATER_SESSION_CAPTURED_AT", "HEIROWUPDATER_SESSION_ID", "HEIROWUPDATER_SESSION_SOURCE_PID", "HEIROWUPDATER_SESSION_SOURCE_START", "HEIROWUPDATER_SESSION_SEQUENCE"}

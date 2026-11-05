@@ -84,7 +84,7 @@ public static class ApplicationUpdater
         start.ArgumentList.Add(command); start.ArgumentList.Add("--config"); start.ArgumentList.Add(Path.GetFullPath(configurationPath));
         start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(application.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
         start.ArgumentList.Add("--application-start"); start.ArgumentList.Add(application.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        if (System.Environment.ProcessPath is { } host && !Path.GetFullPath(host).StartsWith(Path.GetDirectoryName(Path.GetFullPath(configurationPath))! + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        if (System.Environment.ProcessPath is { } host)
         { start.ArgumentList.Add("--application-host"); start.ArgumentList.Add(host); }
         if (session is not null) SetSessionEnvironment(start, session);
         else SetSessionEnvironment(start, bearerToken, sessionCookie, replaceCredentials);
