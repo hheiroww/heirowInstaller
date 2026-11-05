@@ -8,7 +8,7 @@ internal sealed partial class AppController
     private static readonly Uri AccountOrigin = new("https://socketjack.com");
     private RememberedPublisherAccount? rememberedAccount;
     private RememberedPublisherAccount Account => rememberedAccount ??= new(AccountOrigin);
-    private bool UsesRememberedAccount => OperatingSystem.IsWindows() && !IsWizard && !arguments.Isolated && arguments.SmokeDirectory is null &&
+    private bool UsesRememberedAccount => OperatingSystem.IsWindows() && (!IsWizard || arguments.RemotePackageUrl is not null) && !arguments.Isolated && arguments.SmokeDirectory is null &&
         arguments.SelfUpdateSmokeFeed is null && arguments.CapturePath is null;
 
     private async Task RestoreAccountAsync(bool renew, CancellationToken cancellationToken)

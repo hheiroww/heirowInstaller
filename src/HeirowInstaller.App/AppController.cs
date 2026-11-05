@@ -26,7 +26,7 @@ internal sealed partial class AppController : IDisposable
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
     internal bool IsMaintenanceWizard => arguments.MaintenanceProductId is not null;
-    internal bool IsWizard => arguments.PackagePath is not null || IsMaintenanceWizard;
+    internal bool IsWizard => arguments.PackagePath is not null || arguments.RemotePackageUrl is not null || IsMaintenanceWizard;
     internal string? MaintenanceOperation => arguments.MaintenanceOperation;
     internal PackageManifest? Manifest { get; private set; }
     internal InstallPlan? Plan { get; private set; }
@@ -280,6 +280,7 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = arguments.RequireSignature,
         LegacyArguments = arguments.LegacyArguments,
         LogPath = arguments.LogPath,
+        SharedPackageTransport = CreateDownloadTransport(),
         RunningApplicationsPrompt = PromptRunningApplicationsAsync
     };
 
@@ -410,6 +411,7 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = product.PublisherKeySha256 is not null,
         LogPath = arguments.LogPath,
         LegacyArguments = arguments.LegacyArguments,
+        SharedPackageTransport = CreateDownloadTransport(),
         RunningApplicationsPrompt = (request, token) => PromptRunningApplicationsAsync(operation is null ? request : request with { Operation = operation }, token)
     };
 
@@ -638,10 +640,12 @@ internal sealed partial class AppController : IDisposable
         else Cancellation?.Cancel();
     }
 
-    private UpdateClient CreateUpdateClient() => new(allowLoopback: arguments.SelfUpdateSmokeFeed is not null, transport: new SocketJackUpdateTransport(
+    private SocketJackUpdateTransport CreateDownloadTransport() => new(
         credentialOrigin: new Uri("https://socketjack.com"),
         cookie: PublisherSignedIn ? null : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE"),
-        bearerToken: PublisherSignedIn ? publisherSession!.AccessToken : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN")));
+        bearerToken: PublisherSignedIn ? publisherSession!.AccessToken : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN"));
+
+    private UpdateClient CreateUpdateClient() => new(allowLoopback: arguments.SelfUpdateSmokeFeed is not null, transport: CreateDownloadTransport());
 
     private static bool RequiresExitForStagedUpdate(string output)
     {

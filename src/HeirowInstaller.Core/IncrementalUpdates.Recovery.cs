@@ -6,7 +6,7 @@ using System.Text.Json.Serialization;
 namespace HeirowInstaller.Core;
 
 /// <summary>Caller-verified ownership and manifest binding for durable application-file recovery.</summary>
-public sealed class FileTransactionRecoveryContext
+public sealed partial class FileTransactionRecoveryContext
 {
     public string ProductId { get; init; } = "";
     public string StateRoot { get; init; } = "";
@@ -100,7 +100,7 @@ public sealed class FileTransactionRecoveryContext
             var authoredOld = oldManifest?.Payload.FirstOrDefault(file => file.Path.Equals(path, InstallerPlatform.PathComparison));
             if (old is not null && authoredOld is not null && (!PackageSafety.HashEquals(old.Sha256, authoredOld.Sha256) || !string.Equals(old.TargetRoot, authoredOld.TargetRoot, InstallerPlatform.PathComparison)))
                 throw new CryptographicException("Recovery receipt ownership differs from the signed base manifest.");
-            long? oldSize = authoredOld?.Size;
+            long? oldSize = old is null ? null : authoredOld?.Size;
             var rootId = next?.TargetRoot ?? old?.TargetRoot;
             var relativeTarget = rootId is null ? null : path[(rootId.Length + 1)..];
             var resolvedTarget = rootId is null ? null : next is not null ? PayloadDestinations.Resolve(manifest, installRoot, plan.Scope, options.Isolated, next)
@@ -142,6 +142,8 @@ public sealed class FileTransactionRecoveryContext
                 AfterSha256 = next.Content is null ? null : IncrementalPackageIO.Hash(next.Content), AfterSize = next.Content?.Length
             };
         }
+        foreach (var target in SharedPackages.RecoveryTargets(signedTarget, oldManifest, previous, plan, targetDigest, baseDigest, publisherPin, stateRoot, options.Isolated))
+            files[target.Location + ":" + target.Path] = target;
         foreach (var target in LegacyStagingCleanupModule.RecoveryTargets(signedTarget, installRoot, stateRoot, publisherPin, plan.Features))
             if (!files.TryAdd(target.Location + ":" + target.Path, target))
                 throw new InvalidDataException("Legacy cleanup recovery overlaps an existing owned destination.");

@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace HeirowInstaller.Core;
 
-public sealed class InstallerEngine
+public sealed partial class InstallerEngine
 {
     private readonly Dictionary<string, IInstallerModule> modules;
     private readonly INativeMigrationBackend nativeMigrationBackend;
@@ -63,6 +63,7 @@ public sealed class InstallerEngine
         PackageSafety.ValidateManifest(manifest, true);
         PackagePlatform.RequireCurrentHost(manifest);
         package.VerifySignature(options.TrustedPublisherKeySha256, options.RequireSignature);
+        SharedPackages.ValidateAuthority(package);
         var scope = options.Scope ?? manifest.Scope;
         if (scope is not ("user" or "machine")) throw new InvalidDataException("Scope must be user or machine.");
         var recorded = manifest.NativeMigration is not null && options.Scope is null && options.StateRoot is null
@@ -167,7 +168,8 @@ public sealed class InstallerEngine
         options ??= new();
         var plan = Plan(package, options);
         if (plan.RequiresElevation && !IsElevated && !options.Isolated) throw new UnauthorizedAccessException("This installation requires an elevated process. Run the installer as administrator.");
-        await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
+        if (package.Manifest.SharedPackages?.Any(dependency => dependency.Feature is null || plan.Features.Contains(dependency.Feature, StringComparer.OrdinalIgnoreCase)) != true)
+            await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
         var root = GetStateRoot(options, plan.Scope);
         using var machineState = OperatingSystem.IsWindows() && plan.Scope == "machine" && !options.Isolated ? MachineStateSecurity.Acquire(root, create: true) : null;
         if (machineState is null) Directory.CreateDirectory(root);
@@ -175,6 +177,7 @@ public sealed class InstallerEngine
         cancellationToken.ThrowIfCancellationRequested();
         // Re-evaluate after acquiring the cross-process product lock.
         plan = Plan(package, options);
+        var sharedBinding = await SharedPackages.PrepareAsync(package, plan, options, progress, cancellationToken);
         var previous = FindInstalled(package.Manifest.Id, options, plan.Scope);
         using var migration = await NativeMigrationSession.OpenAsync(package, plan, previous, options, nativeMigrationBackend, operationLock, progress, cancellationToken);
         if (migration is not null && options.FileRecoveryContext is not { RequireExactBase: true })
@@ -260,6 +263,8 @@ public sealed class InstallerEngine
             {
                 if (previous is not null) await RestoreModulesAsync(previous, transaction, options, cancellationToken);
                 var desired = plan.Files.Where(x => !IsSharedRuntimePayload(package.Manifest, x.Path)).Select(x => x.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (sharedBinding is not null) desired.Add(SharedPackages.BindingFileName);
+                if (SharedPackages.ProbingConfigurationPath(package.Manifest) is { } probingPath) desired.Add(probingPath);
                 if (plan.UpdateCompanionEnabled) desired.Add(package.Manifest.UpdateCompanion!.ConfigurationPath);
                 if (previous is not null)
                     foreach (var removed in previous.Files.Where(x => !desired.Contains(x.Path))) RestoreOwnedFile(previous, removed, cache, transaction);
@@ -285,6 +290,7 @@ public sealed class InstallerEngine
                     progress?.Report(new("install", file.Path, i + 1, plan.Files.Count));
                 }
                 if (plan.UpdateCompanionEnabled) InstallCompanionConfiguration(package.Manifest, plan, product, previous, root, cache, transaction, extracted);
+                SharedPackages.Activate(sharedBinding, product, previous, root, transaction);
                 product.Modules = await WindowsIntegration.ApplyModulesAsync(package.Manifest, plan, transaction, options, cancellationToken, product);
                 foreach (var configuration in package.Manifest.Modules)
                 {
@@ -428,7 +434,11 @@ public sealed class InstallerEngine
             transaction.Commit();
             return Result(product, exit is 3010 or 1641);
         }
-        using (var package = PackageReader.Open(product.PackagePath)) return await InstallAsync(package, options, progress, cancellationToken);
+        using (var package = PackageReader.Open(product.PackagePath))
+        {
+            if (package.IsMetadataOnly) return await RepairSelectedFilesAsync(product, options, progress, cancellationToken);
+            return await InstallAsync(package, options, progress, cancellationToken);
+        }
     }
 
     public async Task<InstallResult> UninstallAsync(string productId, InstallOptions? options = null,
@@ -456,6 +466,7 @@ public sealed class InstallerEngine
         using var transaction = new InstallTransaction(Path.Combine(root, ".transactions", Guid.NewGuid().ToString("N")));
         options.Isolated = product.Isolated;
         ReleaseSharedRuntimeReference(product, transaction);
+        SharedPackages.Release(product, root, transaction);
         var reboot = false;
         var backendAlreadyRemoved = OperatingSystem.IsWindows() && (product.IsMsi && !WindowsIntegration.IsMsiInstalled(product.MsiProductCode) ||
             product.IsExecutable && product.BackendRegistrations.Count > 0 && !BackendMaintenance.HasRegistration(product));
@@ -552,7 +563,7 @@ public sealed class InstallerEngine
             InstallDirectory = product.InstallDirectory, StateRoot = stateRoot, Scope = product.Scope,
             PublisherKeySha256 = product.PublisherKeySha256!, Features = product.Features, EntryPoint = manifest.EntryPoint,
             LaunchWorkingDirectory = manifest.LaunchWorkingDirectory,
-            Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin, UpdateMode = definition.UpdateMode,
+            Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin, UpdateMode = definition.UpdateMode, UpdateProtocol = definition.UpdateProtocol,
             AuthApplication = definition.AuthApplication, CookieEnvironmentVariable = definition.CookieEnvironmentVariable,
             TokenEnvironmentVariable = definition.TokenEnvironmentVariable
         };
@@ -638,8 +649,7 @@ public sealed class InstallerEngine
         await WindowsIntegration.RestoreModulesAsync(product, transaction, options, token);
     }
 
-    private static bool IsSharedRuntimePayload(PackageManifest manifest, string path) =>
-        manifest.UpdateCompanion is { RuntimeMode: "shared" } companion && path.Equals(companion.ExecutablePath, StringComparison.OrdinalIgnoreCase);
+    private static bool IsSharedRuntimePayload(PackageManifest manifest, string path) => SharedUpdaterRuntime.IsRuntimePayload(manifest, path);
 
     private static void InstallCompanionConfiguration(PackageManifest manifest, InstallPlan plan, InstalledProduct product,
         InstalledProduct? previous, string stateRoot, string cache, InstallTransaction transaction, string extracted)
@@ -659,7 +669,7 @@ public sealed class InstallerEngine
             InstallDirectory = product.InstallDirectory, StateRoot = stateRoot, Scope = product.Scope,
             PublisherKeySha256 = product.PublisherKeySha256!, Features = product.Features, EntryPoint = manifest.EntryPoint,
             LaunchWorkingDirectory = manifest.LaunchWorkingDirectory,
-            Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin, UpdateMode = definition.UpdateMode,
+            Mode = definition.Mode, Isolated = product.Isolated, CredentialOrigin = definition.CredentialOrigin, UpdateMode = definition.UpdateMode, UpdateProtocol = definition.UpdateProtocol,
             AuthApplication = definition.AuthApplication,
             CookieEnvironmentVariable = definition.CookieEnvironmentVariable, TokenEnvironmentVariable = definition.TokenEnvironmentVariable,
             AffectedResourceFiles = RunningApplicationTarget.FromManifest(manifest, product.InstallDirectory, "update", product.Features, product.Scope, product.Isolated).AffectedResourceFiles.ToList()

@@ -17,6 +17,7 @@ public sealed class UpdaterTarget
     public string? PublisherKeySha256 { get; set; }
     public List<string>? Features { get; set; }
     public string? UpdateMode { get; set; }
+    public string? UpdateProtocol { get; set; }
     public string? CredentialOrigin { get; set; }
     public string? AuthApplication { get; set; }
     public string? CookieEnvironmentVariable { get; set; }
@@ -37,7 +38,7 @@ public sealed class UpdaterTarget
             FeedUrl = product.UpdateUrl ?? throw new InvalidOperationException("Product has no update feed."),
             InstallDirectory = product.UseOriginalInstallDirectory ? null : product.InstallDirectory,
             Scope = product.Scope, StateRoot = stateRoot ?? Path.GetDirectoryName(Path.GetDirectoryName(product.ReceiptPath)), PublisherKeySha256 = product.PublisherKeySha256,
-            Features = product.Features, UpdateMode = mode,
+            Features = product.Features, UpdateMode = mode, UpdateProtocol = package.Manifest.UpdateCompanion?.UpdateProtocol,
             CredentialOrigin = authentication?.CredentialOrigin, AuthApplication = authentication?.AuthApplication,
             CookieEnvironmentVariable = authentication?.CookieEnvironmentVariable, TokenEnvironmentVariable = authentication?.TokenEnvironmentVariable
         };
@@ -74,23 +75,32 @@ public sealed class UpdateRequiresElevationException(string productId) : Unautho
 }
 
 /// <summary>Reusable application updater using actual SocketJack HTTP networking and the heirowInstaller verification engine.</summary>
-public sealed class SocketJackUpdater : IDisposable
+public sealed partial class SocketJackUpdater : IDisposable
 {
     private readonly UpdateClient client;
-    public SocketJackUpdater(bool allowLoopback = false, Uri? credentialOrigin = null, string? cookie = null, string? bearerToken = null, bool requireIncrementalUpdates = false)
+    private readonly SocketJackUpdateTransport transport;
+    private readonly Func<ApplicationSessionSnapshot> session;
+    public SocketJackUpdater(bool allowLoopback, Uri? credentialOrigin, string? cookie, string? bearerToken, bool requireIncrementalUpdates)
+        : this(allowLoopback, credentialOrigin, cookie, bearerToken, requireIncrementalUpdates, false) { }
+    public SocketJackUpdater(bool allowLoopback = false, Uri? credentialOrigin = null, string? cookie = null, string? bearerToken = null, bool requireIncrementalUpdates = false, bool fileSelectionUpdates = false)
     {
-        client = new(allowLoopback, transport: new SocketJackUpdateTransport(credentialOrigin, cookie, bearerToken), requireIncrementalUpdates: requireIncrementalUpdates);
+        session = () => new(cookie, bearerToken);
+        transport = new SocketJackUpdateTransport(credentialOrigin, cookie, bearerToken);
+        client = new(allowLoopback, transport: transport, requireIncrementalUpdates: requireIncrementalUpdates, fileSelectionUpdates: fileSelectionUpdates);
     }
-    internal SocketJackUpdater(bool allowLoopback, Uri credentialOrigin, Func<ApplicationSessionSnapshot> session, bool requireIncrementalUpdates = false)
+    internal SocketJackUpdater(bool allowLoopback, Uri credentialOrigin, Func<ApplicationSessionSnapshot> session, bool requireIncrementalUpdates = false, bool fileSelectionUpdates = false)
     {
-        client = new(allowLoopback, transport: new SocketJackUpdateTransport(credentialOrigin, session), requireIncrementalUpdates: requireIncrementalUpdates);
+        this.session = session; transport = new SocketJackUpdateTransport(credentialOrigin, session);
+        client = new(allowLoopback, transport: transport, requireIncrementalUpdates: requireIncrementalUpdates, fileSelectionUpdates: fileSelectionUpdates);
     }
     public Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken = default)
         => CheckAsync(target, cancellationToken, null);
 
     public async Task<UpdateCheckResult> CheckAsync(UpdaterTarget target, CancellationToken cancellationToken, IProgress<InstallProgress>? progress)
     {
-        var update = await client.CheckAsync(target.FeedUrl, target.CurrentVersion, target.ProductId, cancellationToken, progress);
+        var update = target.UpdateProtocol == "hfiles1"
+            ? await client.CheckFileSelectionAsync(target.FeedUrl, target.CurrentVersion, target.ProductId, cancellationToken, progress)
+            : await client.CheckAsync(target.FeedUrl, target.CurrentVersion, target.ProductId, cancellationToken, progress);
         RequireFileUpdate(target, update); return update;
     }
 
@@ -156,7 +166,21 @@ public sealed class SocketJackUpdater : IDisposable
         if (target.Scope == "machine" && !InstallerEngine.IsElevated && !policy.Isolated) throw new UpdateRequiresElevationException(target.ProductId);
         var key = policy.TrustedPublisherKeySha256 ?? target.PublisherKeySha256;
         if (key is null && !policy.AllowUnsigned) throw new InvalidOperationException("Automatic application updates require a trusted publisher key. Configure --trust-key or explicitly opt in with --allow-unsigned.");
-        var download = await client.DownloadAsync(update.Feed, policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads"), progress, cancellationToken);
+        var options = new InstallOptions
+        {
+            TargetDirectory = target.InstallDirectory, StateRoot = target.StateRoot, Scope = target.Scope, Features = target.Features,
+            Silent = true, Launch = false, Isolated = policy.Isolated, LogPath = policy.LogPath, TrustedPublisherKeySha256 = key,
+            RequireSignature = key is not null || !policy.AllowUnsigned, InstallerPath = FindInstaller(), SharedPackageTransport = transport
+        };
+        var downloadDirectory = policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads");
+        if (update.Feed.PackageType.Equals("hfiles", StringComparison.OrdinalIgnoreCase))
+        {
+            var installed = InstallerEngine.ListInstalled(target.StateRoot).Single(product => product.Id.Equals(target.ProductId, StringComparison.OrdinalIgnoreCase) && product.Scope == target.Scope);
+            using var prepared = await client.PrepareFileUpdateAsync(update.Feed, installed, downloadDirectory, options, progress, cancellationToken);
+            var applied = await new InstallerEngine().ApplyPreparedFileUpdateAsync(prepared, options, progress, cancellationToken);
+            target.CurrentVersion = update.Feed.Version; return applied;
+        }
+        var download = await client.DownloadAsync(update.Feed, downloadDirectory, progress, cancellationToken);
         var result = await client.ApplyAsync(download, update.Feed, new()
         {
             TargetDirectory = target.InstallDirectory, StateRoot = target.StateRoot, Scope = target.Scope,
@@ -179,6 +203,8 @@ public sealed class SocketJackUpdater : IDisposable
         if (target.Scope == "machine" && !InstallerEngine.IsElevated && !policy.Isolated && !policy.StageForElevation) throw new UpdateRequiresElevationException(target.ProductId);
         var key = policy.TrustedPublisherKeySha256 ?? target.PublisherKeySha256;
         if (key is null && !policy.AllowUnsigned) throw new InvalidOperationException("Update handoff requires a trusted publisher key.");
+        if (update.Feed.PackageType.Equals("hfiles", StringComparison.OrdinalIgnoreCase))
+            return await PrepareFileSelectionHandoffAsync(target, update, waitForProcessId, waitForStartTicks, policy, key, progress, cancellationToken);
         if (update.Feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
             return await PrepareIncrementalHandoffAsync(target, update, waitForProcessId, waitForStartTicks, policy, key, progress, cancellationToken);
         var downloadDirectory = policy.DownloadDirectory ?? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "downloads");
@@ -278,7 +304,7 @@ public sealed class SocketJackUpdater : IDisposable
     }
     private static void RequireFileUpdate(UpdaterTarget target, UpdateCheckResult update)
     {
-        if (target.UpdateMode == "files" && update.Available && !update.Feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+        if (target.UpdateMode == "files" && update.Available && update.Feed.PackageType.ToLowerInvariant() is not ("hupd" or "hfiles"))
             throw new MissingIncrementalUpdateException(target.ProductId, target.CurrentVersion, update.Feed.Version);
     }
     private static string? FindInstaller()

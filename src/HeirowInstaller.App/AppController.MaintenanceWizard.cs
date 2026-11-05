@@ -27,11 +27,11 @@ internal sealed partial class AppController
                 package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
                 if (package.Manifest.Id != product.Id || package.Manifest.Version != product.Version)
                     throw new InvalidDataException("The cached package does not match this installed application.");
-                await package.VerifyAsync(cancellationToken: Cancellation!.Token);
+                if (!package.IsMetadataOnly) await package.VerifyAsync(cancellationToken: Cancellation!.Token);
                 var identity = new MaintenanceIdentity(product.Id, product.Version, Path.GetFullPath(product.InstallDirectory), product.Scope,
                     Path.GetFullPath(product.PackagePath), PackageSafety.HashFile(product.PackagePath), Path.GetFullPath(product.ReceiptPath),
                     PackageSafety.HashFile(product.ReceiptPath), product.PublisherKeySha256);
-                var artwork = await ReadWizardArtworkAsync(package, Cancellation.Token);
+                var artwork = package.IsMetadataOnly ? null : await ReadWizardArtworkAsync(package, Cancellation!.Token);
                 return (package.Manifest, Identity: identity, Artwork: artwork, Plan: engine.Plan(package, OptionsFor(product)));
             });
             await game.OnUiAsync(() =>

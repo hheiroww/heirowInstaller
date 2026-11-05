@@ -65,7 +65,7 @@ public static partial class PackageSafety
     public static void ValidateManifest(PackageManifest manifest, bool requireHashes)
     {
         ValidateId(manifest.Id);
-        if (manifest.FormatVersion is not (1 or 2 or 3 or 4)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
+        if (manifest.FormatVersion is not (1 or 2 or 3 or 4 or 5)) throw new InvalidDataException($"Unsupported package format: {manifest.FormatVersion}");
         if (string.IsNullOrWhiteSpace(manifest.Name) || string.IsNullOrWhiteSpace(manifest.Publisher))
             throw new InvalidDataException("Package name and publisher are required.");
         _ = PackageVersion.Parse(manifest.Version);
@@ -92,6 +92,7 @@ public static partial class PackageSafety
         if (manifest.Shortcuts.Any(x => x.ArgumentList is not null && (x.Arguments.Length != 0 || x.ArgumentList.Any(a => a is null || a.Contains('\0')))))
             throw new InvalidDataException("Shortcut arguments must use either arguments or a valid argumentList.");
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        SharedPackages.ValidateDefinition(manifest, featureIds);
         if (manifest.Payload.Count == 0) throw new InvalidDataException("Package has no payload files.");
         foreach (var file in manifest.Payload)
         {
@@ -112,6 +113,7 @@ public static partial class PackageSafety
                 if (paths.Contains(ancestor)) throw new InvalidDataException("A payload destination cannot also be another file's parent.");
             }
         }
+        SharedPackages.ValidateLaunch(manifest);
         if (manifest.EntryPoint.Length > 0 && !paths.Contains(NormalizeRelativePath(manifest.EntryPoint)) && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             throw new InvalidDataException("Entry point must be included in the payload.");
         PayloadDestinations.ValidateDefinitions(manifest);
@@ -132,6 +134,8 @@ public static partial class PackageSafety
             if (companion.RuntimeMode is not (null or "shared" or "app-local"))
                 throw new InvalidDataException("The updater runtime must be shared or explicitly app-local for a legacy package.");
             if (companion.UpdateMode is not (null or "files" or "legacy")) throw new InvalidDataException("Unknown application update mode.");
+            if (companion.UpdateProtocol is not (null or "hupd1" or "hfiles1") || manifest.FormatVersion < 5 && companion.UpdateProtocol is not null)
+                throw new InvalidDataException("An explicit update protocol requires format 5 and must be hupd1 or hfiles1.");
             if (companion.UpdateMode == "files" && (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null))
                 throw new InvalidDataException("File updates require native managed file ownership; migrate the legacy installation backend first.");
             if (manifest.EntryPoint.Length == 0 || string.IsNullOrWhiteSpace(manifest.UpdateUrl))
@@ -141,7 +145,14 @@ public static partial class PackageSafety
             companion.ExecutablePath = NormalizeRelativePath(companion.ExecutablePath);
             companion.ConfigurationPath = NormalizeRelativePath(companion.ConfigurationPath);
             var companionPayload = manifest.Payload.SingleOrDefault(x => x.Path.Equals(companion.ExecutablePath, StringComparison.OrdinalIgnoreCase));
-            if (companionPayload is null || !string.Equals(companionPayload.Feature, companion.Feature, StringComparison.OrdinalIgnoreCase))
+            if (companion.SharedPackageId is { } sharedPackageId)
+            {
+                var dependency = manifest.SharedPackages?.SingleOrDefault(x => x.Id.Equals(sharedPackageId, StringComparison.OrdinalIgnoreCase));
+                if (manifest.FormatVersion < 5 || companion.RuntimeMode != "shared" || companion.UpdateProtocol != "hfiles1" || dependency is null ||
+                    !string.Equals(dependency.Feature, companion.Feature, StringComparison.OrdinalIgnoreCase) || companionPayload is not null)
+                    throw new InvalidDataException("A downloaded updater requires format 5, hfiles1, shared runtime mode and its exact optional shared dependency instead of an application payload.");
+            }
+            else if (companionPayload is null || !string.Equals(companionPayload.Feature, companion.Feature, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("The update companion executable must be a payload in its optional feature.");
             if (manifest.EntryPoint.Equals(companion.ExecutablePath, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("The application entry point and update companion must differ.");

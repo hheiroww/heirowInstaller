@@ -23,7 +23,7 @@ internal static partial class UpdaterProgram
         var trustedRuntime = ApplicationUpdater.ResolveExecutable(configuration);
         var installed = InstallerEngine.ListInstalled(configuration.StateRoot).Single(x => x.Id.Equals(id, StringComparison.OrdinalIgnoreCase) && x.Scope == configuration.Scope);
         if (installed.IsMsi || installed.IsExecutable) throw new NotSupportedException("This application needs a native ownership migration before file updates.");
-        if (System.Environment.ProcessPath is not { } processImage || !Path.GetFullPath(processImage).Equals(trustedRuntime, StringComparison.OrdinalIgnoreCase))
+        if (!BootstrapProcessTrust.IsTrustedUpdaterProcess(configuration, trustedRuntime))
             throw new InvalidDataException("File updates must run through the application's verified shared updater.");
         var stateDirectory = ApplicationUpdater.StateDirectory(configuration);
         var statusPath = BoundHandoffPath(args.Require("status-file"), stateDirectory, "status.json");

@@ -4,7 +4,7 @@ using HeirowInstaller.Core;
 namespace HeirowUpdater.SocketJack;
 
 /// <summary>Uses the public SocketJack networking client for each HTTP request. Redirect decisions stay in UpdateClient.</summary>
-public sealed class SocketJackUpdateTransport : IUpdateTransport
+public sealed class SocketJackUpdateTransport : IFileUpdateTransport
 {
     private static readonly SemaphoreSlim clientLifetime = new(1, 1);
     private readonly Uri? credentialOrigin;
@@ -26,7 +26,16 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
     internal SocketJackUpdateTransport(Uri credentialOrigin, Func<ApplicationSessionSnapshot> session)
         : this(credentialOrigin) => this.session = () => { var snapshot = session(); return (snapshot.Cookie, snapshot.BearerToken); };
 
-    public async Task<HttpResponseMessage> GetAsync(Uri uri, long maximumResponseBytes, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+    public Task<HttpResponseMessage> GetAsync(Uri uri, long maximumResponseBytes, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+        => SendAsync("GET", uri, maximumResponseBytes, null, progress, cancellationToken);
+
+    public Task<HttpResponseMessage> PostAsync(Uri uri, long maximumResponseBytes, ReadOnlyMemory<byte> json, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+    {
+        if (json.Length > 4 * 1024 * 1024) throw new InvalidDataException("The selected file inventory exceeds its request limit.");
+        return SendAsync("POST", uri, maximumResponseBytes, json.ToArray(), progress, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(string method, Uri uri, long maximumResponseBytes, byte[]? body, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
         if (uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0) throw new ArgumentException("Unsupported update URL.");
         // Small catalog responses stay in memory. Large downloads retain bounded disk streaming.
@@ -41,6 +50,7 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
             client.DefaultHeaders["User-Agent"] = $"heirowUpdater/{typeof(SocketJackUpdateTransport).Assembly.GetName().Version} SocketJack/2026.10.24";
             client.DefaultHeaders["Accept-Encoding"] = "identity";
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (body is not null) headers["Content-Type"] = "application/json";
             if (credentialOrigin is not null && SameOrigin(uri, credentialOrigin))
             {
                 var current = session();
@@ -48,7 +58,7 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
                 if (!string.IsNullOrWhiteSpace(current.BearerToken)) headers["Authorization"] = "Bearer " + current.BearerToken;
             }
             using var limited = new LimitedDestination(file, Math.Max(maximumResponseBytes, 64 * 1024), progress, leaveOpen: true);
-            var response = await client.SendOnceAsync("GET", uri.AbsoluteUri, headers, null, limited, null, cancellationToken)
+            var response = await client.SendOnceAsync(method, uri.AbsoluteUri, headers, body, limited, null, cancellationToken)
                 .WaitAsync(TimeSpan.FromMinutes(30), cancellationToken);
             if (response is null) throw new HttpRequestException("SocketJack received no HTTP response.");
             var status = response.Context?.StatusCode?.Split(' ', 2)[0];
@@ -57,7 +67,7 @@ public sealed class SocketJackUpdateTransport : IUpdateTransport
             await file.FlushAsync(cancellationToken); file.Position = 0;
             var result = new HttpResponseMessage((HttpStatusCode)code)
             {
-                Content = new StreamContent(file), RequestMessage = new(HttpMethod.Get, uri)
+                Content = new StreamContent(file), RequestMessage = new(new HttpMethod(method), uri)
             };
             foreach (var header in response.Headers)
             {

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>Signed remote-manifest directory diff, selected ZIP, direct apply and crash recovery acceptance.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+  </ItemGroup>
+</Project>

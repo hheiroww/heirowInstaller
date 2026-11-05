@@ -143,6 +143,8 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal long? GraphicsParentStart { get; init; }
     internal string? GraphicsPackageSha256 { get; init; }
     internal string? GraphicsHandoffSmokeRoot { get; init; }
+    internal string? RemotePackageUrl { get; init; }
+    internal long RemotePackageSize { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
     {
         if (ExpectedProductId is not null && !package.Manifest.Id.Equals(ExpectedProductId, StringComparison.OrdinalIgnoreCase))
@@ -163,6 +165,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
         var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; var softwareRendering = false; string? wizardSmoke = null, performanceSmoke = null;
         bool directX11Child = false; string? primaryHost = null, primaryHash = null, graphicsPackageHash = null, handoffSmoke = null; int? graphicsParent = null; long? graphicsStart = null;
+        string? remotePackage = null; long remotePackageSize = 0;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
@@ -183,6 +186,8 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
                 case "--wizard-smoke": wizardSmoke = Path.GetFullPath(Value()); break;
                 case "--ui-performance": performanceSmoke = Path.GetFullPath(Value()); break;
                 case "--state-root": state = Path.GetFullPath(Value()); break;
+                case "--remote-package": remotePackage = Value(); break;
+                case "--remote-package-size": remotePackageSize = long.Parse(Value(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--install": install = true; package = Path.GetFullPath(Value()); break;
                 case "--target": target = Path.GetFullPath(Value()); break;
                 case "--scope": scope = Value(); break;
@@ -245,11 +250,17 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         if (expectedProduct is not null) PackageSafety.ValidateId(expectedProduct);
         if (expectedVersion is not null) _ = PackageVersion.Parse(expectedVersion);
         if (expectedSha256 is not null && (expectedSha256.Length != 64 || !expectedSha256.All(Uri.IsHexDigit))) throw new ArgumentException("--expected-sha256 requires a SHA-256 digest.");
+        if (remotePackage is not null && (package is not null || maintenanceInvocation || silent || !requireSignature || trustedKey is null ||
+            expectedProduct is null || expectedVersion is null || expectedSha256 is null || remotePackageSize is <= 0 or > 16L * 1024 * 1024 * 1024 ||
+            !Uri.TryCreate(remotePackage, UriKind.Absolute, out var remoteUri) || remoteUri.UserInfo.Length != 0 || remoteUri.Fragment.Length != 0 ||
+            remoteUri.Scheme != "https" && !(isolated && remoteUri.Scheme == "http" && remoteUri.IsLoopback)))
+            throw new ArgumentException("Remote setup requires one HTTPS package with an exact publisher, product, version, size and SHA-256 binding, and an interactive wizard.");
         if (selfUpdateFeed is not null && (!isolated || state is null || target is null || selfUpdateReport is null ||
             !Uri.TryCreate(selfUpdateFeed, UriKind.Absolute, out var smokeUri) || !smokeUri.IsLoopback || smokeUri.Scheme is not ("http" or "https")))
             throw new ArgumentException("Self-update acceptance requires an explicit isolated state, target, report, and loopback feed.");
         return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
         { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke, SoftwareRendering = softwareRendering,
-          DirectX11Child = directX11Child, GraphicsPrimaryHost = primaryHost, GraphicsPrimarySha256 = primaryHash, GraphicsParentPid = graphicsParent, GraphicsParentStart = graphicsStart, GraphicsPackageSha256 = graphicsPackageHash, GraphicsHandoffSmokeRoot = handoffSmoke };
+          DirectX11Child = directX11Child, GraphicsPrimaryHost = primaryHost, GraphicsPrimarySha256 = primaryHash, GraphicsParentPid = graphicsParent, GraphicsParentStart = graphicsStart, GraphicsPackageSha256 = graphicsPackageHash, GraphicsHandoffSmokeRoot = handoffSmoke,
+          RemotePackageUrl = remotePackage, RemotePackageSize = remotePackageSize };
     }
 }

@@ -53,9 +53,11 @@ Background, watch, silent and --no-prompt operations never request browser appro
             if (command == "show-prompt") return await NativeUpdatePrompt.RunChildAsync(parsed, cancellation.Token);
             if (command == "show-manual-feedback") return await NativeManualUpdateFeedback.RunChildAsync(parsed, cancellation.Token);
             if (command == "show-startup-error") return await NativeManualUpdateFeedback.RunStartupErrorAsync(parsed, cancellation.Token);
-            if (command is "apply-bundle" or "apply-incremental") helperConfigurationPath = parsed.Get("lifecycle-config");
+            if (command is "apply-bundle" or "apply-incremental" or "apply-files") helperConfigurationPath = parsed.Get("lifecycle-config");
             if (command == "apply-bundle") { helperStatusPath = parsed.Get("status-file"); helperLifecycleStatePath = parsed.Get("lifecycle-state"); return await ApplyBundleAsync(parsed, cancellation.Token); }
             if (command == "apply-incremental") return await ApplyIncrementalAsync(parsed, cancellation.Token,
+                (status, state) => { helperStatusPath = status; helperLifecycleStatePath = state; });
+            if (command == "apply-files") return await ApplyFilesAsync(parsed, cancellation.Token,
                 (status, state) => { helperStatusPath = status; helperLifecycleStatePath = state; });
             if (command is "launch" or "after-exit" or "check-for-updates" or "repair" or "uninstall" or "stop")
                 return await ApplicationCommands.RunAsync(command, parsed, cancellation.Token);

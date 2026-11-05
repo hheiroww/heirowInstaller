@@ -121,7 +121,9 @@ public static class FileTransactionRecovery
             using var package = PackageReader.Open(installed.PackagePath);
             package.VerifySignature(context.PublisherKeySha256, context.PublisherKeySha256 is not null);
             if (!PackageSafety.HashEquals(IncrementalPackageIO.Hash(FileTransactionRecoveryContext.ReadManifest(installed.PackagePath)), context.TargetManifestSha256)) return false;
-            package.VerifyAsync().GetAwaiter().GetResult();
+            // A selected-file update retains only signed metadata. Its complete installed
+            // payload is verified against owned destinations immediately below.
+            if (!package.IsMetadataOnly) package.VerifyAsync().GetAwaiter().GetResult();
             var owned = installed.Files.ToDictionary(file => file.Path, StringComparer.OrdinalIgnoreCase);
             foreach (var file in package.Manifest.Payload.Where(file => !SharedUpdaterRuntime.IsRuntimePayload(package.Manifest, file.Path) && (file.Feature is null || installed.Features.Contains(file.Feature, StringComparer.OrdinalIgnoreCase))))
             {

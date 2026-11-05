@@ -99,6 +99,8 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
             _ = WizardSmoke.RunAsync(this, arguments);
         else if (arguments.SmokeDirectory is not null)
             _ = DesktopSmoke.RunAsync(this, arguments.SmokeDirectory);
+        else if (arguments.RemotePackageUrl is not null)
+            _ = MainScene.Controller.OpenRemotePackageAsync();
         else if (arguments.PackagePath is not null)
             _ = MainScene.OpenPackageAsync(arguments.PackagePath);
     }

@@ -50,6 +50,18 @@ public sealed class PackageManifest
     public UpdateCompanionDefinition? UpdateCompanion { get; set; }
     public Dictionary<string, JsonElement> Modules { get; set; } = [];
     public List<InstallationRootDefinition>? InstallationRoots { get; set; }
+    /// <summary>Exact signed, scope-wide dependency packages provisioned before installation completes.</summary>
+    public List<SharedPackageDefinition>? SharedPackages { get; set; }
+    public ApplicationLaunchDefinition? ApplicationLaunch { get; set; }
+}
+
+/// <summary>Signed local application host and exact shared runtime/probing dependencies, provisioned during setup.</summary>
+public sealed class ApplicationLaunchDefinition
+{
+    public string ExecutablePath { get; set; } = "";
+    public string RuntimeConfigPath { get; set; } = "";
+    public string RuntimePackageId { get; set; } = "";
+    public List<string> ProbingPackageIds { get; set; } = [];
 }
 
 public sealed class InstallationRootDefinition
@@ -72,6 +84,9 @@ public sealed class UpdateCompanionDefinition
     /// <summary>Omitted by legacy signed packages; new packages explicitly select the shared runtime.</summary>
     public string? RuntimeMode { get; set; }
     public string? UpdateMode { get; set; }
+    /// <summary>Format-5 dependency containing the standalone updater host; the host is excluded from application payload.</summary>
+    public string? SharedPackageId { get; set; }
+    public string? UpdateProtocol { get; set; }
 }
 
 /// <summary>An exact installed file whose users must exit before application maintenance.</summary>
@@ -111,6 +126,7 @@ public sealed class UpdateCompanionConfiguration
     public List<string> AffectedResourceFiles { get; set; } = [];
     public SharedUpdaterRuntimeReference? SharedRuntime { get; set; }
     public string? UpdateMode { get; set; }
+    public string? UpdateProtocol { get; set; }
 }
 
 public sealed class PackageFeature
@@ -271,6 +287,9 @@ public sealed class PackageBuildOptions
 
 public sealed class InstallOptions
 {
+    /// <summary>Optional credential-aware transport. Each shared-package request remains restricted to the signed application origin.</summary>
+    [JsonIgnore]
+    public IUpdateTransport? SharedPackageTransport { get; set; }
     public string? TargetDirectory { get; set; }
     public string? StateRoot { get; set; }
     public string? Scope { get; set; }
@@ -384,6 +403,8 @@ public sealed class UpdateFeed
     public string? BaseVersion { get; set; }
     public string? BaseManifestSha256 { get; set; }
     public string? TargetManifestSha256 { get; set; }
+    public string? ManifestUrl { get; set; }
+    public string? FilesUrl { get; set; }
 }
 
 public sealed class UpdateCheckResult

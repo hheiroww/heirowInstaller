@@ -126,6 +126,7 @@ internal sealed partial class CpuInstallerForm : Forms.Form, IInstallerDesktopHo
         if (loadPreferences && Controller.IsWizard) await Controller.InitializeDesktopAsync();
         if (closePending) return;
         if (arguments.MaintenanceOperation is not null) await Controller.InitializeMaintenanceWizardAsync();
+        else if (arguments.RemotePackageUrl is not null) await Controller.OpenRemotePackageAsync();
         else if (arguments.PackagePath is not null) await Controller.OpenPackageAsync(arguments.PackagePath);
         ScheduleRefresh();
     }

@@ -14,38 +14,53 @@ public sealed class UpdateClient : IDisposable
     private readonly IUpdateTransport? transport;
     private readonly bool requireIncrementalUpdates;
     private readonly TimeSpan checkTimeout;
-    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false)
-        : this(TimeSpan.FromSeconds(15), allowLoopback, httpClient, transport, requireIncrementalUpdates) { }
+    private readonly bool fileSelectionUpdates;
+    // Retain the published constructor signatures for previously compiled SDK consumers.
+    public UpdateClient(bool allowLoopback, HttpClient? httpClient, IUpdateTransport? transport, bool requireIncrementalUpdates)
+        : this(allowLoopback, httpClient, transport, requireIncrementalUpdates, false) { }
+    public UpdateClient(bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false, bool fileSelectionUpdates = false)
+        : this(TimeSpan.FromSeconds(15), allowLoopback, httpClient, transport, requireIncrementalUpdates, fileSelectionUpdates) { }
 
-    public UpdateClient(TimeSpan checkTimeout, bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false)
+    public UpdateClient(TimeSpan checkTimeout, bool allowLoopback = false, HttpClient? httpClient = null, IUpdateTransport? transport = null, bool requireIncrementalUpdates = false, bool fileSelectionUpdates = false)
     {
         this.allowLoopback = allowLoopback;
         this.transport = transport;
         this.requireIncrementalUpdates = requireIncrementalUpdates;
         this.checkTimeout = checkTimeout;
+        this.fileSelectionUpdates = fileSelectionUpdates;
         if (this.checkTimeout <= TimeSpan.Zero || this.checkTimeout > TimeSpan.FromMinutes(5)) throw new ArgumentOutOfRangeException(nameof(checkTimeout));
         ownsClient = httpClient is null;
         client = httpClient ?? new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
     }
 
+    public UpdateClient(TimeSpan checkTimeout, bool allowLoopback, HttpClient? httpClient, IUpdateTransport? transport, bool requireIncrementalUpdates)
+        : this(checkTimeout, allowLoopback, httpClient, transport, requireIncrementalUpdates, false) { }
+
     public Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken = default)
         => CheckAsync(feedUrl, currentVersion, expectedProductId, cancellationToken, null);
 
     public async Task<UpdateCheckResult> CheckAsync(string feedUrl, string currentVersion, string expectedProductId, CancellationToken cancellationToken, IProgress<InstallProgress>? progress)
+        => await CheckProtocolAsync(feedUrl, currentVersion, expectedProductId, fileSelectionUpdates ? "hfiles1" : "hupd1", cancellationToken, progress);
+
+    public Task<UpdateCheckResult> CheckFileSelectionAsync(string feedUrl, string currentVersion, string expectedProductId,
+        CancellationToken cancellationToken = default, IProgress<InstallProgress>? progress = null)
+        => CheckProtocolAsync(feedUrl, currentVersion, expectedProductId, "hfiles1", cancellationToken, progress);
+
+    private async Task<UpdateCheckResult> CheckProtocolAsync(string feedUrl, string currentVersion, string expectedProductId, string protocol, CancellationToken cancellationToken, IProgress<InstallProgress>? progress)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(checkTimeout);
-        try { return await ReadFeedAsync(feedUrl, currentVersion, expectedProductId, progress, deadline.Token); }
+        try { return await ReadFeedAsync(feedUrl, currentVersion, expectedProductId, protocol, progress, deadline.Token); }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         { throw new TimeoutException("The update server took too long to respond. Check your connection and try again."); }
     }
 
-    private async Task<UpdateCheckResult> ReadFeedAsync(string feedUrl, string currentVersion, string expectedProductId, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+    private async Task<UpdateCheckResult> ReadFeedAsync(string feedUrl, string currentVersion, string expectedProductId, string protocol, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
         PackageSafety.ValidateId(expectedProductId);
         _ = PackageVersion.Parse(currentVersion);
         progress?.Report(new("check", "Connecting to the publisher's update server", 0, 0));
-        using var response = await GetAsync(SelectTransition(ValidateUrl(feedUrl), currentVersion), 1024 * 1024, progress, cancellationToken);
+        using var response = await GetAsync(SelectTransition(ValidateUrl(feedUrl), currentVersion, protocol), 1024 * 1024, progress, cancellationToken);
         progress?.Report(new("check", "Reading published version information", 0, 0));
         if (response.Content.Headers.ContentLength > 1024 * 1024) throw new InvalidDataException("Update feed is too large.");
         using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -64,15 +79,25 @@ public sealed class UpdateClient : IDisposable
         var available = PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(currentVersion)) > 0;
         if (available && feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase) && feed.BaseVersion != currentVersion)
             throw new MissingIncrementalUpdateException(expectedProductId, currentVersion, feed.Version);
-        if (available && requireIncrementalUpdates && !feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+        if (available && requireIncrementalUpdates && feed.PackageType.ToLowerInvariant() is not ("hupd" or "hfiles"))
             throw new MissingIncrementalUpdateException(expectedProductId, currentVersion, feed.Version);
         return new() { Available = available, CurrentVersion = currentVersion, Feed = feed };
+    }
+
+    public async Task<PreparedFileUpdate> PrepareFileUpdateAsync(UpdateFeed feed, InstalledProduct installed, string destinationDirectory,
+        InstallOptions? options = null, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ValidateFeed(feed); RequireIncremental(feed);
+        using var selected = new FileUpdateClient(allowLoopback, client, transport);
+        return await selected.PrepareAsync(feed, installed, destinationDirectory, options, progress, cancellationToken);
     }
 
     public async Task<string> DownloadAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         ValidateFeed(feed);
         RequireIncremental(feed);
+        if (feed.PackageType.Equals("hfiles", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Selected file downloads require the exact installed identity. Use PrepareFileUpdateAsync.");
         var extension = feed.PackageType.ToLowerInvariant() switch { "hupd" => ".hupd", "hinst" => ".hinst", "exe" => ".exe", "msi" => ".msi", _ => throw new InvalidDataException("Unsupported update package type.") };
         destinationDirectory = Path.GetFullPath(destinationDirectory);
         PackageSafety.EnsureNoReparsePoints(destinationDirectory);
@@ -116,6 +141,15 @@ public sealed class UpdateClient : IDisposable
         options ??= new();
         ValidateFeed(feed);
         RequireIncremental(feed);
+        if (feed.PackageType.Equals("hfiles", StringComparison.OrdinalIgnoreCase))
+        {
+            var exact = InstallerEngine.ListInstalled(options.StateRoot).Where(product => product.Id.Equals(feed.ProductId, StringComparison.OrdinalIgnoreCase) && (options.Scope is null || product.Scope == options.Scope)).ToArray();
+            if (exact.Length != 1) throw new InvalidDataException("Select one exact installed application before applying selected files.");
+            using var prepared = PreparedFileUpdate.Open(downloadPath, exact[0], options);
+            if (!PackageSafety.HashEquals(prepared.Metadata.ManifestSha256, feed.TargetManifestSha256!) || prepared.Metadata.Manifest.Version != feed.Version)
+                throw new CryptographicException("The prepared file update differs from its offered target.");
+            return await new InstallerEngine().ApplyPreparedFileUpdateAsync(prepared, options, progress, cancellationToken);
+        }
         if (!PackageSafety.HashEquals(PackageSafety.HashFile(downloadPath), feed.Sha256)) throw new CryptographicException("Downloaded installer was changed before execution.");
         var installed = InstallerEngine.ListInstalled(options.StateRoot).FirstOrDefault(x => x.Id.Equals(feed.ProductId, StringComparison.OrdinalIgnoreCase) && (options.Scope is null || x.Scope == options.Scope));
         options.TrustedPublisherKeySha256 ??= installed?.PublisherKeySha256;
@@ -218,7 +252,7 @@ public sealed class UpdateClient : IDisposable
 
     private void RequireIncremental(UpdateFeed feed)
     {
-        if (requireIncrementalUpdates && !feed.PackageType.Equals("hupd", StringComparison.OrdinalIgnoreCase))
+        if (requireIncrementalUpdates && feed.PackageType.ToLowerInvariant() is not ("hupd" or "hfiles"))
             throw new InvalidDataException("This application requires signed incremental file updates; downloading an installer is not an update fallback.");
     }
 
@@ -226,6 +260,12 @@ public sealed class UpdateClient : IDisposable
     {
         PackageSafety.ValidateId(feed.ProductId);
         _ = PackageVersion.Parse(feed.Version);
+        if (feed.PackageType.Equals("hfiles", StringComparison.OrdinalIgnoreCase))
+        {
+            if (feed.ManifestUrl is null || feed.FilesUrl is null || feed.TargetManifestSha256 is null || !PackageSafety.HashPattern().IsMatch(feed.TargetManifestSha256))
+                throw new InvalidDataException("A selected-file feed requires signed manifest and ZIP endpoints and its target manifest SHA256.");
+            _ = ValidateUrl(feed.ManifestUrl); _ = ValidateUrl(feed.FilesUrl); return;
+        }
         _ = ValidateUrl(feed.InstallerUrl);
         if (!PackageSafety.HashPattern().IsMatch(feed.Sha256)) throw new InvalidDataException("Update feed requires a SHA256 digest.");
         if (feed.Size < 0) throw new InvalidDataException("Update size cannot be negative.");
@@ -238,10 +278,10 @@ public sealed class UpdateClient : IDisposable
                 throw new InvalidDataException("An incremental feed requires its exact base version and original base/target manifest SHA256 digests.");
         }
     }
-    private static Uri SelectTransition(Uri uri, string currentVersion)
+    private static Uri SelectTransition(Uri uri, string currentVersion, string protocol)
     {
         var fields = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).ToList();
-        foreach (var (name, expected) in new[] { ("fromVersion", currentVersion), ("updateProtocol", "hupd1") })
+        foreach (var (name, expected) in new[] { ("fromVersion", currentVersion), ("updateProtocol", protocol) })
         {
             var matching = fields.Where(field => Uri.UnescapeDataString(field.Split('=', 2)[0].Replace('+', ' ')).Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (matching.Length > 1) throw new InvalidDataException("The update feed contains duplicate transition selectors.");

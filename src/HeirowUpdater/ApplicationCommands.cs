@@ -135,7 +135,20 @@ internal static class ApplicationCommands
         var options = new InstallOptions { StateRoot = args.Get("state-root"), Scope = product.Scope, Isolated = product.Isolated, Silent = args.Has("silent"), InstallerPath = System.Environment.ProcessPath,
             RunningApplicationsPrompt = args.Has("silent") || args.Has("no-prompt") ? null
                 : (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, identity, null, cancellation) };
-        var result = command == "repair" ? await new InstallerEngine().RepairAsync(id, options, cancellationToken: token) : await new InstallerEngine().UninstallAsync(id, options, cancellationToken: token);
+        InstallResult result;
+        if (command == "repair" && Path.GetExtension(product.PackagePath).Equals(".hmeta", StringComparison.OrdinalIgnoreCase))
+        {
+            var target = UpdaterTarget.FromInstalled(product, args.Get("state-root"));
+            var progress = new MaintenanceProgress();
+            using var sessions = await TargetUpdateSessions.CreateAsync([target], new ScheduleConfiguration(), product.Isolated,
+                interactive: !args.Has("silent") && !args.Has("no-prompt"), progress, token);
+            result = await sessions[target].RunAsync(client => client.RepairAsync(target, options, progress, token), token);
+        }
+        else result = command == "repair" ? await new InstallerEngine().RepairAsync(id, options, cancellationToken: token) : await new InstallerEngine().UninstallAsync(id, options, cancellationToken: token);
         return result.RebootRequired ? 3010 : 0;
+    }
+    private sealed class MaintenanceProgress : IProgress<InstallProgress>
+    {
+        public void Report(InstallProgress value) => Console.Error.WriteLine($"[{value.Phase}] {value.Message}");
     }
 }

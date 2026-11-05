@@ -18,7 +18,7 @@ public sealed record SharedUpdaterReferenceBinding(string Path, byte[]? Content)
 /// <summary>Immutable, scope-wide updater files with a separate reference for each installed application.</summary>
 public static class SharedUpdaterRuntime
 {
-    public static bool IsRuntimePayload(PackageManifest manifest, string path) => manifest.UpdateCompanion is { RuntimeMode: "shared" } definition &&
+    public static bool IsRuntimePayload(PackageManifest manifest, string path) => manifest.UpdateCompanion is { RuntimeMode: "shared", SharedPackageId: null } definition &&
         path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Expected reference bytes derived from signed package metadata, never from mutable reference-file contents.</summary>
@@ -29,7 +29,7 @@ public static class SharedUpdaterRuntime
         var path = ReferencePath(configuration);
         if (!enabled || manifest.UpdateCompanion is not { RuntimeMode: "shared" } definition) return new(path, null);
         if (!manifest.Id.Equals(identity.Id, StringComparison.OrdinalIgnoreCase) || configuration.PublisherKeySha256.Length != 64) throw new InvalidDataException("Reference recovery requires a trusted installed identity.");
-        var payload = manifest.Payload.Single(x => x.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+        var payload = ExpectedPayload(manifest, identity, stateRoot);
         configuration.SharedRuntime = new() { Sha256 = payload.Sha256, Size = payload.Size };
         return new(path, ReferenceBytes(configuration));
     }
@@ -57,8 +57,9 @@ public static class SharedUpdaterRuntime
         var definition = manifest.UpdateCompanion ?? throw new InvalidDataException("The package has no updater definition.");
         if (definition.RuntimeMode != "shared") throw new InvalidDataException("The package does not request a shared updater runtime.");
         if (string.IsNullOrEmpty(product.PublisherKeySha256)) throw new CryptographicException("A shared updater requires a signed installed package.");
-        var payload = manifest.Payload.Single(x => x.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
-        var source = PackageSafety.UnderRoot(extractedRoot, payload.Path);
+        var dependency = definition.SharedPackageId is not null ? SharedPackages.UpdaterSource(manifest, product, stateRoot) : default;
+        var payload = definition.SharedPackageId is not null ? dependency.Payload : ExpectedPayload(manifest, product, stateRoot);
+        var source = definition.SharedPackageId is not null ? dependency.Source : PackageSafety.UnderRoot(extractedRoot, payload.Path);
         VerifyFile(source, payload.Sha256, payload.Size);
         var version = ReadFileVersion(source) ?? throw new InvalidDataException("The updater runtime has no file version.");
         ValidateVersion(version);
@@ -94,6 +95,7 @@ public static class SharedUpdaterRuntime
         if (!SameOrigin(configuration.CredentialOrigin, definition.CredentialOrigin) ||
             configuration.AuthApplication != definition.AuthApplication ||
             configuration.UpdateMode != definition.UpdateMode ||
+            configuration.UpdateProtocol != definition.UpdateProtocol ||
             !string.Equals(configuration.LaunchWorkingDirectory, manifest.LaunchWorkingDirectory, StringComparison.OrdinalIgnoreCase) ||
             configuration.CookieEnvironmentVariable != definition.CookieEnvironmentVariable ||
             configuration.TokenEnvironmentVariable != definition.TokenEnvironmentVariable ||
@@ -105,8 +107,8 @@ public static class SharedUpdaterRuntime
             return; // Existing app-local profiles remain supported.
         }
         ValidateReference(reference);
-        var payload = manifest.Payload.SingleOrDefault(x => x.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
-        if (payload is null || !PackageSafety.HashEquals(payload.Sha256, reference.Sha256) || payload.Size != reference.Size)
+        var payload = ExpectedPayload(manifest, Identity(configuration), configuration.StateRoot);
+        if (!PackageSafety.HashEquals(payload.Sha256, reference.Sha256) || payload.Size != reference.Size)
             throw new CryptographicException("The shared updater binding does not match its signed installed payload.");
     }
 
@@ -143,7 +145,7 @@ public static class SharedUpdaterRuntime
         var owner = ValidateReferenceOwner(path, trustedConfiguration);
         var content = owner.Runtime ?? throw new InvalidDataException("The owned updater reference is empty.");
         var definition = trustedManifest.UpdateCompanion ?? throw new InvalidDataException("The signed package has no updater definition.");
-        var payload = trustedManifest.Payload.Single(x => x.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+        var payload = ExpectedPayload(trustedManifest, Identity(trustedConfiguration), trustedConfiguration.StateRoot);
         if (!PackageSafety.HashEquals(content.Sha256, payload.Sha256) || content.Size != payload.Size)
             throw new CryptographicException("The owned updater reference does not match this application's signed runtime.");
         var matches = new List<SharedUpdaterRuntimeReference>();
@@ -248,6 +250,20 @@ public static class SharedUpdaterRuntime
             !PackageSafety.HashEquals(owner.PublisherKeySha256, configuration.PublisherKeySha256))
             throw new InvalidDataException("The updater application reference belongs to a different installation.");
         return owner;
+    }
+
+    private static InstalledProduct Identity(UpdateCompanionConfiguration configuration) => new()
+    {
+        Id = configuration.ProductId, InstallDirectory = configuration.InstallDirectory, Scope = configuration.Scope,
+        Isolated = configuration.Isolated, PublisherKeySha256 = configuration.PublisherKeySha256
+    };
+
+    /// <summary>Resolves the expected updater bytes from signed application payload or its pinned signed dependency archive.</summary>
+    public static PayloadFile ExpectedPayload(PackageManifest manifest, InstalledProduct identity, string stateRoot)
+    {
+        var definition = manifest.UpdateCompanion ?? throw new InvalidDataException("The signed package has no updater definition.");
+        return definition.SharedPackageId is not null ? SharedPackages.UpdaterSource(manifest, identity, stateRoot).Payload
+            : manifest.Payload.Single(file => file.Path.Equals(definition.ExecutablePath, StringComparison.OrdinalIgnoreCase));
     }
 
     private static void ValidateReference(SharedUpdaterRuntimeReference reference)

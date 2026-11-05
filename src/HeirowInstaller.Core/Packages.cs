@@ -24,6 +24,7 @@ public static class PackageBuilder
         if (manifest.UpdateCompanion is { RuntimeMode: null } companion) companion.RuntimeMode = "shared";
         if (manifest.UpdateCompanion is { RuntimeMode: "shared", UpdateMode: null } fileUpdater && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             fileUpdater.UpdateMode = "files";
+        if (manifest.UpdateCompanion is { SharedPackageId: not null, UpdateProtocol: null } downloadedUpdater) downloadedUpdater.UpdateProtocol = "hfiles1";
         if (manifest.InstallationRoots?.Count > 0 || manifest.UpdateCompanion is { RuntimeMode: "shared" } or { UpdateMode: "files" })
             manifest.FormatVersion = Math.Max(manifest.FormatVersion, 2);
         if (manifest.NativeMigration is not null || manifest.Prerequisites.Any(x => x.Detection is not null) ||
@@ -31,6 +32,11 @@ public static class PackageBuilder
             manifest.FormatVersion = Math.Max(manifest.FormatVersion, 3);
         if (manifest.TargetRuntime is not null || manifest.TargetPlatform != "windows" || manifest.Payload.Any(x => x.UnixMode is not null) || manifest.Shortcuts.Any(x => x.ArgumentList is not null))
             manifest.FormatVersion = Math.Max(manifest.FormatVersion, 4);
+        if (manifest.SharedPackages?.Count > 0) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
+        if (manifest.UpdateCompanion?.UpdateProtocol is not null) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
+        if (manifest.ApplicationLaunch is not null) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
+        if (manifest.SharedPackages?.Count > 0 && signingKeyPath is null)
+            throw new CryptographicException("Shared dependency declarations require a signed application package.");
         if (manifest.Payload.Count == 0)
         {
             foreach (var path in EnumerateSafeFiles(sourceDirectory).Order(StringComparer.OrdinalIgnoreCase))
@@ -82,6 +88,7 @@ public static class PackageBuilder
                     using var rsa = RSA.Create();
                     rsa.ImportFromPem(File.ReadAllText(signingKeyPath));
                     if (rsa.KeySize < 2048) throw new InvalidDataException("RSA signing keys must be at least 2048 bits.");
+                    SharedPackages.ValidatePublisher(manifest, Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())).ToLowerInvariant());
                     InnoOwnedPolicy.RequirePackageSignature(manifest, Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())));
                     var signature = new PackageSignature
                     {
@@ -137,9 +144,11 @@ public sealed class PackageReader : IDisposable
     public PackageManifest Manifest { get; }
     public PackageSignature? Signature { get; }
     public string? PublisherKeySha256 { get; }
+    public bool IsMetadataOnly { get; }
 
-    private PackageReader(string path)
+    private PackageReader(string path, bool metadataOnly = false)
     {
+        IsMetadataOnly = metadataOnly;
         PackagePath = Path.GetFullPath(path);
         stream = BundleBuilder.OpenPackageStream(PackagePath);
         try
@@ -160,9 +169,10 @@ public sealed class PackageReader : IDisposable
             if (Manifest.NativeMigration?.Baselines.Any(x => x.Backend == InnoOwnedPolicy.Backend) == true)
                 IncrementalPackageIO.ValidateJson(manifestBytes);
             var permitted = new HashSet<string>(Manifest.Payload.Select(x => "payload/" + x.Path), StringComparer.OrdinalIgnoreCase) { "manifest.json", "signature.json" };
+            if (metadataOnly) permitted.Add("file-source.json");
             if (entries.Keys.Any(x => !permitted.Contains(x))) throw new InvalidDataException("Package contains undeclared entries.");
             foreach (var file in Manifest.Payload)
-                if (!entries.TryGetValue("payload/" + file.Path, out var entry) || entry.Length != file.Size)
+                if ((!entries.TryGetValue("payload/" + file.Path, out var entry) && !metadataOnly) || entry is not null && entry.Length != file.Size)
                     throw new InvalidDataException($"Missing payload or size mismatch: {file.Path}");
             if (entries.TryGetValue("signature.json", out var signatureEntry))
             {
@@ -179,7 +189,9 @@ public sealed class PackageReader : IDisposable
         catch { stream.Dispose(); throw; }
     }
 
-    public static PackageReader Open(string path) => new(path);
+    public static PackageReader Open(string path) => new(path, Path.GetExtension(path).Equals(".hmeta", StringComparison.OrdinalIgnoreCase));
+    /// <summary>Opens a signed manifest-only archive for planning and online file repair; it cannot supply absent payload bytes.</summary>
+    public static PackageReader OpenMetadata(string path) => new(path, metadataOnly: true);
     public static bool HasEmbeddedPackage(string path) => BundleBuilder.HasEmbeddedPackage(path);
 
     /// <summary>Hashes the exact package archive, independently of a containing Setup executable or its Windows signature.</summary>
@@ -220,6 +232,7 @@ public sealed class PackageReader : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var file = Manifest.Payload[i];
+            if (!entries.ContainsKey("payload/" + file.Path)) throw new InvalidOperationException("This metadata cache requires online file repair; it does not contain application payload bytes.");
             using var input = entries["payload/" + file.Path].Open();
             var hash = Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken)).ToLowerInvariant();
             if (!PackageSafety.HashEquals(hash, file.Sha256)) throw new CryptographicException($"Payload hash mismatch: {file.Path}");
@@ -236,6 +249,7 @@ public sealed class PackageReader : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var file = selected[i];
+            if (!entries.ContainsKey("payload/" + file.Path)) throw new InvalidOperationException("This metadata cache requires online file repair; it does not contain application payload bytes.");
             var declared = Manifest.Payload.SingleOrDefault(x => x.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase));
             if (declared is null || !PackageSafety.HashEquals(file.Sha256, declared.Sha256)) throw new InvalidDataException("Extraction requested an undeclared file.");
             var outputPath = PackageSafety.UnderRoot(destinationDirectory, file.Path);

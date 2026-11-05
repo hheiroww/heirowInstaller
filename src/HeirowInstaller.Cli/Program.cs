@@ -13,6 +13,8 @@ heirowInstaller — cross-platform installation and publishing
 
   pack <manifest.json> --source <directory> --output <package.hinst> [--sign-key <private.pem>]
   bundle <package.hinst> --launcher <single-file.exe> --output <setup.exe>
+  bind-bootstrap <descriptor.json> --launcher <generic-native.exe> --output <setup.exe> --sign-key <pem>
+  inspect-bootstrap <setup.exe> [--trust-key <sha256>]
   build <manifest.json> --source <directory>|--project <application.csproj> --output <setup.exe>
     [--launcher <published-heirowInstaller.exe>] [--updater <published-heirowUpdater.exe>] [--sign-key <pem>]
   sign <setup.exe|application.dll|package.msi> [Windows signing options]
@@ -92,6 +94,26 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
             {
                 case "pack":
                     Print(PackageBuilder.Build(Subject(), parsed.Require("source"), parsed.Require("output"), await CreationOptionsAsync(parsed, Subject(), cancellation.Token))); break;
+                case "bind-bootstrap":
+                {
+                    using var key = System.Security.Cryptography.RSA.Create();
+                    key.ImportFromPem(await File.ReadAllTextAsync(parsed.Require("sign-key"), cancellation.Token));
+                    var descriptor = await File.ReadAllBytesAsync(Subject(), cancellation.Token);
+                    await HeirowInstaller.BootstrapContract.WebBootstrapBindings.WriteAsync(parsed.Require("launcher"), descriptor, parsed.Require("output"), key, cancellation.Token);
+                    var binding = HeirowInstaller.BootstrapContract.WebBootstrapBindings.Read(parsed.Require("output"));
+                    Print(new { output = Path.GetFullPath(parsed.Require("output")), size = new FileInfo(parsed.Require("output")).Length,
+                        sha256 = PackageSafety.HashFile(parsed.Require("output")), binding.PublisherKeySha256,
+                        launcherSize = binding.LauncherLength, launcherSha256 = HeirowInstaller.BootstrapContract.WebBootstrapBindings.LauncherSha256(parsed.Require("output"), binding.LauncherLength) });
+                    break;
+                }
+                case "inspect-bootstrap":
+                {
+                    var binding = HeirowInstaller.BootstrapContract.WebBootstrapBindings.Read(Subject(), options.TrustedPublisherKeySha256);
+                    using var descriptor = JsonDocument.Parse(binding.DescriptorBytes);
+                    Print(new { descriptor = descriptor.RootElement, binding.PublisherKeySha256, launcherSize = binding.LauncherLength,
+                        launcherSha256 = HeirowInstaller.BootstrapContract.WebBootstrapBindings.LauncherSha256(Subject(), binding.LauncherLength) });
+                    break;
+                }
                 case "bundle":
                 {
                     var signature = await BundleAsync(parsed.Require("launcher"), Subject(), parsed.Require("output"), windowsSigning, progress, cancellation.Token);

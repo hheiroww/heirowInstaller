@@ -20,7 +20,7 @@ public sealed class TargetUpdateSession : IDisposable
         session = new(cookie, bearerToken);
         updater = new(allowLoopback, credentialOrigin,
             () => Volatile.Read(ref session) ?? throw new ObjectDisposedException(nameof(TargetUpdateSession)),
-            requireIncrementalUpdates: target.UpdateMode == "files");
+            requireIncrementalUpdates: target.UpdateMode == "files", fileSelectionUpdates: target.UpdateProtocol == "hfiles1");
         this.authenticate = authenticate;
     }
 

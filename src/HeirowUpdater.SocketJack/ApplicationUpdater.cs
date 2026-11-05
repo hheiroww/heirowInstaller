@@ -132,7 +132,7 @@ public static class ApplicationUpdater
         var executable = configuration.SharedRuntime is null
             ? PackageSafety.UnderRoot(configuration.InstallDirectory, package.Manifest.UpdateCompanion!.ExecutablePath)
             : SharedUpdaterRuntime.Resolve(configuration);
-        var payload = package.Manifest.Payload.Single(x => x.Path.Equals(package.Manifest.UpdateCompanion!.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+        var payload = SharedUpdaterRuntime.ExpectedPayload(package.Manifest, installed, configuration.StateRoot);
         if (!File.Exists(executable) || new FileInfo(executable).Length != payload.Size || !PackageSafety.HashEquals(PackageSafety.HashFile(executable), payload.Sha256))
             throw new CryptographicException("The installed updater does not match its signed package.");
         return executable;
@@ -228,7 +228,8 @@ public static class ApplicationUpdater
                 System.Environment.SetEnvironmentVariable(name, null); // Native UI children never inherit the application's credentials.
         Task<T> Authorized<T>(Func<SocketJackUpdater, Task<T>> operation) => ApplicationAuthorization.RunAsync(sessions, async () =>
         {
-            using var client = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), () => sessions.Read().Snapshot, requireIncrementalUpdates: configuration.UpdateMode == "files");
+            using var client = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), () => sessions.Read().Snapshot,
+                requireIncrementalUpdates: configuration.UpdateMode == "files", fileSelectionUpdates: configuration.UpdateProtocol == "hfiles1");
             return await operation(client);
         }, options.NoPrompt || options.AuthenticateAsync is null || configuration.AuthApplication is null ? null : token => options.AuthenticateAsync(configuration, token),
             async status => { await Status(status); }, async () =>
@@ -238,7 +239,7 @@ public static class ApplicationUpdater
             }, cancellationToken);
         var target = new UpdaterTarget { ProductId = configuration.ProductId, Name = configuration.Name, CurrentVersion = configuration.CurrentVersion,
             FeedUrl = configuration.FeedUrl, InstallDirectory = configuration.InstallDirectory, StateRoot = configuration.StateRoot, Scope = configuration.Scope,
-            PublisherKeySha256 = configuration.PublisherKeySha256, Features = configuration.Features, UpdateMode = configuration.UpdateMode };
+            PublisherKeySha256 = configuration.PublisherKeySha256, Features = configuration.Features, UpdateMode = configuration.UpdateMode, UpdateProtocol = configuration.UpdateProtocol };
         if (options.NoPrompt)
         {
             if (!StillInstalled()) return await Status("application-removed");
@@ -347,7 +348,7 @@ public static class ApplicationUpdater
             {
                 if (!manual) TakeManualRequest();
                 if (!StillInstalled()) return await Status("application-removed");
-                if (!manual)
+                if (!manual && configuration.UpdateProtocol != "hfiles1")
                 {
                     await Status("waiting-for-exit");
                     while (AppRunning())
@@ -379,7 +380,7 @@ public static class ApplicationUpdater
                 }
                 state.LastCheckedAt = DateTimeOffset.UtcNow; state.LatestVersion = check.Feed.Version;
                 await WriteJsonAsync(statePath, state, cancellationToken);
-                if (!manual && AppRunning()) { manual = false; continue; }
+                if (!manual && AppRunning() && configuration.UpdateProtocol != "hfiles1") { manual = false; continue; }
                 if (!check.Available)
                 {
                     var currentResult = await Status("current", check);
@@ -408,8 +409,9 @@ public static class ApplicationUpdater
                 if (AppRunning()) await Status("waiting-for-applications", check);
                 var runningTarget = RunningApplicationTarget.FromConfiguration(configuration).WithWaitOnlyExecutables(
                     ApplicationHostRegistry.Paths(configuration).Concat(options.ApplicationHost is { } host ? [host] : []));
-                await RunningApplications.EnsureClosedAsync(runningTarget,
-                    options.NoPrompt ? null : options.RunningApplicationsPrompt, cancellationToken);
+                if (check.Feed.PackageType != "hfiles")
+                    await RunningApplications.EnsureClosedAsync(runningTarget,
+                        options.NoPrompt ? null : options.RunningApplicationsPrompt, cancellationToken);
                 void HandoffValue(string name, string value) { if (!handoff.ArgumentList.Contains(name)) { handoff.ArgumentList.Add(name); handoff.ArgumentList.Add(value); } }
                 HandoffValue("--lifecycle-config", configurationPath); HandoffValue("--lifecycle-state", statePath);
                 var readyIndex = handoff.ArgumentList.IndexOf("--lifecycle-ready");

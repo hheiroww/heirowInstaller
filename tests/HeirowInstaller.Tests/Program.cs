@@ -69,6 +69,7 @@ internal sealed partial class AcceptanceSuite
             ,("both bootstrap languages launch the verified shared runtime with a pre-queued session capture and no inherited bearer", SharedBootstrapLanguages)
             ,("an exact updater dependency waits for one PID and never other apps sharing its image", ExactUpdaterDependencies)
             ,("the shared native updater applies signed file data and rejects wrong root, digest, base and tampering before mutation", NativeIncrementalHandoff)
+            ,("selected-file SDK negotiation and the real native helper apply sparse ZIPs without a full repair archive", NativeFileSelectionHandoff)
             ,("shared GUI maintenance pooling strips application overlays and reuses only verified immutable prefixes", SharedMaintenanceHosts)
             ,("actual native watcher processes receive the current app cookie and explicit sign-out without a browser or credential persistence", NativeSessionRelay)
             ,("generic CLI, check-all, apply and handoff enforce the installed signed file-update policy before any full-installer download", GenericFileUpdatePolicy)
@@ -1275,7 +1276,11 @@ internal sealed partial class AcceptanceSuite
         { context.DeleteFile(originalState.Key); return Task.CompletedTask; }
     }
 
-    private sealed record NetworkRequest(string Path, Dictionary<string, string> Headers);
+    private sealed record NetworkRequest(string Path, Dictionary<string, string> Headers)
+    {
+        public string Method { get; init; } = "GET";
+        public byte[] Body { get; init; } = [];
+    }
     private sealed record NetworkResponse(int Status, byte[] Body, Dictionary<string, string>? Headers = null);
     private sealed class LoopbackServer : IAsyncDisposable
     {
@@ -1305,7 +1310,13 @@ internal sealed partial class AcceptanceSuite
                             if (separator > 0) requestHeaders[line[..separator]] = line[(separator + 1)..].Trim();
                         }
                         var path = request.Split(' ').ElementAtOrDefault(1) ?? "/";
-                        var result = response(new(path, requestHeaders));
+                        var body = Array.Empty<byte>();
+                        if (requestHeaders.TryGetValue("Content-Length", out var textLength) && int.TryParse(textLength, out var bodyLength) && bodyLength > 0)
+                        {
+                            if (bodyLength > 4 * 1024 * 1024) throw new InvalidDataException("Oversized owned fixture request.");
+                            var characters = new char[bodyLength]; await reader.ReadBlockAsync(characters, stop.Token); body = Encoding.UTF8.GetBytes(characters);
+                        }
+                        var result = response(new(path, requestHeaders) { Method = request.Split(' ').FirstOrDefault() ?? "GET", Body = body });
                         var extra = result.Headers is null ? "" : string.Join("", result.Headers.Select(x => x.Key + ": " + x.Value + "\r\n"));
                         var headers = Encoding.ASCII.GetBytes($"HTTP/1.1 {result.Status} Fixture\r\nContent-Length: {result.Body.Length}\r\n{extra}Connection: close\r\n\r\n");
                         await stream.WriteAsync(headers, stop.Token); await stream.WriteAsync(result.Body, stop.Token);

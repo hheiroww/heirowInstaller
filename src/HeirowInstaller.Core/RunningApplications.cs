@@ -96,7 +96,8 @@ public sealed class RunningApplicationTarget
         if (manifest.UpdateCompanion is { } companion) excluded.Add(PackageSafety.UnderRoot(installDirectory, companion.ExecutablePath));
         var owned = manifest.Payload.Where(file => file.TargetRoot != null && InstallerEngine.IsSelected(file.Feature, selected) &&
             Path.GetFileName(file.Path).Equals(Path.GetFileName(manifest.EntryPoint), StringComparison.OrdinalIgnoreCase))
-            .Select(file => PayloadDestinations.Resolve(manifest, installDirectory, scope, isolated, file)).ToArray();
+            .Select(file => PayloadDestinations.Resolve(manifest, installDirectory, scope, isolated, file))
+            .Concat(manifest.ApplicationLaunch is { } launch ? [PackageSafety.UnderRoot(installDirectory, launch.ExecutablePath)] : Array.Empty<string>()).ToArray();
         return new(manifest.Id, manifest.Name, operation, installDirectory, manifest.EntryPoint,
             manifest.AffectedResources.Where(x => InstallerEngine.IsSelected(x.Feature, selected))
                 .Select(x => ResolveResourceFile(x.Path, installDirectory))
