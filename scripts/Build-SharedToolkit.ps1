@@ -14,10 +14,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'Shared-NuGetValidation.ps1')
-function Copy-ToolkitDependencyNotices([string]$PayloadDirectory, [string]$PackageCache) {
+function Copy-ToolkitDependencyNotices([string]$PayloadDirectory, [string]$PackageCache, [string]$NoticeAssetDirectory) {
     # Read notices from the exact archives bound by the shipped dependency locks,
     # including locally restored public packages. Never substitute checkout text.
     Initialize-AuthoringNuGet
+    $noticeMap = Get-Content -LiteralPath (Join-Path $NoticeAssetDirectory 'provenance.json') -Raw | ConvertFrom-Json
+    $reviewedNotices = @{}
+    foreach ($notice in $noticeMap.entries) {
+        $key = $notice.packageId+'/'+$notice.version
+        if ($noticeMap.format -cne 'heirowInstaller.upstream-license-assets/1' -or $key -cnotin @('LibTessDotNet/1.1.15','SSH.NET/2026.0.0') -or
+            $reviewedNotices.ContainsKey($key) -or $notice.assetPath -cne ($key+'/'+$notice.targetFileName) -or
+            $notice.targetFileName -notmatch '^LICENSE(?:\.txt)?$' -or $notice.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            $notice.gitBlobSha1 -cnotmatch '^[a-f0-9]{40}$' -or $notice.bytes -le 0 -or $notice.bytes -gt 64KB) { throw 'Invalid reviewed upstream notice map.' }
+        $reviewedNotices[$key] = $notice
+    }
+    if ($noticeMap.format -cne 'heirowInstaller.upstream-license-assets/1' -or $reviewedNotices.Count -ne 2) { throw 'The reviewed upstream notice map is incomplete.' }
     $packages = @{}
     foreach ($depsFile in Get-ChildItem -LiteralPath $PayloadDirectory -Filter '*.deps.json' -File) {
         $deps = Get-Content -LiteralPath $depsFile.FullName -Raw | ConvertFrom-Json -AsHashtable
@@ -108,7 +119,27 @@ function Copy-ToolkitDependencyNotices([string]$PayloadDirectory, [string]$Packa
                 if ($package.id -ieq 'ProjectZ' -and $entry -ceq 'THIRD-PARTY-NOTICES.md') { Copy-Item -LiteralPath $destination -Destination (Join-Path $PayloadDirectory 'ThirdParty/ProjectZ-NOTICES.md') }
                 if ($package.id -ieq 'SocketJack' -and $entry -ceq $declaredLicense -and $license.Type.ToString() -eq 'File') { Copy-Item -LiteralPath $destination -Destination (Join-Path $PayloadDirectory 'ThirdParty/SocketJack-LICENSE.txt') }
             }
-            $inventory.Add([ordered]@{id=$package.id;version=$package.version;contentHash=$package.hash;licenseType=$(if($license){$license.Type.ToString()}else{$null});license=$declaredLicense;licenseUrl=$nuspec.GetLicenseUrl();shippedAssets=@($package.assets.Keys|Sort-Object);verifiedOverrides=$package.overrides;noticeFiles=$copied.ToArray()})
+            $upstreamNotices = @()
+            if ($reviewedNotices.ContainsKey($identity)) {
+                $notice = $reviewedNotices[$identity]
+                $asset = Join-Path $NoticeAssetDirectory $notice.assetPath
+                for ($node = [IO.Path]::GetFullPath($asset); $node; $node = [IO.Path]::GetDirectoryName($node)) {
+                    if ((Get-Item -LiteralPath $node -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reviewed upstream notices cannot traverse links.' }
+                }
+                if ((Get-Item -LiteralPath $asset).Length -ne $notice.bytes -or (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash -ine $notice.sha256) { throw 'Reviewed upstream notice asset failed its immutable SHA256/size pin.' }
+                $bytes = [IO.File]::ReadAllBytes($asset)
+                $header = [Text.Encoding]::UTF8.GetBytes('blob '+$bytes.Length+[char]0)
+                $gitHash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA1)
+                try { $gitHash.AppendData($header); $gitHash.AppendData($bytes); $blob = [Convert]::ToHexString($gitHash.GetHashAndReset()).ToLowerInvariant() } finally { $gitHash.Dispose() }
+                if ($blob -cne $notice.gitBlobSha1) { throw 'Reviewed upstream notice differs from its original Git blob.' }
+                $destination = Join-Path $root $notice.targetFileName
+                if (Test-Path -LiteralPath $destination) { throw 'Reviewed upstream notice would replace an existing package notice.' }
+                Copy-Item -LiteralPath $asset -Destination $destination
+                $relative = [IO.Path]::GetRelativePath($PayloadDirectory,$destination).Replace('\','/')
+                $copied.Add($relative)
+                $upstreamNotices += [ordered]@{path=$relative;repository=$notice.repository;revision=$notice.revision;sourceUrl=$notice.sourceUrl;gitBlobSha1=$notice.gitBlobSha1;sha256=$notice.sha256;bytes=$notice.bytes}
+            }
+            $inventory.Add([ordered]@{id=$package.id;version=$package.version;contentHash=$package.hash;licenseType=$(if($license){$license.Type.ToString()}else{$null});license=$declaredLicense;licenseUrl=$nuspec.GetLicenseUrl();shippedAssets=@($package.assets.Keys|Sort-Object);verifiedOverrides=$package.overrides;noticeFiles=$copied.ToArray();upstreamNoticeSources=$upstreamNotices})
         } finally { $reader.Dispose() }
     }
     $inventory.ToArray() | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $PayloadDirectory 'ThirdParty/dependencies.json') -Encoding utf8NoBOM
@@ -159,7 +190,7 @@ foreach ($forbidden in @('dotnet.exe','coreclr.dll','hostfxr.dll','hostpolicy.dl
     if (Test-Path -LiteralPath (Join-Path $payload $forbidden)) { throw "A private .NET runtime was duplicated inside maintenance: $forbidden" }
 }
 foreach ($notice in @('LICENSE','THIRD-PARTY-NOTICES.md')) { Copy-Item -LiteralPath (Join-Path $projectRoot $notice) -Destination (Join-Path $payload $notice) }
-Copy-ToolkitDependencyNotices $payload $RootPackageCache
+Copy-ToolkitDependencyNotices $payload $RootPackageCache (Join-Path $projectRoot 'third-party-license-assets')
 $legal = (Get-Content -LiteralPath (Join-Path $projectRoot 'legal/heirowinstaller/legal-documents.json') -Raw | ConvertFrom-Json).legalDocuments
 $manifest = [ordered]@{formatVersion=4;id='socketjack.maintenance';name='SocketJack installer and updater runtime';version=$Version;publisher='SocketJack';targetPlatform='windows';targetRuntime=$Runtime;scope='user';payload=@();legalDocuments=$legal}
 $manifestPath = Join-Path $work 'maintenance.json'

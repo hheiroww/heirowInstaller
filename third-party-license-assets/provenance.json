@@ -1,0 +1,29 @@
+{
+  "format": "heirowInstaller.upstream-license-assets/1",
+  "entries": [
+    {
+      "packageId": "LibTessDotNet",
+      "version": "1.1.15",
+      "assetPath": "LibTessDotNet/1.1.15/LICENSE.txt",
+      "targetFileName": "LICENSE.txt",
+      "repository": "https://github.com/speps/LibTessDotNet",
+      "revision": "0f7cf440d1793fbec4cd73e09f3c8daf0becf279",
+      "sourceUrl": "https://raw.githubusercontent.com/speps/LibTessDotNet/0f7cf440d1793fbec4cd73e09f3c8daf0becf279/LICENSE.txt",
+      "gitBlobSha1": "c3fb0cfb1e1c0d21bfacdc02934ed1b511933784",
+      "bytes": 1578,
+      "sha256": "81656e457a092d053791ef836216542c1357293fd64b61f0228e7ddab954d98e"
+    },
+    {
+      "packageId": "SSH.NET",
+      "version": "2026.0.0",
+      "assetPath": "SSH.NET/2026.0.0/LICENSE",
+      "targetFileName": "LICENSE",
+      "repository": "https://github.com/sshnet/SSH.NET",
+      "revision": "7b2fd3dbf2c86a80a7b06cea020aa5f821c9902e",
+      "sourceUrl": "https://raw.githubusercontent.com/sshnet/SSH.NET/7b2fd3dbf2c86a80a7b06cea020aa5f821c9902e/LICENSE",
+      "gitBlobSha1": "f2aef4f38b516e48c51f0f5f77bead6a7ab69d3b",
+      "bytes": 1117,
+      "sha256": "84c79a38515de2833a7c353395e04056c0cbd77545d450fe216d569e1570b78e"
+    }
+  ]
+}
