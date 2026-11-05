@@ -42,7 +42,7 @@ public sealed class FileUpdateClient : IDisposable
         using var response = await GetAsync(Url(feed.ManifestUrl), 6 * 1024 * 1024, progress, cancellationToken);
         var metadata = FileUpdateMetadata.ReadEnvelope(await ReadBoundedAsync(response, 6 * 1024 * 1024, cancellationToken),
             installed.PublisherKeySha256, feed.TargetManifestSha256);
-        if (metadata.Manifest.Id != installed.Id || metadata.Manifest.Version != feed.Version || metadata.Manifest.Scope != installed.Scope)
+        if (metadata.Manifest.Id != installed.Id || metadata.Manifest.Version != feed.Version)
             throw new InvalidDataException("The signed target differs from the installed product or update offer.");
         if (PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(installed.Version)) < 0 ||
             PackageVersion.Parse(feed.Version).CompareTo(PackageVersion.Parse(installed.Version)) == 0 && !options.AllowDowngrade)
@@ -62,6 +62,8 @@ public sealed class FileUpdateClient : IDisposable
                 using var zipResponse = await PostAsync(Url(feed.FilesUrl), 2L * 1024 * 1024 * 1024, body, progress, cancellationToken);
                 await stage.ReceiveAsync(zipResponse, progress, cancellationToken);
             }
+            options.SharedPackageTransport ??= transport;
+            await SharedPackages.PrefetchAsync(package, plan, stage.Root, options, progress, cancellationToken);
             await stage.MarkReadyAsync(cancellationToken);
             return stage;
         }

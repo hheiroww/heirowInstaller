@@ -21,6 +21,10 @@ internal static class WindowsIntegration
         }
         foreach (var registry in manifest.Registry.Where(x => InstallerEngine.IsSelected(x.Feature, plan.Features)))
         {
+            [SupportedOSPlatform("windows")]
+            void ApplyRegistry()
+            {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
             token.ThrowIfCancellationRequested();
             ValidateRegistry(registry.Hive, registry.Key);
             var snapshot = CaptureRegistry(registry.Hive, registry.Key, registry.Name);
@@ -39,6 +43,9 @@ internal static class WindowsIntegration
             };
             key.SetValue(registry.Name, data, kind);
             snapshots.Add(snapshot);
+            }
+            if (registry.Hive == "user" && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } original) original.RunAsOriginalUser(ApplyRegistry);
+            else ApplyRegistry();
         }
         foreach (var definition in manifest.Environment.Where(x => InstallerEngine.IsSelected(x.Feature, plan.Features)))
         {
@@ -46,13 +53,13 @@ internal static class WindowsIntegration
             if (string.IsNullOrWhiteSpace(definition.Name) || definition.Name.Contains('=') || definition.Name.Contains('\0'))
                 throw new InvalidDataException("Invalid environment variable name.");
             var target = plan.Scope == "machine" ? EnvironmentVariableTarget.Machine : EnvironmentVariableTarget.User;
-            var previous = System.Environment.GetEnvironmentVariable(definition.Name, target);
+            var previous = GetEnvironment(definition.Name, target);
             var value = InstallerEngine.Expand(definition.Value, plan.InstallDirectory);
             if (definition.Append && !string.IsNullOrEmpty(previous))
                 value = previous.Split(';').Contains(value, StringComparer.OrdinalIgnoreCase) ? previous : previous.TrimEnd(';') + ";" + value;
             var snapshot = new ModuleSnapshot { Kind = "environment", Key = definition.Name, Values = new() { ["scope"] = plan.Scope, ["value"] = previous } };
             transaction.AddRollback(() => RestoreEnvironment(snapshot));
-            System.Environment.SetEnvironmentVariable(definition.Name, value, target);
+            SetEnvironment(definition.Name, value, target);
             snapshots.Add(snapshot);
         }
         var shortcuts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -118,7 +125,7 @@ internal static class WindowsIntegration
                     RestoreRegistry(snapshot);
                     break;
                 case "environment":
-                    var envCurrent = new ModuleSnapshot { Kind = "environment", Key = snapshot.Key, Values = new() { ["scope"] = snapshot.Values["scope"], ["value"] = System.Environment.GetEnvironmentVariable(snapshot.Key, snapshot.Values["scope"] == "machine" ? EnvironmentVariableTarget.Machine : EnvironmentVariableTarget.User) } };
+                    var envCurrent = new ModuleSnapshot { Kind = "environment", Key = snapshot.Key, Values = new() { ["scope"] = snapshot.Values["scope"], ["value"] = GetEnvironment(snapshot.Key, snapshot.Values["scope"] == "machine" ? EnvironmentVariableTarget.Machine : EnvironmentVariableTarget.User) } };
                     transaction.AddRollback(() => RestoreEnvironment(envCurrent));
                     RestoreEnvironment(snapshot);
                     break;
@@ -151,6 +158,7 @@ internal static class WindowsIntegration
         foreach (var prerequisite in manifest.Prerequisites.Where(x => InstallerEngine.IsSelected(x.Feature, plan.Features)))
         {
             token.ThrowIfCancellationRequested();
+            if (options.AdministratorRequirementsHandled && prerequisite.RequiresAdministrator) continue;
             PackageSafety.ValidateId(prerequisite.Id);
             if (prerequisite.Detection is { } detection)
             {
@@ -169,7 +177,7 @@ internal static class WindowsIntegration
             else if (prerequisite.DownloadUrl is { } url && prerequisite.Sha256 is { } hash)
             {
                 var feed = new UpdateFeed { InstallerUrl = url, Sha256 = hash, PackageType = "exe", ProductId = prerequisite.Id, Version = "0" };
-                using var client = new UpdateClient();
+                using var client = new UpdateClient(transport: options.SharedPackageTransport);
                 executable = await client.DownloadAsync(feed, Path.Combine(extracted, ".prerequisites"), progress, token);
             }
             else throw new InvalidDataException("A prerequisite requires a verified payload executable or HTTPS download and SHA256.");
@@ -245,6 +253,8 @@ internal static class WindowsIntegration
         IReadOnlyDictionary<string, object>? preparedValues = null)
     {
         if (!OperatingSystem.IsWindows()) return;
+        if (product.Scope == "user" && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } original)
+        { original.RunAsOriginalUser(() => RegisterProduct(product, stateRoot, transaction, manifest, preparedValues)); return; }
         var path = ArpPath(product.Id);
         using var hive = Hive(product.Scope);
         using (var existing = hive.OpenSubKey(path))
@@ -280,6 +290,8 @@ internal static class WindowsIntegration
     public static void UnregisterProduct(InstalledProduct product, InstallTransaction transaction)
     {
         if (!OperatingSystem.IsWindows()) return;
+        if (product.Scope == "user" && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } original)
+        { original.RunAsOriginalUser(() => UnregisterProduct(product, transaction)); return; }
         var path = ArpPath(product.Id);
         using var hive = Hive(product.Scope);
         using var key = hive.OpenSubKey(path);
@@ -296,6 +308,8 @@ internal static class WindowsIntegration
     [SupportedOSPlatform("windows")]
     internal static ModuleSnapshot CaptureRegistry(string hiveName, string path, string name, string? view = null)
     {
+        if (hiveName == "user" && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } original)
+            return original.RunAsOriginalUser(() => CaptureRegistry(hiveName, path, name, view));
         ValidateRegistry(hiveName, path);
         using var hive = Hive(hiveName, view);
         using var key = hive.OpenSubKey(path);
@@ -312,6 +326,8 @@ internal static class WindowsIntegration
     [SupportedOSPlatform("windows")]
     internal static void RestoreRegistry(ModuleSnapshot snapshot)
     {
+        if (snapshot.Values["hive"] == "user" && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } original)
+        { original.RunAsOriginalUser(() => RestoreRegistry(snapshot)); return; }
         var path = snapshot.Values["path"]!;
         ValidateRegistry(snapshot.Values["hive"]!, path);
         using var hive = Hive(snapshot.Values["hive"]!, snapshot.Values.GetValueOrDefault("view"));
@@ -350,17 +366,27 @@ internal static class WindowsIntegration
         _ => throw new InvalidDataException("Unsupported registry value type: " + value)
     };
     [SupportedOSPlatform("windows")]
-    internal static RegistryKey Hive(string value, string? view = null) => RegistryKey.OpenBaseKey(value switch
+    internal static RegistryKey Hive(string value, string? view = null)
     {
-        "user" => RegistryHive.CurrentUser, "machine" => RegistryHive.LocalMachine,
-        _ => throw new InvalidDataException("Registry hive must be user or machine.")
-    }, view switch { "registry64" => RegistryView.Registry64, "registry32" => RegistryView.Registry32, null => System.Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32, _ => throw new InvalidDataException("Invalid registry view.") });
+        var selected = view switch { "registry64" => RegistryView.Registry64, "registry32" => RegistryView.Registry32,
+            null => System.Environment.Is64BitOperatingSystem ? RegistryView.Registry64 : RegistryView.Registry32, _ => throw new InvalidDataException("Invalid registry view.") };
+        if (value == "user" && InstallerUserContext.Current is { } original) return original.OpenUserHive(selected);
+        return RegistryKey.OpenBaseKey(value switch { "user" => RegistryHive.CurrentUser, "machine" => RegistryHive.LocalMachine,
+            _ => throw new InvalidDataException("Registry hive must be user or machine.") }, selected);
+    }
     private static void ValidateRegistry(string hive, string path)
     {
         if (hive is not ("user" or "machine") || string.IsNullOrWhiteSpace(path) || path.StartsWith('\\') || path.Contains("..", StringComparison.Ordinal) || path.Contains('/'))
             throw new InvalidDataException("Invalid registry hive or key path.");
     }
-    private static void RestoreEnvironment(ModuleSnapshot snapshot) => System.Environment.SetEnvironmentVariable(snapshot.Key, snapshot.Values["value"], snapshot.Values["scope"] == "machine" ? EnvironmentVariableTarget.Machine : EnvironmentVariableTarget.User);
+    private static string? GetEnvironment(string name, EnvironmentVariableTarget target) => OperatingSystem.IsWindows() && target == EnvironmentVariableTarget.User && InstallerUserContext.Current is { } original
+        ? original.GetUserEnvironment(name) : System.Environment.GetEnvironmentVariable(name, target);
+    private static void SetEnvironment(string name, string? value, EnvironmentVariableTarget target)
+    {
+        if (OperatingSystem.IsWindows() && target == EnvironmentVariableTarget.User && InstallerUserContext.Current is { } original) original.SetUserEnvironment(name, value);
+        else System.Environment.SetEnvironmentVariable(name, value, target);
+    }
+    private static void RestoreEnvironment(ModuleSnapshot snapshot) => SetEnvironment(snapshot.Key, snapshot.Values["value"], snapshot.Values["scope"] == "machine" ? EnvironmentVariableTarget.Machine : EnvironmentVariableTarget.User);
     private static string ShortcutPath(ShortcutDefinition definition, string scope)
     {
         var name = PackageSafety.NormalizeRelativePath(definition.Name);
@@ -368,8 +394,8 @@ internal static class WindowsIntegration
         if (!name.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) name += ".lnk";
         var folder = definition.Location.ToLowerInvariant() switch
         {
-            "startmenu" => System.Environment.GetFolderPath(scope == "machine" ? System.Environment.SpecialFolder.CommonPrograms : System.Environment.SpecialFolder.Programs),
-            "desktop" => System.Environment.GetFolderPath(scope == "machine" ? System.Environment.SpecialFolder.CommonDesktopDirectory : System.Environment.SpecialFolder.DesktopDirectory),
+            "startmenu" => InstallerPlatform.GetFolderPath(scope == "machine" ? System.Environment.SpecialFolder.CommonPrograms : System.Environment.SpecialFolder.Programs),
+            "desktop" => InstallerPlatform.GetFolderPath(scope == "machine" ? System.Environment.SpecialFolder.CommonDesktopDirectory : System.Environment.SpecialFolder.DesktopDirectory),
             _ => throw new InvalidDataException("Shortcut location must be startMenu or desktop.")
         };
         return PackageSafety.UnderRoot(folder, name);

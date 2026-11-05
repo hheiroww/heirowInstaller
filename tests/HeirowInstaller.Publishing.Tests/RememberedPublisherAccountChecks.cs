@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using HeirowInstaller.Publishing;
+using HeirowInstaller.Core;
 
 internal static class RememberedPublisherAccountChecks
 {
@@ -29,6 +30,16 @@ internal static class RememberedPublisherAccountChecks
         using (var restored = await new RememberedPublisherAccount(server.Origin, directory, clock, true).RestoreAsync())
             check(restored?.AccessToken == Token && restored.Username == Username && restored.ExpiresUtc == initial.ExpiresUtc, "Another store instance restores the exact protected account without extending expiry");
         check(await account.GetRevisionAsync() == savedRevision && server.Requests == 0, "Update-only restoration neither writes a new lifetime nor contacts the renewal endpoint");
+        using (var self = Process.GetCurrentProcess())
+        using (var user = InstallerUserContext.OpenForProcess(self.Id, self.StartTime.ToUniversalTime().Ticks))
+        using (user.Enter())
+        {
+            using var restored = await account.RestoreAsync();
+            check(restored?.AccessToken == Token && await account.GetRevisionAsync() == savedRevision && !user.IsExecutingAsOriginalUser,
+                "A kernel-bound original-user context restores DPAPI and releases its impersonation after asynchronous account access");
+            check(await account.RememberAsync(initial, savedRevision), "Original-user account writes preserve captured revision and return to the coordinator token");
+            savedRevision = await account.GetRevisionAsync();
+        }
         await ChildAsync(server.Origin, directory, "restore", root, check);
         await CrossProcessLockAsync(account, server.Origin, directory, root, check);
 

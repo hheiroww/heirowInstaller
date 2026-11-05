@@ -12,6 +12,7 @@ internal static partial class UpdaterProgram
     {
         var path = Path.GetFullPath(args.Positionals.ElementAtOrDefault(1) ?? throw new ArgumentException("apply-incremental requires signed update data."));
         PackageSafety.EnsureNoReparsePoints(path);
+        using var owner = await HandoffOwnerScope.OpenAsync(args, path, token);
         var profilePath = Path.GetFullPath(args.Require("lifecycle-config"));
         var configuration = ApplicationUpdater.ReadConfiguration(profilePath, requireEntryPoint: false);
         var id = args.Require("product-id"); var key = args.Require("trust-key"); var expectedVersion = args.Require("expected-version");
@@ -25,6 +26,8 @@ internal static partial class UpdaterProgram
         if (installed.IsMsi || installed.IsExecutable) throw new NotSupportedException("This application needs a native ownership migration before file updates.");
         if (!BootstrapProcessTrust.IsTrustedUpdaterProcess(configuration, trustedRuntime))
             throw new InvalidDataException("File updates must run through the application's verified shared updater.");
+        owner.ValidateImage(configuration, trustedRuntime);
+        await owner.AcceptAsync(token);
         var stateDirectory = ApplicationUpdater.StateDirectory(configuration);
         var statusPath = BoundHandoffPath(args.Require("status-file"), stateDirectory, "status.json");
         var readyPath = BoundHandoffPath(args.Require("lifecycle-ready"), stateDirectory, "ready.json");
@@ -43,6 +46,8 @@ internal static partial class UpdaterProgram
         {
             delta.VerifySignature(key, requireSignature: true); await delta.VerifyAsync(null, token);
             var transition = delta.Transition;
+            if (configuration.Scope == "user" && delta.TargetManifest.Prerequisites.Any(item => item.RequiresAdministrator))
+                throw new NotSupportedException("Privileged per-user prerequisites require the hfiles1 update protocol. Open the current signed installer to update this application.");
             if (transition.ProductId != id || transition.FromVersion != feed.BaseVersion || transition.ToVersion != expectedVersion ||
                 !PackageSafety.HashEquals(transition.BaseManifestSha256, feed.BaseManifestSha256) || !PackageSafety.HashEquals(transition.TargetManifestSha256, feed.TargetManifestSha256) ||
                 (configuration.CurrentVersion != feed.BaseVersion && configuration.CurrentVersion != expectedVersion))
@@ -61,13 +66,14 @@ internal static partial class UpdaterProgram
         if (!PackageSafety.HashEquals(PackageSafety.HashFile(path), feed.Sha256)) throw new CryptographicException("The staged file update changed while applications were closing.");
         using var client = new UpdateClient(configuration.Isolated, transport: new SocketJackUpdateTransport(new Uri(configuration.CredentialOrigin)), requireIncrementalUpdates: true);
         await using var progress = new IncrementalProgress(statusPath);
-        var result = await client.ApplyAsync(path, feed, new()
+        var options = new InstallOptions
         {
             TargetDirectory = configuration.InstallDirectory, StateRoot = configuration.StateRoot, Scope = configuration.Scope,
             TrustedPublisherKeySha256 = key, RequireSignature = true, Features = configuration.Features,
             Silent = true, Launch = false, RegisterProduct = installed.RegisteredProduct, Isolated = configuration.Isolated,
             CompanionStopAlreadyHandled = true, RunningApplicationsPrompt = prompt, LogPath = args.Get("log")
-        }, progress, token);
+        };
+        var result = await owner.ApplyUserAsync(options, () => client.ApplyAsync(path, feed, options, progress, token), () => Task.FromResult(false));
         await progress.CompleteAsync();
         await ApplicationUpdater.CompleteHandoffAsync(statePath, CancellationToken.None);
         await UpdaterSchedule.WriteJsonAsync(statusPath, new { status = "updated", result }, CancellationToken.None);

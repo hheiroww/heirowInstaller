@@ -63,9 +63,12 @@ internal static class WizardSmoke
             var kept = await Start("save-work", true);
             checks.AddRange(await ElevatedInstallWorker.VerifyProtocolRejectionsAsync(directory, args.PackagePath!, controller.Plan!, controller.Options(), kept.Id));
             checks.AddRange(await SignedWizardBindingSmoke.RunAsync(directory));
+            checks.AddRange(await ElevatedInstallWorker.VerifyPreparedFixtureAsync(directory, controller.Plan!, controller.Options()));
             await Click("setup.next");
             await Wait(() => controller.RunningApplicationsDialog is { Waiting: false });
             RequireWorkerHasNoWindow();
+            Require(ElevatedInstallWorker.LastObservation!.ProcessId == ElevatedInstallWorker.LastPreparedProcessId,
+                "Install consumed the same already-prepared worker process without a second launch or consent request");
             Require(await Ui(() => controller.RunningApplicationsDialog!.Applications.Any(x => x.ProcessId == kept.Id)), "The windowless same-image worker relayed the actual affected app to the original wizard");
             await game.CaptureAsync(Path.Combine(directory, "03-close-apps-original-wizard.png"));
             await Click("running.cancel");

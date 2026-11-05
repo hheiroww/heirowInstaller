@@ -42,12 +42,9 @@ public sealed partial class SocketJackUpdater
         var options = new InstallOptions { TargetDirectory = installed.InstallDirectory, StateRoot = target.StateRoot, Scope = installed.Scope,
             Features = target.Features, Isolated = installed.Isolated, TrustedPublisherKeySha256 = key, RequireSignature = true, SharedPackageTransport = transport };
         using var prepared = await client.PrepareFileUpdateAsync(update.Feed, installed, downloadDirectory, options, progress, token);
-        // Machine-scoped dependency activation is deferred to the elevated helper; it still precedes app shutdown.
-        if (installed.Scope != "machine" || InstallerEngine.IsElevated || installed.Isolated)
-        {
-            using var metadata = PackageReader.OpenMetadata(prepared.MetadataPath);
-            await SharedPackages.PrepareAsync(metadata, new InstallerEngine().Plan(metadata, options), options, progress, token);
-        }
+        using var targetMetadata = PackageReader.OpenMetadata(prepared.MetadataPath);
+        var targetPlan = new InstallerEngine().Plan(targetMetadata, options);
+        // The selected archives are already prefetched with this live session. The helper extracts them before app closure.
         var directory = PackageSafety.UnderRoot(ApplicationUpdater.StateDirectory(profile), "handoffs/" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
         var start = new ProcessStartInfo(helper) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = installed.InstallDirectory,
             RedirectStandardOutput = true, RedirectStandardError = true };
@@ -62,8 +59,10 @@ public sealed partial class SocketJackUpdater
         start.ArgumentList.Add("--background");
         if (policy.LogPath is not null) Value("--log", policy.LogPath);
         if (profile.Isolated) start.ArgumentList.Add("--isolated");
-        if (target.Scope == "machine" && !InstallerEngine.IsElevated && !profile.Isolated && policy.StageForElevation)
-        { start.UseShellExecute = true; start.Verb = "runas"; start.RedirectStandardOutput = false; start.RedirectStandardError = false; }
+        if (targetPlan.RequiresElevation && !InstallerEngine.IsElevated && !profile.Isolated && policy.StageForElevation)
+            start = ApplicationUpdater.ElevateDataHelper(start);
+        UpdaterOwnerHandshake.Attach(start, sourcePid, sourceStart, new(target.ProductId, installed.InstallDirectory, profile.StateRoot,
+            installed.Scope, prepared.Metadata.ManifestSha256, prepared.Root), token);
         return start;
     }
 }

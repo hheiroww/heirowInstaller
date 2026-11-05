@@ -31,6 +31,9 @@ public sealed class PackageManifest
     public string? LaunchWorkingDirectory { get; set; }
     public string InstallDirectory { get; set; } = "";
     public string Scope { get; set; } = "user";
+    /// <summary>Signed setup requirement. This does not elevate normal application launches.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RequiresAdministrator { get; set; }
     public string? UpdateUrl { get; set; }
     public string? Homepage { get; set; }
     public string? LicenseFile { get; set; }
@@ -58,6 +61,9 @@ public sealed class PackageManifest
 /// <summary>Signed local application host and exact shared runtime/probing dependencies, provisioned during setup.</summary>
 public sealed class ApplicationLaunchDefinition
 {
+    /// <summary>Explicit privilege requirement of the actual application executable.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RequiresAdministrator { get; set; }
     public string ExecutablePath { get; set; } = "";
     public string RuntimeConfigPath { get; set; } = "";
     public string RuntimePackageId { get; set; } = "";
@@ -195,6 +201,8 @@ public sealed class PrerequisiteDefinition
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RequiresAdministrator { get; set; }
     public string? DetectFile { get; set; }
     public string? Executable { get; set; }
     public string? DownloadUrl { get; set; }
@@ -287,6 +295,11 @@ public sealed class PackageBuildOptions
 
 public sealed class InstallOptions
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal string? PreparedSharedPackageDirectory { get; set; }
+    /// <summary>Runtime-only coordinator state after separately completing privileged prerequisites. Never accepted from package data or CLI.</summary>
+    [JsonIgnore]
+    public bool AdministratorRequirementsHandled { get; set; }
     /// <summary>Optional credential-aware transport. Each shared-package request remains restricted to the signed application origin.</summary>
     [JsonIgnore]
     public IUpdateTransport? SharedPackageTransport { get; set; }

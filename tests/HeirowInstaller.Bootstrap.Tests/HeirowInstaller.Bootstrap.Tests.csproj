@@ -5,5 +5,6 @@
     <Compile Include="../../src/Shared/WebBootstrapBinding.cs" Link="Production/WebBootstrapBinding.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapModels.cs" Link="Production/BootstrapModels.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapEngine.cs" Link="Production/BootstrapEngine.cs" />
+    <Compile Include="../../src/HeirowInstaller.Bootstrap/ApplicationPromotionPayloads.cs" Link="Production/ApplicationPromotionPayloads.cs" />
   </ItemGroup>
 </Project>

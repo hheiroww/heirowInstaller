@@ -114,6 +114,8 @@ public static partial class PackageSafety
             }
         }
         SharedPackages.ValidateLaunch(manifest);
+        if ((manifest.RequiresAdministrator || manifest.ApplicationLaunch?.RequiresAdministrator == true || manifest.Prerequisites.Any(item => item.RequiresAdministrator)) && manifest.FormatVersion < 5)
+            throw new InvalidDataException("Explicit setup and application administrator requirements require package format 5.");
         if (manifest.EntryPoint.Length > 0 && !paths.Contains(NormalizeRelativePath(manifest.EntryPoint)) && manifest.LegacyMsi is null && manifest.LegacyExecutable is null)
             throw new InvalidDataException("Entry point must be included in the payload.");
         PayloadDestinations.ValidateDefinitions(manifest);
@@ -134,8 +136,8 @@ public static partial class PackageSafety
             if (companion.RuntimeMode is not (null or "shared" or "app-local"))
                 throw new InvalidDataException("The updater runtime must be shared or explicitly app-local for a legacy package.");
             if (companion.UpdateMode is not (null or "files" or "legacy")) throw new InvalidDataException("Unknown application update mode.");
-            if (companion.UpdateProtocol is not (null or "hupd1" or "hfiles1") || manifest.FormatVersion < 5 && companion.UpdateProtocol is not null)
-                throw new InvalidDataException("An explicit update protocol requires format 5 and must be hupd1 or hfiles1.");
+            if (companion.UpdateProtocol is not (null or "hupd1" or "hfiles1") || manifest.FormatVersion < 4 && companion.UpdateProtocol is not null)
+                throw new InvalidDataException("An explicit update protocol requires format 4 or newer and must be hupd1 or hfiles1.");
             if (companion.UpdateMode == "files" && (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null))
                 throw new InvalidDataException("File updates require native managed file ownership; migrate the legacy installation backend first.");
             if (manifest.EntryPoint.Length == 0 || string.IsNullOrWhiteSpace(manifest.UpdateUrl))

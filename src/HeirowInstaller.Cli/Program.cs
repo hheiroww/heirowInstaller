@@ -15,6 +15,7 @@ heirowInstaller — cross-platform installation and publishing
   bundle <package.hinst> --launcher <single-file.exe> --output <setup.exe>
   bind-bootstrap <descriptor.json> --launcher <generic-native.exe> --output <setup.exe> --sign-key <pem>
   inspect-bootstrap <setup.exe> [--trust-key <sha256>]
+  inspect-execution-level <windows.exe>
   build <manifest.json> --source <directory>|--project <application.csproj> --output <setup.exe>
     [--launcher <published-heirowInstaller.exe>] [--updater <published-heirowUpdater.exe>] [--sign-key <pem>]
   sign <setup.exe|application.dll|package.msi> [Windows signing options]
@@ -34,6 +35,8 @@ heirowInstaller — cross-platform installation and publishing
   import-msi <original.msi> --output <package.hinst> [--id <id>] [--name <name>] [--version <version>] [--publisher <name>]
   import-exe <original.exe> --id <id> --name <name> --version <version> --publisher <publisher> --install-args <json-array> --output <package.hinst>
   publish <package.hinst> [--publisher <https-origin>] [--token-env <name>|--cookie-env <name>|--github-oidc] [--wait-for-activation] [--resume-upload <id>] [--sealed-delivery|--protected-preparation]
+  attach-bootstrap <web-setup.exe> --id <product-id> --version <version> [--publisher <https-origin>] --token-env <name>
+  attach-beta-application <application.hinst> --version <version> [--publisher <https-origin>] --token-env <name>
   publisher-status|catalog [--publisher <https-origin>]
   publisher-legal <product-id> [--publisher <https-origin>] [--token-env <name>]
   publisher-legal-save <product-id> --legal-documents <json> [--token-env <name>]
@@ -94,6 +97,12 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
             {
                 case "pack":
                     Print(PackageBuilder.Build(Subject(), parsed.Require("source"), parsed.Require("output"), await CreationOptionsAsync(parsed, Subject(), cancellation.Token))); break;
+                case "inspect-execution-level":
+                {
+                    var level = WindowsExecutablePrivileges.Read(Subject());
+                    Print(new { executionLevel = level.ToString(), requiresAdministrator = level == WindowsExecutionLevel.RequireAdministrator });
+                    break;
+                }
                 case "bind-bootstrap":
                 {
                     using var key = System.Security.Cryptography.RSA.Create();
@@ -238,6 +247,12 @@ All machine-scope work requires an elevated process. Commands return 0 on succes
                         parsed.Get("resume-upload"), cancellation.Token, parsed.Has("sealed-delivery"), parsed.Has("protected-preparation"))); break;
                 case "publisher-status":
                     using (var publisher = Publisher(parsed)) Print(await publisher.GetStatusAsync(cancellation.Token)); break;
+                case "attach-bootstrap":
+                    using (var publisher = Publisher(parsed)) Print(await publisher.AttachWebBootstrapAsync(Subject(), parsed.Require("id"), parsed.Require("version"), cancellation.Token,
+                        trustedPublisherKeySha256: parsed.Get("trust-key"))); break;
+                case "attach-beta-application":
+                    using (var publisher = Publisher(parsed)) Print(await publisher.AttachBetaApplicationAsync(Subject(), parsed.Require("version"), cancellation.Token,
+                        trustedPublisherKeySha256: parsed.Get("trust-key"))); break;
                 case "catalog":
                     using (var publisher = Publisher(parsed)) Print(await publisher.GetCatalogAsync(cancellation.Token)); break;
                 case "publisher-legal":

@@ -115,6 +115,8 @@ internal static class UpdaterSchedule
     }
     public static async Task WriteJsonAsync<T>(string path, T value, CancellationToken token)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+        { await user.RunAsOriginalUserAsync(async () => { await WriteJsonAsync(path, value, token); return true; }); return; }
         PackageSafety.EnsureNoReparsePoints(path);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";

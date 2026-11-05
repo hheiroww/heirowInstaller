@@ -20,7 +20,9 @@ internal sealed class BootstrapEngine
     internal static BootstrapDescriptor ReadEmbeddedDescriptor()
     {
         var binding = HeirowInstaller.BootstrapContract.WebBootstrapBindings.Read(Environment.ProcessPath!);
-        return JsonSerializer.Deserialize(binding.DescriptorBytes, BootstrapJson.Default.BootstrapDescriptor) ?? throw new InvalidDataException("Empty bootstrap binding.");
+        var descriptor = JsonSerializer.Deserialize(binding.DescriptorBytes, BootstrapJson.Default.BootstrapDescriptor) ?? throw new InvalidDataException("Empty bootstrap binding.");
+        if (!binding.PublisherKeySha256.Equals(descriptor.PublisherKeySha256, StringComparison.OrdinalIgnoreCase)) throw new CryptographicException("The bootstrap publisher differs from its signed descriptor.");
+        return descriptor;
     }
 
     internal static void Validate(BootstrapDescriptor value)
@@ -41,7 +43,11 @@ internal sealed class BootstrapEngine
         Relative(value.HostEntryPoint);
         if (value.DotNetPackageId is not null) Relative(value.DotNetEntryPoint ?? "dotnet.exe");
         if (value.HostArguments.Count > 128 || value.HostArguments.Any(argument => argument.Length > 4096 || argument.Contains('\0'))) throw new InvalidDataException("Invalid installer arguments.");
-        if (value.ApplicationPackage is { } app) ValidateDownload(app);
+        if (value.ApplicationPackage is { } app)
+        {
+            if (value.HostKind != "installer" || value.OfflineOnly) throw new InvalidDataException("Only an online setup launcher may download an application package.");
+            ValidateDownload(app);
+        }
         if (value.HostKind == "application")
         {
             if (value.DotNetPackageId is null || value.ApplicationPackage is not null || value.RuntimeConfigPath is null ||
@@ -49,14 +55,16 @@ internal sealed class BootstrapEngine
                 value.ProbingPackageIds.Count > 128 || value.ProbingPackageIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != value.ProbingPackageIds.Count ||
                 value.ProbingPackageIds.Any(id => !ids.Contains(id))) throw new InvalidDataException("Invalid offline application launch binding.");
             Relative(value.RuntimeConfigPath);
-            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase); long total = 0;
             foreach (var file in value.ApplicationFiles)
             {
                 Relative(file.Path);
-                if (!paths.Add(file.Path) || !HashText(file.Sha256) || file.Size < 0) throw new InvalidDataException("Invalid local application file binding.");
+                if (!paths.Add(file.Path) || !HashText(file.Sha256) || file.Size < 0 || file.Size > MaximumExpandedBytes - total) throw new InvalidDataException("Invalid local application file binding.");
+                total += file.Size;
             }
             if (!paths.Contains(value.HostEntryPoint) || !paths.Contains(value.RuntimeConfigPath))
                 throw new InvalidDataException("The actual apphost and runtime configuration must be signed local files.");
+            if (paths.Contains(value.RuntimeConfigPath[..^5] + ".dev.json")) throw new InvalidDataException("Application payload cannot replace its generated shared-library binding.");
         }
     }
 
@@ -67,34 +75,47 @@ internal sealed class BootstrapEngine
     internal string PackageRoot(string sharedRoot, BootstrapPackage package) => UnderRoot(sharedRoot,
         $"packages/{descriptor.PublisherKeySha256.ToLowerInvariant()[..16]}/{package.Sha256.ToLowerInvariant()}");
 
-    internal async Task<ProcessStartInfo> PrepareAsync(string sharedRoot, string stagingRoot, CancellationToken token)
+    internal async Task<ProcessStartInfo> PrepareAsync(string sharedRoot, string stagingRoot, CancellationToken token, string? applicationDirectory = null, bool allowProvision = true)
     {
         NoLinks(sharedRoot); NoLinks(stagingRoot);
-        if (descriptor.HostKind != "application") Directory.CreateDirectory(stagingRoot);
+        allowProvision = allowProvision && descriptor.HostKind == "installer" && !descriptor.OfflineOnly;
+        if (allowProvision) Directory.CreateDirectory(stagingRoot);
         var roots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var package in descriptor.Packages)
         {
             token.ThrowIfCancellationRequested();
             var root = PackageRoot(sharedRoot, package);
             var archivePath = Path.Combine(root, "package.hinst");
-            if (File.Exists(archivePath) && await FileMatchesAsync(archivePath, package.Size, package.Sha256, token))
+            var complete = Path.Combine(root, "complete.json");
+            if (File.Exists(complete) && File.Exists(archivePath) && await FileMatchesAsync(archivePath, package.Size, package.Sha256, token))
             {
                 progress.Report(new("Checking shared files", package.Id));
                 await VerifyPackageAsync(archivePath, Path.Combine(root, "files"), package, extract: false, token);
             }
             else
             {
-                if (descriptor.HostKind == "application") throw new InvalidDataException("This application's shared files are missing or changed. Run setup to repair the installation before opening it.");
-                if (Directory.Exists(root)) throw new InvalidDataException("A shared runtime directory is incomplete or changed. Repair is required before it can be reused.");
-                var work = UnderRoot(stagingRoot, package.Id.ToLowerInvariant());
-                Directory.CreateDirectory(work);
-                var download = Path.Combine(work, "package.hinst");
-                await DownloadAsync(package, download, token);
-                var files = Path.Combine(work, "files");
-                await VerifyPackageAsync(download, files, package, extract: true, token);
-                NoLinks(root); Directory.CreateDirectory(Path.GetDirectoryName(root)!);
-                // A complete verified tree is made visible atomically. Active packages are never overwritten.
-                Directory.Move(work, root);
+                if (!allowProvision) throw new InvalidDataException("Shared application or maintenance files are missing or changed. Run setup to repair the installation before opening it.");
+                NoLinks(root); Directory.CreateDirectory(root);
+                using var lease = await AcquirePackageAsync(Path.Combine(root, "provision.lock"), token);
+                if (File.Exists(archivePath))
+                {
+                    if (!await FileMatchesAsync(archivePath, package.Size, package.Sha256, token)) throw new CryptographicException("An immutable shared runtime archive changed; it was preserved for repair.");
+                    await VerifyPackageAsync(archivePath, Path.Combine(root, "files"), package, extract: false, token);
+                }
+                else
+                {
+                    if (File.Exists(complete) || Directory.Exists(Path.Combine(root, "files"))) throw new InvalidDataException("A shared runtime directory is incomplete. Run repair before reusing it.");
+                    var work = UnderRoot(stagingRoot, package.Id.ToLowerInvariant());
+                    Directory.CreateDirectory(work);
+                    var download = Path.Combine(work, "package.hinst");
+                    await DownloadAsync(package, download, token);
+                    var files = Path.Combine(work, "files");
+                    await VerifyPackageAsync(download, files, package, extract: true, token);
+                    // Publish verified files under the per-package lease. Active versions are never overwritten.
+                    Directory.Move(files, Path.Combine(root, "files"));
+                    File.Move(download, archivePath);
+                }
+                if (!File.Exists(complete)) await File.WriteAllTextAsync(complete, "{\"formatVersion\":1}", token);
             }
             roots.Add(package.Id, Path.Combine(root, "files"));
         }
@@ -105,7 +126,7 @@ internal sealed class BootstrapEngine
             await DownloadAsync(payload, application, token);
         }
         var localApplication = descriptor.HostKind == "application";
-        var hostRoot = localApplication ? Path.GetDirectoryName(Environment.ProcessPath!)! : roots[descriptor.HostPackageId];
+        var hostRoot = localApplication ? Path.GetFullPath(applicationDirectory ?? Path.GetDirectoryName(Environment.ProcessPath!)!) : roots[descriptor.HostPackageId];
         if (localApplication) await VerifyLocalApplicationAsync(hostRoot, roots, token);
         var host = UnderRoot(hostRoot, descriptor.HostEntryPoint);
         if (!File.Exists(host)) throw new InvalidDataException("The verified installer host is missing.");
@@ -113,11 +134,12 @@ internal sealed class BootstrapEngine
         if (descriptor.DotNetPackageId is { } runtime)
         {
             var runtimeRoot = roots[runtime];
-            start.FileName = localApplication ? host : UnderRoot(runtimeRoot, descriptor.DotNetEntryPoint ?? "dotnet.exe");
+            var managedDll = !localApplication && Path.GetExtension(host).Equals(".dll", StringComparison.OrdinalIgnoreCase);
+            start.FileName = managedDll ? UnderRoot(runtimeRoot, descriptor.DotNetEntryPoint ?? "dotnet.exe") : host;
             start.Environment["DOTNET_ROOT"] = runtimeRoot;
             start.Environment["DOTNET_ROOT_X64"] = runtimeRoot;
             start.Environment["DOTNET_ROOT_ARM64"] = runtimeRoot;
-            if (!localApplication)
+            if (managedDll)
             {
                 start.ArgumentList.Add("exec");
                 foreach (var root in roots.Values) { start.ArgumentList.Add("--additionalprobingpath"); start.ArgumentList.Add(root); }
@@ -142,6 +164,22 @@ internal sealed class BootstrapEngine
         }
         if (descriptor.HostKind == "installer") { start.ArgumentList.Add("--scope"); start.ArgumentList.Add(descriptor.Scope); }
         return start;
+    }
+
+    // Scope is a cache-location hint, never authority to select other bytes. Each
+    // candidate still verifies every signed archive/payload and the application's
+    // generated probing paths before any process can start. No launch-time downloads.
+    internal async Task<ProcessStartInfo> PrepareOfflineAsync(IEnumerable<string> sharedRoots, string stagingRoot,
+        CancellationToken token, string? applicationDirectory = null)
+    {
+        Exception? last = null;
+        foreach (var root in sharedRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try { return await PrepareAsync(root, stagingRoot, token, applicationDirectory, allowProvision: false); }
+            catch (Exception error) when (error is IOException or InvalidDataException or CryptographicException or UnauthorizedAccessException)
+            { last = error; }
+        }
+        throw new InvalidDataException("The installed shared files are unavailable. Run setup to repair this installation.", last);
     }
 
     private async Task VerifyLocalApplicationAsync(string root, IReadOnlyDictionary<string, string> packages, CancellationToken token)
@@ -207,7 +245,7 @@ internal sealed class BootstrapEngine
         }
     }
 
-    private async Task VerifyPackageAsync(string path, string filesRoot, BootstrapPackage expected, bool extract, CancellationToken token)
+    internal async Task VerifyPackageAsync(string path, string filesRoot, BootstrapPackage expected, bool extract, CancellationToken token)
     {
         NoLinks(path); NoLinks(filesRoot);
         using var archive = ZipFile.OpenRead(path);
@@ -274,6 +312,17 @@ internal sealed class BootstrapEngine
         if (!File.Exists(path) || new FileInfo(path).Length != length) return false;
         await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan);
         return Convert.ToHexString(await SHA256.HashDataAsync(input, token)).Equals(hash, StringComparison.OrdinalIgnoreCase);
+    }
+    internal static async Task<FileStream> AcquirePackageAsync(string path, CancellationToken token)
+    {
+        NoLinks(path);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token); deadline.CancelAfter(TimeSpan.FromMinutes(30));
+        while (true)
+        {
+            deadline.Token.ThrowIfCancellationRequested();
+            try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) { await Task.Delay(100, deadline.Token); }
+        }
     }
     internal static bool Identifier(string value) => value.Length is > 0 and <= 128 && value is not ("." or "..") && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-');
     internal static bool HashText(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);

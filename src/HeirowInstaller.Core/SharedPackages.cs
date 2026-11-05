@@ -5,8 +5,9 @@ using System.Text.Json;
 namespace HeirowInstaller.Core;
 
 /// <summary>Verified immutable dependencies shared only within one installation scope. No package garbage collection is performed.</summary>
-public static class SharedPackages
+public static partial class SharedPackages
 {
+    private const long MaximumPackageBytes = 16L * 1024 * 1024 * 1024;
     public const string BindingFileName = ".socketjack-shared.json";
 
     internal static void ValidatePublisher(PackageManifest manifest, string? publisherPin)
@@ -42,7 +43,7 @@ public static class SharedPackages
             PackageSafety.ValidateId(definition.Id);
             _ = PackageVersion.Parse(definition.Version);
             if (!ids.Add(definition.Id) || definition.TargetRuntime != manifest.TargetRuntime || definition.Size <= 0 ||
-                !PackageSafety.HashPattern().IsMatch(definition.Sha256) || !PackageSafety.HashPattern().IsMatch(definition.PublisherKeySha256) ||
+                definition.Size > MaximumPackageBytes || !PackageSafety.HashPattern().IsMatch(definition.Sha256) || !PackageSafety.HashPattern().IsMatch(definition.PublisherKeySha256) ||
                 definition.Feature is not null && !features.Contains(definition.Feature))
                 throw new InvalidDataException("Shared dependencies require distinct IDs, exact target runtime, size, hashes, publisher and known feature.");
             if (!Uri.TryCreate(definition.DownloadUrl, UriKind.Absolute, out var download))
@@ -149,7 +150,8 @@ public static class SharedPackages
             else
             {
                 RequireSpace(directory, definition.Size);
-                await DownloadAsync(definition, Origin(signed), archive, options, client, progress, cancellationToken);
+                if (options.PreparedSharedPackageDirectory is not null) await CopyPreparedArchiveAsync(definition, archive, options, cancellationToken);
+                else await DownloadAsync(definition, Origin(signed), archive, options, client, progress, cancellationToken);
             }
             using var dependency = PackageReader.Open(archive);
             ValidateArchive(dependency, definition, plan.Scope);
@@ -373,7 +375,8 @@ public static class SharedPackages
             manifest.Payload.Any(x => x.TargetRoot is not null || x.Feature is not null))
             throw new InvalidDataException("A shared dependency must be an inert signed payload package with its exact declared identity, scope and runtime.");
         PackagePlatform.RequireCurrentHost(manifest);
-        _ = manifest.Payload.Aggregate(0L, (total, file) => checked(total + file.Size));
+        if (manifest.Payload.Aggregate(0L, (total, file) => checked(total + file.Size)) > MaximumPackageBytes)
+            throw new InvalidDataException("A shared dependency exceeds the 16 GiB expanded package bound.");
     }
 
     private static async Task ExtractFileAsync(string archive, PayloadFile file, string destination, string staging, IProgress<InstallProgress>? progress, CancellationToken token)

@@ -103,7 +103,9 @@ internal sealed partial class AcceptanceSuite
             // The exact root is generated above and is always a direct child of the OS temporary directory.
             var full = Path.GetFullPath(root);
             var expectedParent = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar);
-            if (Path.GetDirectoryName(full)?.Equals(expectedParent, StringComparison.OrdinalIgnoreCase) == true &&
+            if (Environment.GetEnvironmentVariable("HEIROWINSTALLER_KEEP_TEST_OUTPUTS") == "1")
+                Console.WriteLine("Retained test outputs: " + full);
+            else if (Path.GetDirectoryName(full)?.Equals(expectedParent, StringComparison.OrdinalIgnoreCase) == true &&
                 Path.GetFileName(full).StartsWith("heirowInstaller-tests-", StringComparison.Ordinal))
                 try { Directory.Delete(full, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
@@ -1229,6 +1231,11 @@ internal sealed partial class AcceptanceSuite
     { try { await action(); } catch (T) { Interlocked.Increment(ref assertionCount); return; } throw new Exception("Expected exception " + typeof(T).Name); }
     private static string FindUpdaterCli()
     {
+        if (Environment.GetEnvironmentVariable("HEIROWUPDATER_TEST_EXECUTABLE") is { Length: > 0 } supplied)
+        {
+            var path = Path.GetFullPath(supplied);
+            return File.Exists(path) ? path : throw new FileNotFoundException("The explicit test updater is missing.", path);
+        }
         var directory = AppContext.BaseDirectory;
         while (!File.Exists(Path.Combine(directory, "src", "HeirowUpdater", "HeirowUpdater.csproj")))
             directory = Path.GetDirectoryName(directory.TrimEnd(Path.DirectorySeparatorChar)) ?? throw new DirectoryNotFoundException("Cannot find updater project root.");

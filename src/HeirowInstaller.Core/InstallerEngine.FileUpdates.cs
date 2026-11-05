@@ -16,10 +16,11 @@ public sealed partial class InstallerEngine
         options.Features = stage.SelectedFeatures.ToList();
         using var package = PackageReader.OpenMetadata(stage.MetadataPath); package.VerifySignature(stage.Installed.PublisherKeySha256, true);
         var plan = Plan(package, options);
-        if (plan.RequiresElevation && !IsElevated && !options.Isolated)
+        if (plan.RequiresElevation && !IsElevated && !options.Isolated && !(plan.Scope == "user" && options.AdministratorRequirementsHandled))
             throw new UnauthorizedAccessException("Applying this machine-scoped file update requires administrator privileges.");
         // Network work and every source hash finish before application shutdown.
         await stage.VerifySourcesAsync(plan, progress, cancellationToken);
+        options.PreparedSharedPackageDirectory = PackageSafety.UnderRoot(stage.Root, "dependencies");
         var shared = await SharedPackages.PrepareAsync(package, plan, options, progress, cancellationToken);
         var prerequisitesRoot = Path.Combine(stage.Root, "prerequisites");
         foreach (var prerequisite in package.Manifest.Prerequisites.Where(item => IsSelected(item.Feature, plan.Features) && item.Executable is { Length: > 0 }))

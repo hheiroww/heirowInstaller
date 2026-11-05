@@ -9,6 +9,7 @@ internal static partial class UpdaterProgram
     {
         var root = Path.GetFullPath(args.Positionals.ElementAtOrDefault(1) ?? throw new ArgumentException("apply-files requires a prepared signed directory update."));
         PackageSafety.EnsureNoReparsePoints(root);
+        using var owner = await HandoffOwnerScope.OpenAsync(args, root, token);
         var profilePath = Path.GetFullPath(args.Require("lifecycle-config"));
         var configuration = ApplicationUpdater.ReadConfiguration(profilePath, requireEntryPoint: false);
         var id = args.Require("product-id"); var key = args.Require("trust-key"); var expectedVersion = args.Require("expected-version");
@@ -20,6 +21,8 @@ internal static partial class UpdaterProgram
         var trustedRuntime = ApplicationUpdater.ResolveExecutable(configuration);
         if (!BootstrapProcessTrust.IsTrustedUpdaterProcess(configuration, trustedRuntime))
             throw new InvalidDataException("Selected-file updates must run through the verified installed updater.");
+        owner.ValidateImage(configuration, trustedRuntime);
+        await owner.AcceptAsync(token);
         var installed = InstallerEngine.ListInstalled(configuration.StateRoot).Single(product => product.Id.Equals(id, StringComparison.OrdinalIgnoreCase) && product.Scope == configuration.Scope);
         var options = new InstallOptions
         {
@@ -48,8 +51,15 @@ internal static partial class UpdaterProgram
         var target = UpdaterTarget.FromInstalled(installed, configuration.StateRoot);
         await using var progress = new IncrementalProgress(statusPath);
         using var sessions = await TargetUpdateSessions.CreateAsync([target], new ScheduleConfiguration(), configuration.Isolated,
-            interactive: !args.Has("no-prompt"), progress, token);
-        var result = await sessions[target].RunAsync(client => client.ApplyPreparedFilesAsync(target, root, options, progress, token, runningTarget), token);
+            interactive: !args.Has("no-prompt") && !InstallerEngine.IsElevated, progress, token);
+        var result = await owner.ApplyUserAsync(options,
+            () => sessions[target].RunAsync(client => client.ApplyPreparedFilesAsync(target, root, options, progress, token, runningTarget), token),
+            async () =>
+            {
+                using var prepared = PreparedFileUpdate.Open(root, installed, options);
+                using var metadata = PackageReader.OpenMetadata(prepared.MetadataPath);
+                return await new InstallerEngine().PrepareAdministrativeRequirementsAsync(metadata, new InstallerEngine().Plan(metadata, options), options, progress, token, prepared);
+            });
         await progress.CompleteAsync();
         await ApplicationUpdater.CompleteHandoffAsync(statePath, CancellationToken.None);
         await UpdaterSchedule.WriteJsonAsync(statusPath, new { status = "updated", result }, CancellationToken.None);

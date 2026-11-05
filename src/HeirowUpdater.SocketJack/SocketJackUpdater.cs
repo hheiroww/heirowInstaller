@@ -298,8 +298,10 @@ public sealed partial class SocketJackUpdater : IDisposable
         if (profile.Isolated) start.ArgumentList.Add("--isolated");
         if (target.Scope == "machine" && !InstallerEngine.IsElevated && !profile.Isolated && policy.StageForElevation)
         {
-            start.UseShellExecute = true; start.Verb = "runas"; start.RedirectStandardOutput = false; start.RedirectStandardError = false;
+            start = ApplicationUpdater.ElevateDataHelper(start);
         }
+        UpdaterOwnerHandshake.Attach(start, sourcePid, sourceStart, new(target.ProductId, installed.InstallDirectory, profile.StateRoot,
+            installed.Scope, update.Feed.TargetManifestSha256!, Path.GetFullPath(download)), cancellationToken);
         return start;
     }
     private static void RequireFileUpdate(UpdaterTarget target, UpdateCheckResult update)

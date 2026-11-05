@@ -137,7 +137,7 @@ public sealed partial class InstallerEngine
             Manifest = manifest, InstallDirectory = target, Scope = scope, Features = selected.ToList(), Files = files,
             UpdateCompanionEnabled = companionEnabled,
             TotalBytes = files.Sum(x => x.Size), IsUpgrade = previous is not null,
-            PreviousVersion = previous?.Version, RequiresElevation = scope == "machine" || RequiresMachineScope(manifest, selected)
+            PreviousVersion = previous?.Version, RequiresElevation = scope == "machine" || RequiresAdministrativeSetup(manifest, selected, target) || RequiresMachineScope(manifest, selected)
         };
         plan.UseOriginalInstallDirectory = (manifest.LegacyMsi is not null || manifest.LegacyExecutable is not null) &&
             options.TargetDirectory is null && string.IsNullOrWhiteSpace(manifest.InstallDirectory);
@@ -167,7 +167,8 @@ public sealed partial class InstallerEngine
     {
         options ??= new();
         var plan = Plan(package, options);
-        if (plan.RequiresElevation && !IsElevated && !options.Isolated) throw new UnauthorizedAccessException("This installation requires an elevated process. Run the installer as administrator.");
+        if (plan.RequiresElevation && !IsElevated && !options.Isolated && !(plan.Scope == "user" && options.AdministratorRequirementsHandled))
+            throw new UnauthorizedAccessException("This installation requires an elevated process. Run the installer as administrator.");
         if (package.Manifest.SharedPackages?.Any(dependency => dependency.Feature is null || plan.Features.Contains(dependency.Feature, StringComparer.OrdinalIgnoreCase)) != true)
             await EnsureApplicationsClosedAsync(plan, options, "install", progress, cancellationToken);
         var root = GetStateRoot(options, plan.Scope);
@@ -541,6 +542,11 @@ public sealed partial class InstallerEngine
 
     private static async Task StopCompanionAsync(InstalledProduct product, CancellationToken cancellationToken)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } originalUser)
+        {
+            await originalUser.RunAsOriginalUserAsync(async () => { await StopCompanionAsync(product, cancellationToken); return true; });
+            return;
+        }
         // Read only signed authored metadata; never execute an installed updater as administrator.
         using var package = PackageReader.Open(product.PackagePath);
         package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
@@ -822,18 +828,23 @@ public sealed partial class InstallerEngine
                 throw new InvalidDataException("User-scoped installation receipts cannot contain machine integration snapshots.");
     }
 
-    internal static string Expand(string value, string installDirectory) => System.Environment.ExpandEnvironmentVariables(value
+    internal static string Expand(string value, string installDirectory) => InstallerPlatform.ExpandEnvironmentVariables(value
         .Replace("{Home}", InstallerPlatform.UserHome, StringComparison.OrdinalIgnoreCase)
         .Replace("{UserData}", InstallerPlatform.UserData, StringComparison.OrdinalIgnoreCase)
         .Replace("{InstallDir}", installDirectory, StringComparison.OrdinalIgnoreCase)
-        .Replace("{LocalAppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), StringComparison.OrdinalIgnoreCase)
-        .Replace("{AppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), StringComparison.OrdinalIgnoreCase)
+        .Replace("{LocalAppData}", InstallerPlatform.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), StringComparison.OrdinalIgnoreCase)
+        .Replace("{AppData}", InstallerPlatform.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), StringComparison.OrdinalIgnoreCase)
         .Replace("{CommonAppData}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData), StringComparison.OrdinalIgnoreCase)
         .Replace("{ProgramFiles}", System.Environment.GetFolderPath(System.Environment.SpecialFolder.ProgramFiles), StringComparison.OrdinalIgnoreCase));
 
     public static bool RequiresMachineScope(PackageManifest manifest, IEnumerable<string> selected) =>
         manifest.Services.Any(value => IsSelected(value.Feature, selected)) ||
         manifest.Registry.Any(value => value.Hive == "machine" && IsSelected(value.Feature, selected));
+
+    public static bool RequiresAdministrativeSetup(PackageManifest manifest, IEnumerable<string> selected, string installDirectory)
+        => manifest.RequiresAdministrator || manifest.ApplicationLaunch?.RequiresAdministrator == true || manifest.Prerequisites.Where(item => item.RequiresAdministrator && IsSelected(item.Feature, selected))
+            .Any(item => item.Detection is { } detection ? !PrerequisiteDetection.IsSatisfied(detection)
+                : item.DetectFile is not { Length: > 0 } path || !File.Exists(Expand(path, installDirectory)));
 
     internal static bool IsSelected(string? feature, IEnumerable<string> selected) => feature is null || selected.Contains(feature, StringComparer.OrdinalIgnoreCase);
     private static string GetStateRoot(InstallOptions options, string scope)

@@ -12,6 +12,7 @@ internal sealed class BootstrapDescriptor
     public string HostKind { get; set; } = "installer";
     public string PublisherKeySha256 { get; set; } = "";
     public bool RequiresAdministrator { get; set; }
+    public bool OfflineOnly { get; set; }
     public List<string> AllowedDownloadOrigins { get; set; } = [];
     public List<BootstrapPackage> Packages { get; set; } = [];
     public string HostPackageId { get; set; } = "";

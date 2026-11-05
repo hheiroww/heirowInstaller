@@ -1,5 +1,5 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
+using System.Text.Json;
+using HeirowInstaller.BootstrapContract;
 
 namespace HeirowInstaller.Core;
 
@@ -18,11 +18,10 @@ public static class BootstrapProcessTrust
             !long.TryParse(Environment.GetEnvironmentVariable(ParentStartVariable), out var start) || start <= 0) return false;
         try
         {
-            using var self = Process.GetCurrentProcess();
-            if (NtQueryInformationProcess(self.Handle, 0, out var basic, Marshal.SizeOf<ProcessBasicInformation>(), out _) != 0 || basic.Parent.ToInt64() != parentId) return false;
-            using var parent = Process.GetProcessById(parentId);
-            if (parent.HasExited || parent.StartTime.ToUniversalTime().Ticks != start || parent.MainModule?.FileName is not { } image ||
-                !Path.GetFullPath(image).Equals(Path.GetFullPath(verifiedRuntime), InstallerPlatform.PathComparison)) return false;
+            if (BootstrapWorkerPromotion.ReadIdentity(Environment.ProcessId).ParentId != parentId) return false;
+            var parent = BootstrapWorkerPromotion.ReadIdentity(parentId);
+            var image = parent.Image;
+            if (parent.StartTicks != start || !Path.GetFullPath(image).Equals(Path.GetFullPath(verifiedRuntime), InstallerPlatform.PathComparison)) return false;
             PackageSafety.EnsureNoReparsePoints(image);
             return new FileInfo(image).Length == binding.Size && PackageSafety.HashEquals(PackageSafety.HashFile(image), binding.Sha256);
         }
@@ -30,7 +29,45 @@ public static class BootstrapProcessTrust
         { return false; }
     }
 
-    [StructLayout(LayoutKind.Sequential)] private struct ProcessBasicInformation
-    { public nint Reserved1, Peb, Reserved2, Reserved3, UniqueId, Parent; }
-    [DllImport("ntdll.dll")] private static extern int NtQueryInformationProcess(nint process, int informationClass, out ProcessBasicInformation information, int length, out int returned);
+    /// <summary>Checks an owner image independently of its command-line PID. Callers also require the live owner-pipe kernel binding.</summary>
+    public static bool IsTrustedUpdaterOwner(int processId, long startTicks, UpdateCompanionConfiguration configuration, string verifiedRuntime)
+    {
+        if (!OperatingSystem.IsWindows() || processId <= 0 || startTicks <= 0) return false;
+        try
+        {
+            var owner = BootstrapWorkerPromotion.ReadIdentity(processId);
+            if (owner.StartTicks != startTicks) return false;
+            if (Path.GetFullPath(owner.Image).Equals(Path.GetFullPath(verifiedRuntime), InstallerPlatform.PathComparison))
+                return configuration.SharedRuntime is { } content && new FileInfo(owner.Image).Length == content.Size &&
+                    PackageSafety.HashEquals(PackageSafety.HashFile(owner.Image), content.Sha256);
+            var parent = BootstrapWorkerPromotion.ReadIdentity(owner.ParentId);
+            var binding = WebBootstrapBindings.Read(parent.Image, configuration.PublisherKeySha256);
+            using var parsed = JsonDocument.Parse(binding.DescriptorBytes); var descriptor = parsed.RootElement;
+            var role = descriptor.GetProperty("hostKind").GetString();
+            if (role is not ("updater" or "installer")) return false;
+            if (role == "updater" && (!Path.GetFullPath(parent.Image).Equals(Path.GetFullPath(verifiedRuntime), InstallerPlatform.PathComparison) ||
+                configuration.SharedRuntime is not { } expected || new FileInfo(parent.Image).Length != expected.Size ||
+                !PackageSafety.HashEquals(PackageSafety.HashFile(parent.Image), expected.Sha256))) return false;
+            var hostId = descriptor.GetProperty("hostPackageId").GetString();
+            var definition = descriptor.GetProperty("packages").EnumerateArray().Single(x => x.GetProperty("id").GetString() == hostId);
+            var digest = definition.GetProperty("sha256").GetString()!;
+            if (!PackageSafety.HashPattern().IsMatch(digest)) return false;
+            var files = Path.GetDirectoryName(Path.GetFullPath(owner.Image))!;
+            var directory = Path.GetDirectoryName(files)!;
+            if (!Path.GetFileName(files).Equals("files", StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(directory).Equals(digest, StringComparison.OrdinalIgnoreCase)) return false;
+            var archive = PackageSafety.UnderRoot(directory, "package.hinst"); PackageSafety.EnsureNoReparsePoints(archive);
+            using var package = PackageReader.Open(archive); package.VerifySignature(configuration.PublisherKeySha256, requireSignature: true);
+            if (package.Manifest.Id != hostId || package.Manifest.Version != definition.GetProperty("version").GetString() ||
+                package.Manifest.TargetRuntime != definition.GetProperty("targetRuntime").GetString() || new FileInfo(archive).Length != definition.GetProperty("size").GetInt64() ||
+                !PackageSafety.HashEquals(package.ComputePackageSha256(), digest)) return false;
+            var relative = PackageSafety.NormalizeRelativePath(Path.GetRelativePath(files, owner.Image));
+            if (relative is not ("heirowUpdater.exe" or "heirowInstaller.exe")) return false;
+            var payload = package.Manifest.Payload.SingleOrDefault(x => x.Path == relative);
+            return payload is not null && new FileInfo(owner.Image).Length == payload.Size && PackageSafety.HashEquals(PackageSafety.HashFile(owner.Image), payload.Sha256);
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or
+            System.Security.Cryptography.CryptographicException or InvalidDataException or JsonException or KeyNotFoundException or FormatException)
+        { return false; }
+    }
+
 }

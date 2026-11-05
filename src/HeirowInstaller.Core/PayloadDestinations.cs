@@ -118,7 +118,7 @@ public static class PayloadDestinations
             {
                 "commonFiles64" => Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
                 "commonFiles32" => Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86),
-                "userCommonFiles" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Common"),
+                "userCommonFiles" => Path.Combine(InstallerPlatform.UserData, "Programs", "Common"),
                 _ => throw new InvalidDataException("Unsupported component known folder.")
             };
             if (string.IsNullOrWhiteSpace(parent)) throw new InvalidDataException("Component known folder is unavailable.");

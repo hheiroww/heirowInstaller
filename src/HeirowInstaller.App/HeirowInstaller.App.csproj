@@ -54,7 +54,7 @@
     <PropertyGroup><AssemblySearchPaths>{HintPathFromItem};$(AssemblySearchPaths)</AssemblySearchPaths></PropertyGroup>
   </Target>
   <Target Name="RequirePublishedInstallerDx11Fallback" BeforeTargets="PrepareForPublish" Condition="'$(InstallerDesktopPlatform)' == 'Windows' and '$(InstallerGraphicsBackend)' == 'DirectX12'">
-    <Error Condition="'$(InstallerRequireDx11Fallback)' != 'true' and '$(InstallerAllowUnbundledDevelopmentPublish)' != 'true'" Text="Published Windows launchers require InstallerRequireDx11Fallback=true and the verified embedded DX11 host. Only explicit development publishes may use InstallerAllowUnbundledDevelopmentPublish=true." />
+    <Error Condition="'$(InstallerRequireDx11Fallback)' != 'true' and '$(InstallerAllowUnbundledDevelopmentPublish)' != 'true' and '$(InstallerSharedRuntimePublish)' != 'true'" Text="Standalone Windows launchers require the embedded DX11 host. Shared-runtime publication must explicitly select InstallerSharedRuntimePublish=true." />
   </Target>
   <UsingTask TaskName="ReadInstallerFallbackLength" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup><InputPath ParameterType="System.String" Required="true" /><ByteLength ParameterType="System.Int64" Output="true" /></ParameterGroup>

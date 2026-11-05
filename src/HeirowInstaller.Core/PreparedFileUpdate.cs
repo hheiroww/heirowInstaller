@@ -33,7 +33,7 @@ public sealed class PreparedFileUpdate : IDisposable
     {
         parent = Path.GetFullPath(parent); PackageSafety.EnsureNoReparsePoints(parent);
         using var old = PackageReader.Open(installed.PackagePath); old.VerifySignature(installed.PublisherKeySha256, true);
-        if (old.Manifest.Id != installed.Id || old.Manifest.Version != installed.Version || old.Manifest.Scope != installed.Scope)
+        if (old.Manifest.Id != installed.Id || old.Manifest.Version != installed.Version)
             throw new CryptographicException("The installed receipt differs from its signed metadata.");
         PayloadDestinations.ValidateUpgrade(old.Manifest, metadata.Manifest);
         var root = PackageSafety.UnderRoot(parent, installed.Id + "/" + Guid.NewGuid().ToString("N"));
@@ -74,7 +74,7 @@ public sealed class PreparedFileUpdate : IDisposable
             throw new InvalidDataException("The prepared update belongs to a different installation or is incomplete.");
         using var package = PackageReader.OpenMetadata(Path.Combine(root, "target.hmeta")); package.VerifySignature(installed.PublisherKeySha256, true);
         var metadata = FileUpdateMetadata.FromBytes(package.ReadManifestBytes(), ReadSignature(Path.Combine(root, "target.hmeta")), installed.PublisherKeySha256!, state.TargetManifestSha256);
-        if (metadata.Manifest.Id != installed.Id || metadata.Manifest.Scope != installed.Scope ||
+        if (metadata.Manifest.Id != installed.Id ||
             PackageVersion.Parse(metadata.Manifest.Version).CompareTo(PackageVersion.Parse(installed.Version)) < 0)
             throw new InvalidDataException("The prepared target identity is invalid.");
         var declared = metadata.Manifest.Payload.ToDictionary(file => file.Path, StringComparer.OrdinalIgnoreCase);

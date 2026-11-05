@@ -15,7 +15,7 @@ using Microsoft.Win32.SafeHandles;
 namespace HeirowInstaller.App;
 
 /// <summary>The existing wizard owns all UI; the bound primary-image worker only runs the verified engine.</summary>
-internal static class ElevatedInstallWorker
+internal static partial class ElevatedInstallWorker
 {
     private const string Switch = "--install-worker";
     private const string FixtureMarker = "heirowInstaller isolated wizard acceptance v1\n";
@@ -26,8 +26,9 @@ internal static class ElevatedInstallWorker
 
     internal static async Task<InstallResult> InstallAsync(string packagePath, InstallPlan plan, InstallOptions options,
         Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>> prompt,
-        IProgress<InstallProgress>? progress, string? isolatedFixtureRoot, CancellationToken token, string operation = "install")
+        IProgress<InstallProgress>? progress, string? isolatedFixtureRoot, CancellationToken token, string operation = "install", string? preparedStageRoot = null)
     {
+        using var warmed = await TakePrewarmedAsync(plan.Manifest.Id, options.TrustedPublisherKeySha256, token);
         var image = Path.GetFullPath(DirectX11Fallback.CurrentPrimaryHostPath ?? throw new InvalidOperationException("The setup image is unavailable."));
         PackageSafety.EnsureNoReparsePoints(image);
         // Hold both inputs unchanged across the human UAC decision and the entire operation.
@@ -38,37 +39,49 @@ internal static class ElevatedInstallWorker
             throw new CryptographicException("The original setup image changed before administrator approval.");
         var hostBinding = ReadHostBinding(image);
         var parent = ProcessIdentity.Read(Environment.ProcessId);
-        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        var pipeName = "heirowInstaller.install." + Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        var nonce = warmed?.Nonce ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var pipeName = warmed?.PipeName ?? "heirowInstaller.install." + Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         var user = WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("The current Windows user is unavailable.");
-        using var pipe = CreatePipe(pipeName, user);
+        using var pipe = warmed?.Pipe ?? CreatePipe(pipeName, user);
         var test = isolatedFixtureRoot is not null;
         if (test) ValidateFixture(isolatedFixtureRoot!, plan.Manifest.Id, options, plan.InstallDirectory);
         var start = new ProcessStartInfo(image) { UseShellExecute = !test, WorkingDirectory = Path.GetDirectoryName(image)!, WindowStyle = ProcessWindowStyle.Hidden };
         if (test) start.CreateNoWindow = true;
         else start.Verb = "runas"; // Windows owns the ordinary, human UAC prompt.
         foreach (var value in new[] { Switch, pipeName, parent.Id.ToString(), parent.StartTicks.ToString(), nonce }) start.ArgumentList.Add(value);
-        using var child = StartWorker(start, token);
+        BootstrapWorkerLaunch? promotion = warmed?.Promotion;
+        if (!test && warmed is null) BootstrapWorkerPromotion.TryStart(pipeName, parent.Id, parent.StartTicks, nonce, options.TrustedPublisherKeySha256, out promotion);
+        if (!test && warmed is null && promotion is null) RequireSafeLegacyElevationImage(image);
+        using var promotedLifetime = promotion;
+        using var child = warmed?.Child ?? promotion?.Process ?? StartWorker(start, token);
         using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        connectionTimeout.CancelAfter(TimeSpan.FromSeconds(60));
-        var connected = pipe.WaitForConnectionAsync(connectionTimeout.Token);
-        await Task.WhenAny(connected, child.WaitForExitAsync(CancellationToken.None));
-        if (!pipe.IsConnected && child.HasExited)
-            throw new InvalidOperationException("Windows could not connect the installation worker. Approve setup with this Windows account, or cancel and contact the application publisher.");
-        await connected;
-        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var peerId) || peerId != child.Id)
+        connectionTimeout.CancelAfter(TimeSpan.FromMinutes(5));
+        if (warmed is null)
+        {
+            var connected = pipe.WaitForConnectionAsync(connectionTimeout.Token);
+            await Task.WhenAny(connected, child.WaitForExitAsync(CancellationToken.None));
+            if (!pipe.IsConnected && child.HasExited)
+                throw new InvalidOperationException("Windows could not connect the installation worker. Approve setup or cancel and contact the application publisher.");
+            await connected;
+        }
+        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var peerId) || promotion is null && peerId != child.Id)
             throw new InvalidDataException("The installation worker identity could not be verified.");
-        var identity = ProcessIdentity.Read(child.Id);
-        identity.RequireImage(image, imageHash);
-        using var channel = new WorkerChannel(pipe);
-        var hello = await channel.ReadAsync(connectionTimeout.Token);
-        if (hello.Kind != "hello" || hello.Hello is not { } h || h.ProcessId != child.Id || h.StartTicks != identity.StartTicks ||
-            h.UserSid != user.Value || !FixedEquals(h.Nonce, nonce) || !PackageSafety.HashEquals(h.ImageSha256, imageHash))
+        promotion?.ValidatePeer(peerId);
+        var identity = ProcessIdentity.Read(peerId);
+        var expectedImage = promotion?.ExpectedWorkerImage ?? image;
+        var expectedHash = promotion?.ExpectedWorkerSha256 ?? imageHash;
+        identity.RequireImage(expectedImage, expectedHash);
+        var identified = IdentifyPipeClient(pipe);
+        using var channel = warmed?.Channel ?? new WorkerChannel(pipe);
+        var hello = warmed?.Hello ?? await channel.ReadAsync(connectionTimeout.Token);
+        if (hello.Kind != "hello" || hello.Hello is not { } h || h.ProcessId != peerId || h.StartTicks != identity.StartTicks ||
+            h.UserSid != identified.Sid || !test && !identified.Elevated || !FixedEquals(h.Nonce, nonce) || !PackageSafety.HashEquals(h.ImageSha256, expectedHash))
             throw new InvalidDataException("The installation worker handshake was rejected.");
-        LastObservation = new(child.Id, identity.StartTicks, test, imageHash, false);
+        LastObservation = new(peerId, identity.StartTicks, test, expectedHash, false);
         var request = new WorkerRequest(packagePath, PackageSafety.HashFile(packagePath), plan.Manifest.Id, plan.Manifest.Version,
             plan.InstallDirectory, Path.GetFullPath(options.StateRoot ?? InstallerEngine.DefaultStateRoot(plan.Scope)),
-            user.Value, nonce, operation, WorkerInstallOptions.From(options), isolatedFixtureRoot);
+            user.Value, nonce, operation, WorkerInstallOptions.From(options), isolatedFixtureRoot, preparedStageRoot);
+        using var downloads = new ParentDownloadBroker(plan.Manifest, options, isolatedFixtureRoot, nonce, progress);
         await channel.SendAsync(new("install") { Install = request }, connectionTimeout.Token);
         using var cancellation = token.Register(() => channel.TryCancel());
         InstallResult? result = null;
@@ -79,8 +92,12 @@ internal static class ElevatedInstallWorker
             {
                 case "progress" when message.Progress is { } value:
                     progress?.Report(value); break;
+                case "download" when message.Download is { } download && Guid.TryParseExact(message.RequestId, "N", out _):
+                    var downloaded = await downloads.GetAsync(download, token);
+                    await channel.SendAsync(new("download-result") { RequestId = message.RequestId, DownloadResult = downloaded }, CancellationToken.None);
+                    break;
                 case "applications" when message.Applications is { } applications && Guid.TryParseExact(message.RequestId, "N", out _):
-                    if (applications.ProductId != plan.Manifest.Id || applications.ProductName != plan.Manifest.Name || applications.Operation != operation || applications.Applications.Count > 64)
+                    if (applications.ProductId != plan.Manifest.Id || applications.ProductName != plan.Manifest.Name || applications.Operation != (operation == "apply-files" ? "update" : operation) || applications.Applications.Count > 64)
                         throw new InvalidDataException("The worker requested consent for a different application.");
                     RunningApplicationsChoice choice;
                     try { choice = await prompt(applications, token); }
@@ -141,9 +158,11 @@ internal static class ElevatedInstallWorker
             // Normal wizards must still be the exact same image. The only alternate
             // parent is the immutable DX11 companion embedded in this primary host.
             // No caller-supplied hash or request field can authorize that exception.
-            using var companionParentLock = VerifyWizardParent(parent, image, imageHash);
-            // Anonymous SQOS prevents a medium-integrity server from impersonating this elevated client.
-            using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Anonymous);
+            using var companionParentLock = BootstrapWorkerPromotion.ValidatePromotedWorkerParent(parentPid, parentTicks, image, hostBinding?.PublisherPin)
+                ? null : VerifyWizardParent(parent, image, imageHash);
+            using var originalUser = InstallerUserContext.OpenForProcess(parentPid, parentTicks);
+            // Identification exposes the kernel-authenticated SID without allowing the medium server to act as administrator.
+            using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             await pipe.ConnectAsync(timeout.Token);
             if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var peer) || peer != parentPid)
@@ -153,34 +172,50 @@ internal static class ElevatedInstallWorker
             var userSid = WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidDataException("The Windows user is unavailable.");
             var self = ProcessIdentity.Read(Environment.ProcessId);
             await channel.SendAsync(new("hello") { Hello = new(Environment.ProcessId, self.StartTicks, imageHash, userSid, args[4]) }, timeout.Token);
-            var initial = await channel.ReadAsync(timeout.Token);
-            if (initial.Kind != "install" || initial.Install is not { } request || request.UserSid != userSid || !FixedEquals(request.Nonce, args[4]))
+            WorkerMessage initial;
+            using (var idle = new CancellationTokenSource(TimeSpan.FromMinutes(2)))
+            {
+                do
+                {
+                    initial = await channel.ReadAsync(idle.Token);
+                    idle.CancelAfter(TimeSpan.FromMinutes(2));
+                }
+                while (initial.Kind == "keepalive");
+            }
+            if (initial.Kind != "install" || initial.Install is not { } request || request.UserSid != originalUser.UserSid || !FixedEquals(request.Nonce, args[4]))
                 throw new InvalidDataException("The installation request was rejected.");
             using var operation = new CancellationTokenSource();
             using var listener = new CancellationTokenSource();
             var choices = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<WorkerMessage>>();
-            var commands = ReadCommandsAsync(channel, choices, operation, listener.Token);
+            var downloads = new System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<WorkerDownloadReply>>();
+            var commands = ReadCommandsAsync(channel, choices, downloads, operation, listener.Token);
             try
             {
                 ValidateRequest(request);
+                using var userContext = originalUser.Enter();
                 using var packageLock = File.Open(request.PackagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 if (!PackageSafety.HashEquals(PackageSafety.HashFile(request.PackagePath), request.PackageSha256)) throw new CryptographicException("The reviewed package changed before installation.");
                 using var package = PackageReader.Open(request.PackagePath);
                 package.VerifySignature(request.Options.TrustedPublisherKeySha256, request.Options.RequireSignature);
                 if (package.Manifest.Id != request.ProductId || package.Manifest.Version != request.Version) throw new InvalidDataException("The reviewed application identity changed.");
                 ValidateHostBinding(hostBinding, package, request);
-                await package.VerifyAsync(cancellationToken: operation.Token);
+                BootstrapWorkerPromotion.ValidatePromotedPackage(request.PackagePath, request.ProductId, request.Version,
+                    package.PublisherKeySha256, request.Options.Scope ?? package.Manifest.Scope, request.Operation);
+                if (!package.IsMetadataOnly) await package.VerifyAsync(cancellationToken: operation.Token);
+                if (originalUser.IsDifferentAccount && (package.Manifest.LegacyMsi is not null || package.Manifest.LegacyExecutable is not null))
+                    throw new NotSupportedException("A different-account administrator can install native packages while preserving your user profile. This original MSI/EXE must first be migrated to native ownership.");
                 var engine = new InstallerEngine();
                 var options = request.Options.ToOptions();
                 if (hostBinding?.PublisherPin is { } boundPin) { options.TrustedPublisherKeySha256 = boundPin; options.RequireSignature = true; }
                 options.InstallerPath = image;
+                options.SharedPackageTransport = new WorkerDownloadTransport(channel, downloads, package.Manifest, originalUser, request);
                 var plan = engine.Plan(package, options);
                 if (!SamePath(plan.InstallDirectory, request.InstallDirectory) || !SamePath(options.StateRoot ?? InstallerEngine.DefaultStateRoot(plan.Scope), request.StateRoot))
                     throw new InvalidDataException("The reviewed installation destination changed.");
                 if (request.IsolatedFixtureRoot is { } fixture) ValidateFixture(fixture, request.ProductId, options, plan.InstallDirectory);
                 else if (!InstallerEngine.IsElevated) throw new InvalidOperationException("Windows did not grant administrator access.");
                 options.StateRoot = request.StateRoot;
-                if (request.Operation != "install")
+                if (request.Operation is not ("install" or "apply-files"))
                 {
                     var installed = InstallerEngine.ListInstalled(request.StateRoot).SingleOrDefault(x => x.Id == request.ProductId && x.Scope == plan.Scope)
                         ?? throw new InvalidDataException("The reviewed application is no longer installed.");
@@ -195,7 +230,7 @@ internal static class ElevatedInstallWorker
                     // Keep its closure authority intact while displaying the caller's repair operation.
                     if (request.Operation == "repair" && prompt.Operation == "install" && package.Manifest.LegacyMsi is null && package.Manifest.LegacyExecutable is null)
                         prompt = prompt with { Operation = "repair" };
-                    if (prompt.Operation != request.Operation) throw new InvalidDataException("The engine maintenance operation changed.");
+                    if (prompt.Operation != (request.Operation == "apply-files" ? "update" : request.Operation)) throw new InvalidDataException("The engine maintenance operation changed.");
                     var id = Guid.NewGuid().ToString("N");
                     var answer = new TaskCompletionSource<WorkerMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
                     if (prompt.Applications.Count > 64 || !choices.TryAdd(id, answer)) throw new InvalidDataException("Too many applications require attention.");
@@ -210,13 +245,37 @@ internal static class ElevatedInstallWorker
                     finally { choices.TryRemove(id, out _); }
                 };
                 var progress = new WorkerProgress(channel, operation);
-                var result = request.Operation switch
+                async Task<InstallResult> ApplyOperation() => request.Operation switch
                 {
                     "install" => await engine.InstallAsync(package, options, progress, operation.Token),
                     "repair" => await engine.RepairAsync(request.ProductId, options, progress, operation.Token),
                     "uninstall" => await engine.UninstallAsync(request.ProductId, options, progress, operation.Token),
+                    "apply-files" => await ApplyPreparedWorkerAsync(engine, request, options, progress, operation.Token),
                     _ => throw new InvalidDataException("The maintenance operation was rejected.")
                 };
+                InstallResult result;
+                if (plan.Scope == "user" && package.Manifest.LegacyMsi is null && package.Manifest.LegacyExecutable is null)
+                {
+                    bool prerequisiteReboot = false;
+                    if (request.Operation != "uninstall")
+                    {
+                        PreparedFileUpdate? prepared = null;
+                        try
+                        {
+                            if (request.Operation == "apply-files")
+                            {
+                                var current = InstallerEngine.ListInstalled(request.StateRoot).Single(item => item.Id == request.ProductId && item.Scope == "user");
+                                prepared = PreparedFileUpdate.Open(request.PreparedStageRoot!, current, options);
+                            }
+                            prerequisiteReboot = await engine.PrepareAdministrativeRequirementsAsync(package, plan, options, progress, operation.Token, prepared);
+                        }
+                        finally { prepared?.Dispose(); }
+                    }
+                    options.AdministratorRequirementsHandled = true;
+                    result = await originalUser.RunAsOriginalUserAsync(ApplyOperation);
+                    result.RebootRequired |= prerequisiteReboot;
+                }
+                else result = await ApplyOperation();
                 await channel.SendAsync(new("result") { Result = result }, CancellationToken.None);
                 return result.RebootRequired ? 3010 : 0;
             }
@@ -239,6 +298,7 @@ internal static class ElevatedInstallWorker
 
     private static async Task ReadCommandsAsync(WorkerChannel channel,
         System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<WorkerMessage>> choices,
+        System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<WorkerDownloadReply>> downloads,
         CancellationTokenSource operation, CancellationToken token)
     {
         try
@@ -248,6 +308,7 @@ internal static class ElevatedInstallWorker
                 var message = await channel.ReadAsync(token);
                 if (message.Kind == "cancel") operation.Cancel();
                 else if (message.Kind == "choice" && message.RequestId is { } id && message.Choice is { } choice && Enum.IsDefined(choice) && choices.TryGetValue(id, out var answer)) answer.TrySetResult(message);
+                else if (message.Kind == "download-result" && message.RequestId is { } downloadId && message.DownloadResult is { } reply && downloads.TryGetValue(downloadId, out var completion)) completion.TrySetResult(reply);
                 else throw new InvalidDataException("The wizard sent an unexpected command.");
             }
         }
@@ -314,6 +375,7 @@ internal static class ElevatedInstallWorker
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.AnonymousSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
         security.AddAccessRule(new PipeAccessRule(user, PipeAccessRights.FullControl, AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), PipeAccessRights.ReadWrite | PipeAccessRights.Synchronize, AccessControlType.Allow));
         return NamedPipeServerStreamAcl.Create(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous, 16 * 1024, 16 * 1024, security, HandleInheritability.None);
     }
@@ -323,6 +385,15 @@ internal static class ElevatedInstallWorker
         try { return Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the installation worker."); }
         catch (Win32Exception error) when (error.NativeErrorCode == 1223)
         { throw new OperationCanceledException("Administrator approval was canceled. You can try again when you are ready.", error, token); }
+    }
+
+    private static void RequireSafeLegacyElevationImage(string image)
+    {
+        try { StandaloneRuntimeInspector.RequireEmbeddedRuntime(image); }
+        catch (InvalidDataException error)
+        {
+            throw new InvalidOperationException("This loose desktop host cannot request administrator access safely. Open the current signed native installer to repair or install this application.", error);
+        }
     }
 
     private static FileStream? VerifyWizardParent(ProcessIdentity parent, string image, string imageHash)
@@ -347,7 +418,9 @@ internal static class ElevatedInstallWorker
     {
         PackageSafety.ValidateId(request.ProductId);
         _ = PackageVersion.Parse(request.Version);
-        if (request.Operation is not ("install" or "repair" or "uninstall")) throw new InvalidDataException("The worker operation was rejected.");
+        if (request.Operation is not ("install" or "repair" or "uninstall" or "apply-files")) throw new InvalidDataException("The worker operation was rejected.");
+        if (request.Operation == "apply-files" && (request.PreparedStageRoot is null || !SamePath(request.PackagePath, Path.Combine(request.PreparedStageRoot, "target.hmeta"))))
+            throw new InvalidDataException("The prepared file stage differs from its signed worker metadata.");
         foreach (var path in new[] { request.PackagePath, request.InstallDirectory, request.StateRoot })
         {
             if (!Path.IsPathFullyQualified(path) || path.Length > 30_000) throw new InvalidDataException("The worker requires exact local installation paths.");
@@ -370,9 +443,17 @@ internal static class ElevatedInstallWorker
             return;
         }
         if (product is null || product.Version != request.Version || !SamePath(product.InstallDirectory, result.InstallDirectory) ||
-            !PackageSafety.HashEquals(PackageSafety.HashFile(product.PackagePath), request.PackageSha256) ||
+            request.Operation != "apply-files" && !PackageSafety.HashEquals(PackageSafety.HashFile(product.PackagePath), request.PackageSha256) ||
             (hostPin ?? request.Options.TrustedPublisherKeySha256) is { } pin && !PackageSafety.HashEquals(product.PublisherKeySha256 ?? "", pin))
             throw new InvalidDataException("The completed installation did not match the verified application receipt.");
+        if (request.Operation == "apply-files")
+        {
+            using var committed = PackageReader.OpenMetadata(product.PackagePath);
+            using var reviewedPackage = PackageReader.OpenMetadata(request.PackagePath);
+            committed.VerifySignature(product.PublisherKeySha256, true);
+            if (!committed.ReadSignedManifestSha256().Equals(reviewedPackage.ReadSignedManifestSha256(), StringComparison.OrdinalIgnoreCase))
+                throw new CryptographicException("The committed file update differs from its reviewed signed metadata.");
+        }
         if (SamePath(result.InstallDirectory, request.InstallDirectory)) return;
         // An authored MSI default can resolve its directory only after Windows Installer completes.
         // Accept that result only through the engine's committed, matching MSI receipt/package.
@@ -438,7 +519,7 @@ internal static class ElevatedInstallWorker
             RegisterProduct = RegisterProduct, Isolated = Isolated, LogPath = LogPath, LegacyArguments = LegacyArguments.ToList(), RequireSignature = RequireSignature,
             TrustedPublisherKeySha256 = TrustedPublisherKeySha256, Silent = true, Launch = false };
     }
-    private sealed record WorkerRequest(string PackagePath, string PackageSha256, string ProductId, string Version, string InstallDirectory, string StateRoot, string UserSid, string Nonce, string Operation, WorkerInstallOptions Options, string? IsolatedFixtureRoot);
+    private sealed record WorkerRequest(string PackagePath, string PackageSha256, string ProductId, string Version, string InstallDirectory, string StateRoot, string UserSid, string Nonce, string Operation, WorkerInstallOptions Options, string? IsolatedFixtureRoot, string? PreparedStageRoot = null);
     private sealed record WorkerMessage(string Kind)
     {
         public WorkerHello? Hello { get; init; }
@@ -451,6 +532,8 @@ internal static class ElevatedInstallWorker
         public bool NotifyCompletion { get; init; }
         public InstallResult? Result { get; init; }
         public string? Error { get; init; }
+        public WorkerDownloadRequest? Download { get; init; }
+        public WorkerDownloadReply? DownloadResult { get; init; }
     }
 
     private sealed class WorkerProgress(WorkerChannel channel, CancellationTokenSource operation) : IProgress<InstallProgress>
@@ -509,6 +592,28 @@ internal static class ElevatedInstallWorker
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(SafeProcessHandle process, out long creation, out long exit, out long kernel, out long user);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out int pid);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out int pid);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(SafeAccessTokenHandle token, int kind, out int value, int length, out int returned);
+
+    private static (string Sid, bool Elevated) IdentifyPipeClient(NamedPipeServerStream pipe)
+    {
+        (string Sid, bool Elevated) result = default;
+        pipe.RunAsClient(() =>
+        {
+            using var identity = WindowsIdentity.GetCurrent(true) ?? throw new InvalidDataException("The installation worker did not identify its Windows account.");
+            if (identity.ImpersonationLevel != TokenImpersonationLevel.Identification || identity.User is null ||
+                !GetTokenInformation(identity.AccessToken, 20, out var elevated, sizeof(int), out _))
+                throw new InvalidDataException("The installation worker identity did not retain identification-only security.");
+            result = (identity.User.Value, elevated != 0);
+        });
+        return result;
+    }
+
+    private static async Task<InstallResult> ApplyPreparedWorkerAsync(InstallerEngine engine, WorkerRequest request, InstallOptions options, IProgress<InstallProgress> progress, CancellationToken token)
+    {
+        var installed = InstallerEngine.ListInstalled(request.StateRoot).Single(product => product.Id == request.ProductId && product.Scope == options.Scope);
+        using var prepared = PreparedFileUpdate.Open(request.PreparedStageRoot!, installed, options);
+        return await engine.ApplyPreparedFileUpdateAsync(prepared, options, progress, token);
+    }
 }
 
 #endif

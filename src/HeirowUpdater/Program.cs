@@ -40,6 +40,7 @@ Background, watch, silent and --no-prompt operations never request browser appro
 """;
     public static async Task<int> RunAsync(string[] args)
     {
+        BootstrapReadiness.Signal();
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
         string? helperStatusPath = null;
@@ -382,7 +383,7 @@ Background, watch, silent and --no-prompt operations never request browser appro
         public Arguments(string[] args)
         {
             var flags = new HashSet<string>(["all", "apply", "allow-unsigned", "allow-loopback", "isolated", "json", "progress-json", "silent", "help", "background", "no-elevate", "elevated-child", "no-prompt", "interactive"], StringComparer.OrdinalIgnoreCase);
-            var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report", "file-size", "base-version", "base-manifest-sha256", "target-manifest-sha256"], StringComparer.OrdinalIgnoreCase);
+            var values = new HashSet<string>(["state-root", "trust-key", "target", "scope", "feed", "product-id", "current-version", "profile", "download-directory", "interval-minutes", "log", "token-env", "cookie-env", "credential-origin", "config", "status-file", "task-name", "application-pid", "application-start", "application-host", "sha256", "expected-version", "wait-pid", "wait-start", "maintenance-host", "lifecycle-config", "lifecycle-state", "lifecycle-ready", "prompt-request", "prompt-choice", "capture", "prompt-report", "file-size", "base-version", "base-manifest-sha256", "target-manifest-sha256", "owner-pipe", "owner-nonce", "owner-pid", "owner-start"], StringComparer.OrdinalIgnoreCase);
             for (var i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--") { ApplicationArguments.AddRange(args.Skip(i + 1)); break; }

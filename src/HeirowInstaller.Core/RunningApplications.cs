@@ -152,7 +152,7 @@ public sealed class RunningApplicationTarget
             ["CommonProgramFiles(x86)"] = Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86),
             ["ProgramFiles"] = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             ["ProgramFiles(x86)"] = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-            ["LocalAppData"] = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+            ["LocalAppData"] = InstallerPlatform.UserData
         };
         value = value.Replace("{app}", Path.GetFullPath(installDirectory), StringComparison.OrdinalIgnoreCase);
         value = Regex.Replace(value, "%([^%]+)%", match => folders.TryGetValue(match.Groups[1].Value, out var folder) && folder.Length > 0

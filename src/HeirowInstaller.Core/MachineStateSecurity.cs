@@ -35,6 +35,24 @@ public static class MachineStateSecurity
     /// <summary>Read-only validation. Missing state is not created; unsafe existing state is never repaired automatically.</summary>
     public static void ValidateExistingRoot(string path) { using var lease = Acquire(path, create: false); }
 
+    /// <summary>Validates one selected immutable package beneath a guarded shared namespace, without scanning unrelated packages.</summary>
+    public static void ValidateProtectedTreeUnderRoot(string root, string directory)
+    {
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        directory = Path.GetFullPath(directory);
+        if (!directory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw Failure(directory, "the selected package must stay beneath its protected shared root");
+        using var lease = Acquire(root, create: false, validateContents: false);
+        if (!lease.RootExists) throw Failure(root, "the shared namespace is missing");
+        var current = root;
+        foreach (var part in Path.GetRelativePath(root, directory).Split(Path.DirectorySeparatorChar))
+        {
+            current = Path.Combine(current, part);
+            if (!Directory.Exists(current) || !IsStateObjectProtected(current)) throw Failure(current, "a selected package directory has an untrusted owner or access policy");
+        }
+        ValidateContents(directory);
+    }
+
     /// <summary>Read-only descriptor check for one state object. This does not replace guarding its containing namespace.</summary>
     public static bool IsStateObjectProtected(string path)
     {
@@ -42,7 +60,7 @@ public static class MachineStateSecurity
         return HasTrustedOwnershipAndPermissions(ReadDescriptor(handle, path), requireProtectedDacl: false);
     }
 
-    internal static StateLease Acquire(string path, bool create)
+    internal static StateLease Acquire(string path, bool create, bool validateContents = true)
     {
         path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
         if (Path.GetDirectoryName(path) is null) throw Failure(path, "a drive root cannot be installer state");
@@ -77,7 +95,7 @@ public static class MachineStateSecurity
                 else ValidateNamespace(node, descriptor);
             }
             if (create) EnsureTrustedMutationToken();
-            ValidateContents(path);
+            if (validateContents) ValidateContents(path);
             return lease;
         }
         catch { lease.Dispose(); throw; }

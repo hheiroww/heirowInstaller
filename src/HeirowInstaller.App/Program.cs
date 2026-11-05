@@ -28,6 +28,7 @@ internal static class Program
 #endif
             if (options.Silent)
             {
+                BootstrapReadiness.Signal();
                 EnsureRequestedDependencyExited(options);
                 if (maintenance) return Maintain(args, options);
                 if (options.PackagePath is null) throw new ArgumentException("Silent installation requires a .hinst package or bundled installer.");
@@ -35,7 +36,20 @@ internal static class Program
                 options.ValidatePackageIdentity(package);
                 var engine = new InstallerEngine();
                 var install = new InstallOptions { TargetDirectory = options.TargetDirectory, StateRoot = options.StateRoot, Scope = options.Scope, Features = options.Features, Silent = true, InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath, Isolated = options.Isolated, RegisterProduct = !options.Isolated && !options.NoRegister, Launch = options.Launch, TrustedPublisherKeySha256 = options.TrustedPublisherKeySha256, RequireSignature = options.RequireSignature, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
-                if (engine.Plan(package, install).RequiresElevation && !InstallerEngine.IsElevated && !options.Isolated) return Elevate(args);
+                var plan = engine.Plan(package, install);
+                if (plan.RequiresElevation && !InstallerEngine.IsElevated && !options.Isolated)
+                {
+                    install.Launch = false;
+                    var elevated = ElevatedInstallWorker.InstallAsync(options.PackagePath, plan, install, SilentApplicationsAsync,
+                        null, null, CancellationToken.None).GetAwaiter().GetResult();
+                    if (options.Launch && package.Manifest.EntryPoint.Length > 0)
+                    {
+                        var product = InstallerEngine.ListInstalled(options.StateRoot).Single(value => value.Id == package.Manifest.Id && value.Scope == plan.Scope);
+                        _ = Process.Start(InstalledApplicationLaunch.Create(product, plan.UpdateCompanionEnabled))
+                            ?? throw new InvalidOperationException("Windows did not open the installed application.");
+                    }
+                    return elevated.RebootRequired ? 3010 : 0;
+                }
                 var result = engine.InstallAsync(package, install).GetAwaiter().GetResult();
                 return result.RebootRequired ? 3010 : 0;
             }
@@ -95,8 +109,19 @@ internal static class Program
     {
         var install = new InstallOptions { StateRoot = options.StateRoot, Scope = options.Scope, Isolated = options.Isolated, Silent = options.Silent, InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
         var product = InstallerEngine.ListInstalled(options.StateRoot).FirstOrDefault(value => value.Id.Equals(args[1], StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException("The application is not installed.");
-        if (AppController.NeedsMaintenanceElevation(product)) return Elevate(args);
+        install.Scope = product.Scope; install.TargetDirectory = product.InstallDirectory; install.Features = options.Features ?? product.Features;
+        install.Isolated = product.Isolated; install.RegisterProduct = product.RegisteredProduct;
+        install.TrustedPublisherKeySha256 = product.PublisherKeySha256; install.RequireSignature = product.PublisherKeySha256 is not null;
         var engine = new InstallerEngine();
+        if (AppController.NeedsMaintenanceElevation(product))
+        {
+            using var package = PackageReader.Open(product.PackagePath);
+            if (args[0] == "repair" && package.IsMetadataOnly)
+                return RepairElevatedFilesAsync(product, engine, install).GetAwaiter().GetResult();
+            var elevated = ElevatedInstallWorker.InstallAsync(product.PackagePath, engine.Plan(package, install), install,
+                SilentApplicationsAsync, null, null, CancellationToken.None, args[0]).GetAwaiter().GetResult();
+            return elevated.RebootRequired ? 3010 : 0;
+        }
         var result = args[0] == "uninstall" ? engine.UninstallAsync(args[1], install).GetAwaiter().GetResult() : engine.RepairAsync(args[1], install).GetAwaiter().GetResult();
         return result.RebootRequired ? 3010 : 0;
     }
@@ -115,14 +140,26 @@ internal static class Program
         if (running) throw new InvalidOperationException("The requested application is still running. Close it and retry, or run the installer without --silent to review the running applications. Silent installation never closes applications automatically.");
     }
 
-    private static int Elevate(string[] args)
+    private static Task<RunningApplicationsChoice> SilentApplicationsAsync(RunningApplicationsRequest request, CancellationToken token)
+        => Task.FromException<RunningApplicationsChoice>(new RunningApplicationsException(request.Applications));
+
+    private static async Task<int> RepairElevatedFilesAsync(InstalledProduct product, InstallerEngine engine, InstallOptions options)
     {
-        if (!OperatingSystem.IsWindows()) throw new UnauthorizedAccessException("Run machine-scope maintenance from a terminal with sudo.");
-        var start = new ProcessStartInfo(DirectX11Fallback.CurrentPrimaryHostPath) { UseShellExecute = true, Verb = "runas" };
-        foreach (var argument in args) start.ArgumentList.Add(argument);
-        using var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the elevated installer.");
-        child.WaitForExit();
-        return child.ExitCode;
+        var source = FileUpdateSource.Read(product.PackagePath, product.PublisherKeySha256!);
+        var accountOrigin = new Uri("https://socketjack.com/");
+        using var session = OperatingSystem.IsWindows() && !product.Isolated
+            ? await new HeirowInstaller.Publishing.RememberedPublisherAccount(accountOrigin).RestoreAsync() : null;
+        // Staging and authentication stay in this original user's process before approval.
+        options.AllowDowngrade = true;
+        options.SharedPackageTransport = new HeirowUpdater.SocketJack.SocketJackUpdateTransport(accountOrigin,
+            bearerToken: session?.AccessToken ?? Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN"),
+            cookie: session is null ? Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE") : null);
+        using var client = new FileUpdateClient(allowLoopback: product.Isolated, transport: options.SharedPackageTransport);
+        using var stage = await client.PrepareAsync(source.ToFeed(), product, Path.Combine(InstallerPlatform.UserData, "SocketJack", "heirowInstaller", "downloads"), options);
+        using var metadata = PackageReader.OpenMetadata(stage.MetadataPath);
+        var result = await ElevatedInstallWorker.InstallAsync(stage.MetadataPath, engine.Plan(metadata, options), options,
+            SilentApplicationsAsync, null, null, CancellationToken.None, "apply-files", stage.Root);
+        return result.RebootRequired ? 3010 : 0;
     }
 }
 
@@ -143,6 +180,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal long? GraphicsParentStart { get; init; }
     internal string? GraphicsPackageSha256 { get; init; }
     internal string? GraphicsHandoffSmokeRoot { get; init; }
+    internal bool RequestAdministratorOnOpen { get; init; }
     internal string? RemotePackageUrl { get; init; }
     internal long RemotePackageSize { get; init; }
     internal void ValidatePackageIdentity(PackageReader package)
@@ -165,12 +203,13 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
         var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; var softwareRendering = false; string? wizardSmoke = null, performanceSmoke = null;
         bool directX11Child = false; string? primaryHost = null, primaryHash = null, graphicsPackageHash = null, handoffSmoke = null; int? graphicsParent = null; long? graphicsStart = null;
-        string? remotePackage = null; long remotePackageSize = 0;
+        string? remotePackage = null; long remotePackageSize = 0; var requestAdmin = false;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
             switch (args[i].ToLowerInvariant())
             {
+                case "--request-admin-on-open": requestAdmin = true; break;
                 case "--software-rendering": softwareRendering = true; break;
                 case "--graphics-directx11-child": directX11Child = true; break;
                 case "--graphics-primary-host": primaryHost = Path.GetFullPath(Value()); break;
@@ -261,6 +300,6 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         return new(package, capture, smoke, install, state, target, scope, features, silent, waitForPid, isolated, launch, acceptLicense, waitForStartTicks, trustedKey, requireSignature, selfUpdateFeed, selfUpdateReport, legacyArguments, logPath, expectedProduct, expectedVersion, expectedSha256, noRegister)
         { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke, SoftwareRendering = softwareRendering,
           DirectX11Child = directX11Child, GraphicsPrimaryHost = primaryHost, GraphicsPrimarySha256 = primaryHash, GraphicsParentPid = graphicsParent, GraphicsParentStart = graphicsStart, GraphicsPackageSha256 = graphicsPackageHash, GraphicsHandoffSmokeRoot = handoffSmoke,
-          RemotePackageUrl = remotePackage, RemotePackageSize = remotePackageSize };
+          RemotePackageUrl = remotePackage, RemotePackageSize = remotePackageSize, RequestAdministratorOnOpen = requestAdmin };
     }
 }

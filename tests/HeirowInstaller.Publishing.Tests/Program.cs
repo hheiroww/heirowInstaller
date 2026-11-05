@@ -7,6 +7,7 @@ using HeirowInstaller.Publishing;
 using HeirowInstaller.Core;
 
 if (args.FirstOrDefault() == "--remembered-account-child") return await RememberedPublisherAccountChecks.RunChildAsync(args);
+if (args.FirstOrDefault() == "--bootstrap-attachment-checks") return await BootstrapAttachmentChecks.RunStandaloneAsync(args);
 
 var passed = 0;
 void Check(bool condition, string description)

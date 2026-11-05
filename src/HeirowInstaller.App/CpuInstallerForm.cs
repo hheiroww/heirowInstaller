@@ -56,6 +56,7 @@ internal sealed partial class CpuInstallerForm : Forms.Form, IInstallerDesktopHo
         BackColor = Drawing.SystemColors.Window;
         ForeColor = Drawing.SystemColors.WindowText;
         DoubleBuffered = true;
+        Paint += (_, _) => BootstrapReadiness.Signal();
 
         var header = new Forms.TableLayoutPanel { Dock = Forms.DockStyle.Top, Height = 112, Padding = new Forms.Padding(24, 15, 24, 8), ColumnCount = 1, RowCount = 2 };
         header.RowStyles.Add(new Forms.RowStyle(Forms.SizeType.Percent, 55));
@@ -124,6 +125,7 @@ internal sealed partial class CpuInstallerForm : Forms.Form, IInstallerDesktopHo
         // The compatibility hub has no publisher/workspace surface. It does
         // not need the full desktop's account/network initialization.
         if (loadPreferences && Controller.IsWizard) await Controller.InitializeDesktopAsync();
+        if (Controller.AdministratorPreparationCanceled) return;
         if (closePending) return;
         if (arguments.MaintenanceOperation is not null) await Controller.InitializeMaintenanceWizardAsync();
         else if (arguments.RemotePackageUrl is not null) await Controller.OpenRemotePackageAsync();

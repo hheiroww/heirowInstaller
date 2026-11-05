@@ -26,7 +26,7 @@ public sealed class RememberedPublisherAccount
             (origin.Scheme != Uri.UriSchemeHttps && !(allowLoopback && origin.IsLoopback && origin.Scheme == Uri.UriSchemeHttp)))
             throw new ArgumentException("Remembered sign-in requires an HTTPS publisher origin.", nameof(origin));
         this.origin = new Uri(origin.GetLeftPart(UriPartial.Authority) + "/");
-        this.directory = Path.GetFullPath(directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "Account"));
+        this.directory = Path.GetFullPath(directory ?? Path.Combine(InstallerPlatform.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "Account"));
         this.clock = clock ?? TimeProvider.System;
         this.allowLoopback = allowLoopback;
         binding = SHA256.HashData(Encoding.UTF8.GetBytes("heirowinstaller\n" + this.origin.AbsoluteUri));
@@ -38,6 +38,8 @@ public sealed class RememberedPublisherAccount
     /// <summary>Only a foreground installer opening should renew; update checks read the existing lifetime.</summary>
     public async Task<PublisherSession?> RestoreAsync(bool renew = false, CancellationToken cancellationToken = default)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+            return await user.RunAsOriginalUserAsync(() => RestoreAsync(renew, cancellationToken)).ConfigureAwait(false);
         using var lease = await AcquireAsync(cancellationToken).ConfigureAwait(false);
         var state = await ReadAsync(cancellationToken).ConfigureAwait(false);
         if (state.Account is null) return null;
@@ -82,12 +84,16 @@ public sealed class RememberedPublisherAccount
     /// <summary>Capture before browser approval and supply to RememberAsync to reject approval completed after sign-out.</summary>
     public async Task<string> GetRevisionAsync(CancellationToken cancellationToken = default)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+            return await user.RunAsOriginalUserAsync(() => GetRevisionAsync(cancellationToken)).ConfigureAwait(false);
         using var lease = await AcquireAsync(cancellationToken).ConfigureAwait(false);
         return (await ReadAsync(cancellationToken).ConfigureAwait(false)).Revision;
     }
 
     public async Task<bool> RememberAsync(PublisherSession session, string? expectedRevision = null, CancellationToken cancellationToken = default)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+            return await user.RunAsOriginalUserAsync(() => RememberAsync(session, expectedRevision, cancellationToken)).ConfigureAwait(false);
         ArgumentNullException.ThrowIfNull(session);
         Validate(session);
         using var lease = await AcquireAsync(cancellationToken).ConfigureAwait(false);
@@ -100,6 +106,8 @@ public sealed class RememberedPublisherAccount
 
     public async Task SignOutAsync(CancellationToken cancellationToken = default)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+        { await user.RunAsOriginalUserAsync(async () => { await SignOutAsync(cancellationToken).ConfigureAwait(false); return true; }).ConfigureAwait(false); return; }
         using var lease = await AcquireAsync(cancellationToken).ConfigureAwait(false);
         var state = await ReadAsync(CancellationToken.None).ConfigureAwait(false);
         // Keep a token-free revision so an older browser completion cannot recreate the signed-out account.
@@ -114,6 +122,8 @@ public sealed class RememberedPublisherAccount
     /// <summary>Discard only the failed credential; a later login must survive an older update request's rejection.</summary>
     public async Task InvalidateAsync(string expectedAccessToken, CancellationToken cancellationToken = default)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+        { await user.RunAsOriginalUserAsync(async () => { await InvalidateAsync(expectedAccessToken, cancellationToken).ConfigureAwait(false); return true; }).ConfigureAwait(false); return; }
         ArgumentException.ThrowIfNullOrEmpty(expectedAccessToken);
         using var lease = await AcquireAsync(cancellationToken).ConfigureAwait(false);
         var state = await ReadAsync(cancellationToken).ConfigureAwait(false);

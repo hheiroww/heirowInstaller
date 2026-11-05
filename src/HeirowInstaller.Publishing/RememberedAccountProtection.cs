@@ -29,8 +29,14 @@ internal static class RememberedAccountProtection
     internal static void Commit(string temporary, string destination)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Remembered sign-in requires Windows.");
-        if (!MoveFileExW(temporary, destination, 1 | 8))
+        if (!MoveFileExW(ExtendedPath(temporary), ExtendedPath(destination), 1 | 8))
             throw new IOException("Remembered sign-in could not be saved durably.", new Win32Exception(Marshal.GetLastWin32Error()));
+    }
+    private static string ExtendedPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        return full.StartsWith(@"\\?\", StringComparison.Ordinal) ? full : full.StartsWith(@"\\", StringComparison.Ordinal)
+            ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
     }
     private static Blob Allocate(byte[] bytes)
     { var pointer = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, pointer, bytes.Length); return new() { Count = bytes.Length, Data = pointer }; }

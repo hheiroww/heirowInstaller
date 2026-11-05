@@ -134,6 +134,24 @@ foreach (var phase in new[] { "partial", "metadata", "receipt" })
     Check(fixture.Installed.Version == "3.0.0" && File.ReadAllText(Path.Combine(fixture.App, "main.bin")) == "new application bytes", "Crash recovery did not finish the signed target: " + phase);
 }
 
+await using (var fixture = await Fixture.Create(Path.Combine(root, "selected-machine-scope"), "machine"))
+{
+    using var client = new FileUpdateClient(transport: fixture.Transport);
+    string directory;
+    using (var stage = await client.PrepareAsync(fixture.Feed, fixture.Installed, Path.Combine(fixture.Root, "stages"), fixture.Options()))
+    {
+        Check(stage.Metadata.Manifest.Scope == "user" && fixture.Installed.Scope == "machine", "The fixture did not preserve the selected all-users override of its default per-user manifest.");
+        directory = stage.Root;
+    }
+    using var reopened = PreparedFileUpdate.Open(directory, fixture.Installed, fixture.Options());
+    await new InstallerEngine().ApplyPreparedFileUpdateAsync(reopened, fixture.Options());
+    Check(fixture.Installed.Scope == "machine" && fixture.Installed.Version == "3.0.0", "Selected-file apply changed or rejected the existing all-users scope.");
+    var repairOptions = fixture.Options(); repairOptions.SharedPackageTransport = fixture.Transport;
+    File.WriteAllText(Path.Combine(fixture.App, "main.bin"), "damaged machine install");
+    await new InstallerEngine().RepairAsync(fixture.Installed.Id, repairOptions);
+    Check(fixture.Installed.Scope == "machine" && File.ReadAllText(Path.Combine(fixture.App, "main.bin")) == "new application bytes", "Metadata-only repair lost the selected all-users scope.");
+}
+
 await File.WriteAllTextAsync(Path.Combine(root, "receipt.json"), JsonSerializer.Serialize(new { status = "passed", assertions = checks, root }, InstallerJson.Options));
 Console.WriteLine($"PASS: {checks} file-selection assertions. Owned isolated outputs: {root}");
 
@@ -150,9 +168,10 @@ internal sealed class Fixture : IAsyncDisposable
     public InstalledProduct Installed => InstallerEngine.ListInstalled(State).Single();
     public SelectionTransport Transport { get; }
     public UpdateFeed Feed { get; }
-    private Fixture(string root, SelectionTransport transport, UpdateFeed feed) { Root = root; Transport = transport; Feed = feed; }
-    public InstallOptions Options() => new() { TargetDirectory = App, StateRoot = State, Isolated = true, RegisterProduct = false };
-    public static async Task<Fixture> Create(string root)
+    public string Scope { get; }
+    private Fixture(string root, SelectionTransport transport, UpdateFeed feed, string scope) { Root = root; Transport = transport; Feed = feed; Scope = scope; }
+    public InstallOptions Options() => new() { TargetDirectory = App, StateRoot = State, Scope = Scope, Isolated = true, RegisterProduct = false };
+    public static async Task<Fixture> Create(string root, string scope = "user")
     {
         Directory.CreateDirectory(root); using var key = RSA.Create(2048);
         var keyPath = Path.Combine(root, "fixture-key.pem"); await File.WriteAllTextAsync(keyPath, key.ExportPkcs8PrivateKeyPem());
@@ -176,7 +195,7 @@ internal sealed class Fixture : IAsyncDisposable
         var before = Build("1.0.0"); var after = Build("3.0.0");
         var transport = new SelectionTransport(after);
         var feed = new UpdateFeed { ProductId = "files.fixture", Version = "3.0.0", PackageType = "hfiles", ManifestUrl = "https://fixture.example/3.0.0/manifest.json", FilesUrl = "https://fixture.example/3.0.0/files.zip", TargetManifestSha256 = transport.ManifestSha256 };
-        var fixture = new Fixture(root, transport, feed);
+        var fixture = new Fixture(root, transport, feed, scope);
         transport.Offer = feed;
         using var package = PackageReader.Open(before); await new InstallerEngine().InstallAsync(package, fixture.Options());
         return fixture;

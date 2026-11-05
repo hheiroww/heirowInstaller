@@ -9,10 +9,14 @@ internal static class ElevatedInstallWorker
     internal sealed record Observation(int ProcessId, long StartTicks, bool Isolated, string ImageSha256, bool Completed);
     internal static Observation? LastObservation => null;
     internal static bool IsWorker(string[] args) => args.FirstOrDefault() == "--install-worker";
+    internal static Task PrepareAdministratorAsync(string? publisherPin, CancellationToken token, string? productId = null) => Task.CompletedTask;
+    internal static void CancelPreparation() { }
+    internal static int? LastPreparedProcessId => null;
+    internal static Task<IReadOnlyList<string>> VerifyPreparedFixtureAsync(string root, InstallPlan plan, InstallOptions options) => throw Unavailable();
     internal static Task<int> RunAsync(string[] args) => throw Unavailable();
     internal static Task<InstallResult> InstallAsync(string packagePath, InstallPlan plan, InstallOptions options,
         Func<RunningApplicationsRequest, CancellationToken, Task<RunningApplicationsChoice>> prompt,
-        IProgress<InstallProgress>? progress, string? isolatedFixtureRoot, CancellationToken token, string operation = "install") => throw Unavailable();
+        IProgress<InstallProgress>? progress, string? isolatedFixtureRoot, CancellationToken token, string operation = "install", string? preparedStageRoot = null) => throw Unavailable();
     internal static Task<IReadOnlyList<string>> VerifyProtocolRejectionsAsync(string root, string packagePath, InstallPlan plan, InstallOptions options, int alternateParentPid) => throw Unavailable();
     internal static void VerifyUnsignedHostPackage(string productId, string packageSha256, PackageReader package)
     {

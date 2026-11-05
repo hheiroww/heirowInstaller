@@ -9,7 +9,7 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
     private static BootstrapWindow? current;
     private readonly CancellationTokenSource cancellation = new();
     private readonly string title;
-    private nint window, heading, detail, bar, cancel;
+    private nint window, heading, detail, bar, cancel, font;
     private BootstrapProgress latest = new("Preparing setup", "Checking the required shared files.");
     private Task<int>? operation;
     private Exception? failure;
@@ -33,22 +33,31 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
                 Procedure = &WindowProc, Cursor = LoadCursorW(0, 32512), Background = 6 };
             if (RegisterClassExW(ref cls) == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             var controls = new CommonControls { Size = 8, Classes = 0x20 }; InitCommonControlsEx(ref controls);
-            window = CreateWindowExW(0, className, title, 0x00ca0000, 0, 0, 620, 245, 0, 0, instance, 0);
+            GetCursorPos(out var point); var monitor = new MonitorInfo { Size = (uint)sizeof(MonitorInfo) };
+            if (!GetMonitorInfoW(MonitorFromPoint(point, 2), ref monitor)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            // Select the target monitor before reading DPI; controls must use that monitor's scale.
+            window = CreateWindowExW(0, className, title, 0x00ca0000, monitor.Work.Left, monitor.Work.Top, 620, 245, 0, 0, instance, 0);
             if (window == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             var scale = GetDpiForWindow(window) / 96d;
             int D(int value) => (int)Math.Round(value * scale);
-            heading = CreateWindowExW(0, "STATIC", latest.Phase, 0x50000000, D(24), D(22), D(550), D(26), window, 0, instance, 0);
-            detail = CreateWindowExW(0, "STATIC", latest.Detail, 0x50000000, D(24), D(56), D(550), D(44), window, 0, instance, 0);
-            bar = CreateWindowExW(0, "msctls_progress32", "", 0x50000000, D(24), D(110), D(550), D(22), window, 0, instance, 0);
-            cancel = CreateWindowExW(0, "BUTTON", "Cancel", 0x50010000, D(454), D(151), D(120), D(30), window, 100, instance, 0);
-            var font = GetStockObject(17);
-            foreach (var control in new[] { heading, detail, cancel }) SendMessageW(control, 0x30, (nuint)font, 1);
-            GetCursorPos(out var point); var monitor = new MonitorInfo { Size = (uint)sizeof(MonitorInfo) };
-            GetMonitorInfoW(MonitorFromPoint(point, 2), ref monitor);
             var width = Math.Min(D(620), monitor.Work.Right - monitor.Work.Left);
             var height = Math.Min(D(245), monitor.Work.Bottom - monitor.Work.Top);
             SetWindowPos(window, 0, monitor.Work.Left + (monitor.Work.Right - monitor.Work.Left - width) / 2,
                 monitor.Work.Top + (monitor.Work.Bottom - monitor.Work.Top - height) / 2, width, height, 0x14);
+            GetClientRect(window, out var client);
+            var margin = Math.Min(D(24), Math.Max(8, client.Right / 20));
+            var contentWidth = Math.Max(40, client.Right - 2 * margin);
+            var buttonHeight = Math.Min(D(30), Math.Max(20, client.Bottom / 5));
+            var buttonWidth = Math.Min(D(120), contentWidth);
+            var buttonY = Math.Max(0, client.Bottom - margin - buttonHeight);
+            var barHeight = Math.Min(D(22), Math.Max(10, client.Bottom / 8));
+            var barY = Math.Max(margin, buttonY - margin - barHeight);
+            heading = CreateWindowExW(0, "STATIC", latest.Phase, 0x50000000, margin, margin, contentWidth, D(26), window, 0, instance, 0);
+            detail = CreateWindowExW(0, "STATIC", latest.Detail, 0x50000000, margin, margin + D(34), contentWidth, Math.Max(D(24), barY - margin - D(40)), window, 0, instance, 0);
+            bar = CreateWindowExW(0, "msctls_progress32", "", 0x50000000, margin, barY, contentWidth, barHeight, window, 0, instance, 0);
+            cancel = CreateWindowExW(0, "BUTTON", "Cancel", 0x50010000, client.Right - margin - buttonWidth, buttonY, buttonWidth, buttonHeight, window, 100, instance, 0);
+            font = CreateFontW(-D(16), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+            foreach (var control in new[] { heading, detail, cancel }) SendMessageW(control, 0x30, (nuint)(font != 0 ? font : GetStockObject(17)), 1);
             ShowWindow(window, 5); UpdateWindow(window);
             // Start after native controls have painted, so DNS, disk and extraction never delay the first frame.
             operation = Task.Run(() => RunOperation(action));
@@ -88,7 +97,7 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
         }
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
-    public void Dispose() => cancellation.Dispose();
+    public void Dispose() { cancellation.Dispose(); if (font != 0) { DeleteObject(font); font = 0; } }
     [StructLayout(LayoutKind.Sequential)] private struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] private struct MonitorInfo { public uint Size; public Rect Monitor, Work; public uint Flags; }
@@ -107,6 +116,7 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
     [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfoW(nint monitor, ref MonitorInfo value);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
+    [DllImport("user32.dll")] private static extern bool GetClientRect(nint window, out Rect rectangle);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] private static extern bool ShowWindow(nint window, int command);
     [DllImport("user32.dll")] private static extern bool UpdateWindow(nint window);
@@ -121,6 +131,8 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
     [DllImport("user32.dll")] private static extern bool EnableWindow(nint window, bool enabled);
     [DllImport("user32.dll")] private static extern nint LoadCursorW(nint instance, nint name);
     [DllImport("gdi32.dll")] private static extern nint GetStockObject(int value);
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] private static extern nint CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint precision, uint clip, uint quality, uint pitch, string face);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(nint value);
     [DllImport("comctl32.dll")] private static extern bool InitCommonControlsEx(ref CommonControls value);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int MessageBoxW(nint owner, string text, string caption, uint type);
 }

@@ -99,6 +99,7 @@ internal sealed partial class AppController : IDisposable
             if (IsWizard) await settings;
             else await Task.WhenAll(RefreshInstalledAsync(), RefreshUpdaterAvailabilityAsync(), RestoreAccountAsync(renew: true, Cancellation!.Token), settings);
             await game.OnUiAsync(() => { Settings = settings.Result; OutputPath = Path.Combine(Settings.DefaultOutputDirectory, OperatingSystem.IsWindows() ? "application-Setup.exe" : "application.hinst"); End("Ready when you are", "Open a package or check your installed applications for updates."); });
+            await PrepareAdministratorOnOpenAsync();
         }
         catch (Exception error) { await ErrorAsync("Could not load applications", error); }
     }
@@ -280,7 +281,7 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = arguments.RequireSignature,
         LegacyArguments = arguments.LegacyArguments,
         LogPath = arguments.LogPath,
-        SharedPackageTransport = CreateDownloadTransport(),
+        SharedPackageTransport = CreateAuthenticatedDownloadTransport(),
         RunningApplicationsPrompt = PromptRunningApplicationsAsync
     };
 
@@ -364,7 +365,7 @@ internal sealed partial class AppController : IDisposable
             var result = await Task.Run(async () =>
             {
                 await WaitForProductDependencyAsync(product, "repair", Cancellation!.Token);
-                return await engine.RepairAsync(product.Id, OptionsFor(product, "repair"), Reporter(), Cancellation.Token);
+                return await WithDownloadAccountAsync(() => engine.RepairAsync(product.Id, OptionsFor(product, "repair"), Reporter(), Cancellation.Token), Cancellation.Token, autoApprove: false);
             });
             await RefreshInstalledAsync();
             await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } End("Repair complete", $"Verified and restored {product.Name}."); CloseCompletedChild(result.RebootRequired); });
@@ -411,12 +412,18 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = product.PublisherKeySha256 is not null,
         LogPath = arguments.LogPath,
         LegacyArguments = arguments.LegacyArguments,
-        SharedPackageTransport = CreateDownloadTransport(),
+        SharedPackageTransport = CreateAuthenticatedDownloadTransport(),
         RunningApplicationsPrompt = (request, token) => PromptRunningApplicationsAsync(operation is null ? request : request with { Operation = operation }, token)
     };
 
-    internal static bool NeedsMaintenanceElevation(InstalledProduct product) => !product.Isolated && !InstallerEngine.IsElevated &&
-        (product.Scope == "machine" || product.Modules.Any(module => module.Kind == "service" || module.Kind == "registry" && module.Values.GetValueOrDefault("hive") == "machine"));
+    internal static bool NeedsMaintenanceElevation(InstalledProduct product)
+    {
+        if (product.Isolated || InstallerEngine.IsElevated) return false;
+        if (product.Scope == "machine" || product.Modules.Any(module => module.Kind == "service" || module.Kind == "registry" && module.Values.GetValueOrDefault("hive") == "machine")) return true;
+        using var package = PackageReader.Open(product.PackagePath);
+        package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
+        return InstallerEngine.RequiresAdministrativeSetup(package.Manifest, product.Features, product.InstallDirectory);
+    }
 
     private async Task ElevatedMaintenanceAsync(InstalledProduct product, string operation)
     {
@@ -430,6 +437,16 @@ internal sealed partial class AppController : IDisposable
                 package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
                 var options = OptionsFor(product);
                 options.Silent = true;
+                if (operation == "repair" && package.IsMetadataOnly)
+                {
+                    options.AllowDowngrade = true;
+                    var source = FileUpdateSource.Read(product.PackagePath, product.PublisherKeySha256!);
+                    using var files = new FileUpdateClient(allowLoopback: product.Isolated, transport: options.SharedPackageTransport);
+                    using var prepared = await WithDownloadAccountAsync(() => files.PrepareAsync(source.ToFeed(), product, FileUpdateStagingRoot(), options, Reporter(), Cancellation.Token), Cancellation.Token, autoApprove: false);
+                    using var metadata = PackageReader.OpenMetadata(prepared.MetadataPath);
+                    return await ElevatedInstallWorker.InstallAsync(prepared.MetadataPath, engine.Plan(metadata, options), options,
+                        PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token, "apply-files", prepared.Root);
+                }
                 return await ElevatedInstallWorker.InstallAsync(product.PackagePath, engine.Plan(package, options), options,
                     PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token, operation);
             });
@@ -449,10 +466,15 @@ internal sealed partial class AppController : IDisposable
         CheckingUpdates = true;
         try
         {
-            using var client = CreateUpdateClient();
             var token = Cancellation!.Token;
             var reporter = Reporter();
-            var result = await Task.Run(() => client.CheckAsync(product.UpdateUrl, product.Version, product.Id, token, reporter), token);
+            var result = await Task.Run(() => WithDownloadAccountAsync(async () =>
+            {
+                using var client = CreateUpdateClient();
+                var target = UpdaterTarget.FromInstalled(product, arguments.StateRoot);
+                return target.UpdateProtocol == "hfiles1" ? await client.CheckFileSelectionAsync(product.UpdateUrl, product.Version, product.Id, token, reporter)
+                    : await client.CheckAsync(product.UpdateUrl, product.Version, product.Id, token, reporter);
+            }, token), token);
             await game.OnUiAsync(() => { Update = result; End(result.Available ? $"Update available · {result.Feed.Version}" : "You're up to date", result.Available ? result.Feed.ReleaseNotes : $"{product.Name} {product.Version} is the latest published version."); });
         }
         catch (Exception error) { await ErrorAsync("Update check failed", error); }
@@ -464,6 +486,14 @@ internal sealed partial class AppController : IDisposable
         Begin("Downloading update", $"{product.Name} {update.Feed.Version}");
         try
         {
+            if (update.Feed.PackageType == "hfiles")
+            {
+                var selectedResult = await ApplySelectedFileUpdateAsync(product, update, Cancellation!.Token);
+                if (selectedResult is null) return;
+                await RefreshInstalledAsync();
+                await game.OnUiAsync(() => { Update = null; End(selectedResult.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); CloseCompletedChild(selectedResult.RebootRequired); });
+                return;
+            }
             using var client = CreateUpdateClient();
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "Downloads");
             var download = await client.DownloadAsync(update.Feed, directory, Reporter(), Cancellation!.Token);
@@ -562,7 +592,7 @@ internal sealed partial class AppController : IDisposable
 
     internal Task SignInPublisherAsync() => SignInAccountAsync();
 
-    public void Dispose() { Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; verifiedPlanningPackage?.Dispose(); verifiedPlanningPackage = null; DisposeWizardArtwork(); }
+    public void Dispose() { administratorLifetime.Cancel(); ElevatedInstallWorker.CancelPreparation(); administratorLifetime.Dispose(); Cancellation?.Cancel(); runningApplicationsChoice?.TrySetCanceled(); Cancellation?.Dispose(); publisherSession?.Dispose(); publisherSession = null; verifiedPlanningPackage?.Dispose(); verifiedPlanningPackage = null; DisposeWizardArtwork(); }
 
     internal async void SaveSettings()
     {

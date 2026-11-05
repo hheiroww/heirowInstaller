@@ -35,10 +35,12 @@ public static class SharedUpdaterRuntime
     }
     public static string ApplicationStateDirectory(UpdateCompanionConfiguration configuration, bool create = false)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } original)
+            return original.RunAsOriginalUser(() => ApplicationStateDirectory(configuration, create));
         var identity = configuration.ProductId.ToLowerInvariant() + "\n" + (OperatingSystem.IsWindows() ? configuration.InstallDirectory.ToLowerInvariant() : configuration.InstallDirectory);
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant()[..24];
         var parent = configuration.Isolated ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configuration.StateRoot))!, "updater-lifecycle")
-            : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowUpdater", "applications");
+            : Path.Combine(InstallerPlatform.UserData, "SocketJack", "heirowUpdater", "applications");
         var directory = PackageSafety.UnderRoot(parent, key);
         if (create) Directory.CreateDirectory(directory);
         return directory;
@@ -95,12 +97,15 @@ public static class SharedUpdaterRuntime
         if (!SameOrigin(configuration.CredentialOrigin, definition.CredentialOrigin) ||
             configuration.AuthApplication != definition.AuthApplication ||
             configuration.UpdateMode != definition.UpdateMode ||
-            configuration.UpdateProtocol != definition.UpdateProtocol ||
+            configuration.UpdateProtocol is not null && configuration.UpdateProtocol != definition.UpdateProtocol ||
             !string.Equals(configuration.LaunchWorkingDirectory, manifest.LaunchWorkingDirectory, StringComparison.OrdinalIgnoreCase) ||
             configuration.CookieEnvironmentVariable != definition.CookieEnvironmentVariable ||
             configuration.TokenEnvironmentVariable != definition.TokenEnvironmentVariable ||
             !configuration.FeedUrl.Equals(manifest.UpdateUrl, StringComparison.Ordinal))
             throw new InvalidDataException("The updater authentication settings do not match its signed installed package.");
+        // Older format-4 installers omit this additive capability from generated profiles.
+        // Only the caller-verified signed package supplies the missing value; explicit mismatches still fail.
+        configuration.UpdateProtocol ??= definition.UpdateProtocol;
         if (configuration.SharedRuntime is not { } reference)
         {
             if (definition.RuntimeMode == "shared") throw new InvalidDataException("The shared updater binding is missing. Repair this application's installation.");

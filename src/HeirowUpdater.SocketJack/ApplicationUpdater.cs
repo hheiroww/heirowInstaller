@@ -54,28 +54,41 @@ public static class ApplicationUpdater
     public static bool StartAfterExit(string configurationPath, ApplicationSessionSnapshot session) => StartCompanion(configurationPath, "after-exit", null, null, true, session);
     public static bool CheckForUpdates(string configurationPath, ApplicationSessionSnapshot session) => StartCompanion(configurationPath, "check-for-updates", null, null, true, session);
 
+    /// <summary>Prepares a verified companion invocation without launching; callers can recheck UI/session consent immediately before starting it.</summary>
+    public static ProcessStartInfo PrepareCheckForUpdates(string configurationPath, ApplicationSessionSnapshot session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return PrepareCompanionStartInfo(configurationPath, "check-for-updates", null, null, true, session);
+    }
+
     private static bool StartCompanion(string configurationPath, string command, string? bearerToken, string? sessionCookie, bool replaceCredentials, ApplicationSessionSnapshot? session = null)
     {
         try
         {
             session ??= replaceCredentials || bearerToken is not null || sessionCookie is not null ? new ApplicationSessionSnapshot(sessionCookie, bearerToken) : null;
-            if (!File.Exists(configurationPath)) return false;
-            var configuration = ReadConfiguration(configurationPath);
-            var executable = ResolveExecutable(configuration);
-            if (!File.Exists(executable)) return false;
-            using var application = Process.GetCurrentProcess();
-            var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = configuration.InstallDirectory };
-            start.ArgumentList.Add(command); start.ArgumentList.Add("--config"); start.ArgumentList.Add(Path.GetFullPath(configurationPath));
-            start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(application.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            start.ArgumentList.Add("--application-start"); start.ArgumentList.Add(application.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            if (System.Environment.ProcessPath is { } host && !Path.GetFullPath(host).StartsWith(Path.GetDirectoryName(Path.GetFullPath(configurationPath))! + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            { start.ArgumentList.Add("--application-host"); start.ArgumentList.Add(host); }
-            if (session is not null) SetSessionEnvironment(start, session);
-            else SetSessionEnvironment(start, bearerToken, sessionCookie, replaceCredentials);
+            var start = PrepareCompanionStartInfo(configurationPath, command, bearerToken, sessionCookie, replaceCredentials, session);
             using var companion = Process.Start(start);
             return companion is not null;
         }
         catch { return false; }
+    }
+
+    private static ProcessStartInfo PrepareCompanionStartInfo(string configurationPath, string command, string? bearerToken,
+        string? sessionCookie, bool replaceCredentials, ApplicationSessionSnapshot? session)
+    {
+        var configuration = ReadConfiguration(configurationPath);
+        var executable = ResolveExecutable(configuration);
+        if (!File.Exists(executable)) throw new FileNotFoundException("The verified updater host is missing. Repair this application's installation.");
+        using var application = Process.GetCurrentProcess();
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = configuration.InstallDirectory };
+        start.ArgumentList.Add(command); start.ArgumentList.Add("--config"); start.ArgumentList.Add(Path.GetFullPath(configurationPath));
+        start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(application.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        start.ArgumentList.Add("--application-start"); start.ArgumentList.Add(application.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (System.Environment.ProcessPath is { } host && !Path.GetFullPath(host).StartsWith(Path.GetDirectoryName(Path.GetFullPath(configurationPath))! + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        { start.ArgumentList.Add("--application-host"); start.ArgumentList.Add(host); }
+        if (session is not null) SetSessionEnvironment(start, session);
+        else SetSessionEnvironment(start, bearerToken, sessionCookie, replaceCredentials);
+        return start;
     }
 
     public static UpdateCompanionConfiguration ReadConfiguration(string path, bool allowLoopback = false, bool requireEntryPoint = true)
@@ -158,6 +171,17 @@ public static class ApplicationUpdater
         if (session.Cookie is not null) start.Environment["HEIROWUPDATER_COOKIE"] = session.Cookie;
     }
     private static readonly string[] SessionEnvironmentNames = ["HEIROWUPDATER_TOKEN", "HEIROWUPDATER_COOKIE", "HEIROWUPDATER_SESSION_SUPPLIED", "HEIROWUPDATER_SESSION_CAPTURED_AT", "HEIROWUPDATER_SESSION_ID", "HEIROWUPDATER_SESSION_SOURCE_PID", "HEIROWUPDATER_SESSION_SOURCE_START", "HEIROWUPDATER_SESSION_SEQUENCE"];
+
+    // ShellExecute cannot accept a custom environment. File-update helpers need
+    // no session after prefetch, and the native promoter builds a clean protected
+    // environment before executing its privileged managed host.
+    internal static ProcessStartInfo ElevateDataHelper(ProcessStartInfo prepared)
+    {
+        var elevated = new ProcessStartInfo(prepared.FileName)
+        { UseShellExecute = true, Verb = "runas", WorkingDirectory = prepared.WorkingDirectory };
+        foreach (var argument in prepared.ArgumentList) elevated.ArgumentList.Add(argument);
+        return elevated;
+    }
 
     public static string StateDirectory(UpdateCompanionConfiguration configuration)
         => SharedUpdaterRuntime.ApplicationStateDirectory(configuration, create: true);
@@ -475,6 +499,8 @@ public static class ApplicationUpdater
     }
     internal static async Task WriteJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
+        if (OperatingSystem.IsWindows() && InstallerUserContext.Current is { IsExecutingAsOriginalUser: false } user)
+        { await user.RunAsOriginalUserAsync(async () => { await WriteJsonAsync(path, value, cancellationToken); return true; }); return; }
         path = Path.GetFullPath(path); PackageSafety.EnsureNoReparsePoints(path); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try { await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(value, InstallerJson.Options), cancellationToken); File.Move(temporary, path, true); }

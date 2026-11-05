@@ -11,8 +11,12 @@ public static class InstallerPlatform
     public static string ExecutableSuffix => OperatingSystem.IsWindows() ? ".exe" : "";
     public static StringComparison PathComparison => OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
     public static StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-    public static string UserHome => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    public static string UserData => OperatingSystem.IsWindows() ? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+    public static string GetFolderPath(Environment.SpecialFolder folder) => OperatingSystem.IsWindows() && InstallerUserContext.Current is { } original
+        ? original.GetFolderPath(folder) : Environment.GetFolderPath(folder);
+    public static string ExpandEnvironmentVariables(string value) => OperatingSystem.IsWindows() && InstallerUserContext.Current is { } original
+        ? original.ExpandEnvironmentVariables(value) : Environment.ExpandEnvironmentVariables(value);
+    public static string UserHome => GetFolderPath(Environment.SpecialFolder.UserProfile);
+    public static string UserData => OperatingSystem.IsWindows() ? GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
         : OperatingSystem.IsMacOS() ? Path.Combine(UserHome, "Library", "Application Support") : Xdg("XDG_DATA_HOME", ".local/share");
     public static string UserState => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? UserData : Xdg("XDG_STATE_HOME", ".local/state");
     public static bool IsElevated => OperatingSystem.IsWindows()

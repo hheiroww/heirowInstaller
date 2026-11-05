@@ -23,6 +23,13 @@ string Package(PackageManifest manifest, string content, string? signingKey = nu
     var payload = Path.Combine(area, "payload"); Directory.CreateDirectory(payload);
     var payloadFile = Path.Combine(payload, manifest.EntryPoint.Length == 0 ? manifest.Payload.FirstOrDefault()?.Path ?? "dependency.dll" : manifest.EntryPoint);
     if (binary is null) File.WriteAllText(payloadFile, content); else File.WriteAllBytes(payloadFile, binary);
+    foreach (var file in manifest.Payload)
+    {
+        var path = Path.Combine(payload, file.Source.Length > 0 ? file.Source : file.Path);
+        if (File.Exists(path)) continue;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, file.Path.EndsWith(".json", StringComparison.Ordinal) ? "{}" : "synthetic local apphost");
+    }
     manifest.LegalDocuments = LegalFixture.For(manifest.Id);
     var definition = Path.Combine(area, "manifest.json");
     File.WriteAllText(definition, JsonSerializer.Serialize(manifest, InstallerJson.Options));
@@ -129,6 +136,31 @@ if (OperatingSystem.IsWindows())
     await Reject<InvalidDataException>(() => { SharedUpdaterRuntime.ValidateBinding(configuration, package.Manifest); return Task.CompletedTask; }, "Mutable profiles cannot change the signed update protocol.");
 }
 
+var localLaunch = App("fixture.application-launch", "1.0.0", dependency1);
+localLaunch.Payload = [new() { Source = localLaunch.EntryPoint, Path = localLaunch.EntryPoint },
+    new() { Source = "app.App.exe", Path = "app.App.exe" }, new() { Source = "app.runtimeconfig.json", Path = "app.runtimeconfig.json" }];
+localLaunch.ApplicationLaunch = new() { ExecutablePath = "app.App.exe", RuntimeConfigPath = "app.runtimeconfig.json", RuntimePackageId = dependency1.Id,
+    ProbingPackageIds = [dependency1.Id] };
+using (var package = PackageReader.Open(Package(localLaunch, "native launch fixture")))
+{
+    await engine.InstallAsync(package, Options("fixture.application-launch"));
+    var path = SharedPackages.ProbingConfigurationPath(package.Manifest)!;
+    using var probing = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "fixture.application-launch", path)));
+    Check(probing.RootElement.GetProperty("runtimeOptions").GetProperty("additionalProbingPaths")[0].GetString() == one.Packages[0].Directory,
+        "Setup creates exact .NET probing paths from signed shared package identities.");
+    var target = RunningApplicationTarget.FromPlan(engine.Plan(package, Options("fixture.application-launch")));
+    Check(target.OwnedApplicationImages.Contains(Path.Combine(root, "fixture.application-launch", "app.App.exe")),
+        "The actual renamed application host has exact process-closure authority.");
+    var installed = InstallerEngine.ListInstalled(state).Single(product => product.Id == "fixture.application-launch");
+    Check(installed.Files.Any(file => file.Path == path && file.Sha256 == PackageSafety.HashFile(Path.Combine(root, "fixture.application-launch", path))),
+        "Generated probing metadata participates in receipt ownership.");
+}
+var resolved = await SharedPackageResources.ResolveFileAsync("fixture.two", dependency1.Id, "dependency.dll", pin,
+    expectedInstallDirectory: Path.Combine(root, "fixture.two"), stateRoot: state);
+Check(resolved == Path.Combine(one.Packages[0].Directory, "dependency.dll"), "Resource resolution derives exact paths from signed installed package authority.");
+await Reject<CryptographicException>(() => SharedPackageResources.ResolveFileAsync("fixture.two", dependency1.Id, "dependency.dll", new string('c', 64),
+    expectedInstallDirectory: Path.Combine(root, "fixture.two"), stateRoot: state), "A different expected publisher cannot select installed shared resources.");
+
 var broken = Dependency("4.0.0", "bad-download-test");
 transport.Content[broken.DownloadUrl] = new byte[checked((int)broken.Size)];
 var badDownload = Package(App("fixture.bad-download", "1.0.0", broken), "not installed");
@@ -156,6 +188,26 @@ using (var package = PackageReader.Open(app2))
     await Reject<CryptographicException>(() => engine.InstallAsync(package, Options("fixture.two")), "An activated shared runtime must never be rewritten in place after corruption.");
 Check(File.ReadAllText(sharedFile) == "tampered immutable runtime", "Tampered immutable dependency is preserved for explicit repair.");
 Check(SharedPackages.Root("user", state) != SharedPackages.Root("machine", state), "Machine and user dependency stores are distinct.");
+using (var package = PackageReader.Open(app2))
+{
+    var cachedPrefetch = Path.Combine(root, "cached-prefetch"); var requests = transport.Requests;
+    await SharedPackages.PrefetchAsync(package, engine.Plan(package, Options("fixture.two")), cachedPrefetch, Options("fixture.two"));
+    Check(transport.Requests == requests && !Directory.Exists(cachedPrefetch), "Prefetch reuses a fully verified store archive without another download or staging copy.");
+}
+var stagedDefinition = Dependency("9.0.0", "prefetch-only verified bytes");
+var stagedApplication = Package(App("fixture.prefetch", "1.0.0", stagedDefinition), "not yet installed");
+using (var package = PackageReader.Open(stagedApplication))
+{
+    var stagedOptions = Options("fixture.prefetch"); var stagedRoot = Path.Combine(root, "prepared-only");
+    await SharedPackages.PrefetchAsync(package, engine.Plan(package, stagedOptions), stagedRoot, stagedOptions);
+    var stagedArchive = Path.Combine(stagedRoot, "dependencies", stagedDefinition.Sha256.ToLowerInvariant() + ".hinst");
+    Check(File.Exists(stagedArchive) && !Directory.Exists(stagedOptions.TargetDirectory), "Prefetch retains the verified archive without installing the app or extracting a shared runtime.");
+    var requests = transport.Requests;
+    await SharedPackages.PrefetchAsync(package, engine.Plan(package, stagedOptions), stagedRoot, stagedOptions);
+    Check(transport.Requests == requests, "Repeated prefetch verifies and reuses its exact staged archive.");
+    var bytes = await File.ReadAllBytesAsync(stagedArchive); bytes[^1] ^= 1; await File.WriteAllBytesAsync(stagedArchive, bytes);
+    await Reject<CryptographicException>(() => SharedPackages.PrefetchAsync(package, engine.Plan(package, stagedOptions), stagedRoot, stagedOptions), "Corrupt staged archives fail without redownload or activation.");
+}
 Console.WriteLine($"Passed {checks} shared-package checks. Retained owned fixtures: {root}");
 
 sealed class FixtureTransport : IUpdateTransport

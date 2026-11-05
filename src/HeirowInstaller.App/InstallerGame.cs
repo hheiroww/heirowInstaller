@@ -89,6 +89,7 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
 
     private void StartInitialOperation()
     {
+        if (MainScene.Controller.AdministratorPreparationCanceled) return;
         if (arguments.PerformanceSmokeDirectory is not null)
             _ = UiResponsivenessSmoke.RunAsync(this, arguments);
         else if (arguments.MaintenanceOperation is not null && arguments.WizardSmokeDirectory is null)
@@ -191,6 +192,7 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
             catch (Exception error) { request.Completion?.SetException(error); throw; }
         }
         base.Draw(gameTime);
+        HeirowInstaller.Core.BootstrapReadiness.Signal();
         if (started is { } timestamp) Performance?.EndDraw(timestamp);
     }
 

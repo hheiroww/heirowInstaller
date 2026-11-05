@@ -33,7 +33,15 @@ public static class PackageBuilder
         if (manifest.TargetRuntime is not null || manifest.TargetPlatform != "windows" || manifest.Payload.Any(x => x.UnixMode is not null) || manifest.Shortcuts.Any(x => x.ArgumentList is not null))
             manifest.FormatVersion = Math.Max(manifest.FormatVersion, 4);
         if (manifest.SharedPackages?.Count > 0) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
-        if (manifest.UpdateCompanion?.UpdateProtocol is not null) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
+        if (manifest.UpdateCompanion?.UpdateProtocol is not null) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 4);
+        if (manifest.TargetPlatform == "windows" && manifest.ApplicationLaunch is { } applicationLaunch)
+            applicationLaunch.RequiresAdministrator |= WindowsExecutablePrivileges.Read(Path.Combine(sourceDirectory, applicationLaunch.ExecutablePath.Replace('/', Path.DirectorySeparatorChar))) == WindowsExecutionLevel.RequireAdministrator;
+        if (manifest.TargetPlatform == "windows" && manifest.LegacyExecutable is { } backend)
+            manifest.RequiresAdministrator |= WindowsExecutablePrivileges.Read(Path.Combine(sourceDirectory, backend.PayloadPath.Replace('/', Path.DirectorySeparatorChar))) == WindowsExecutionLevel.RequireAdministrator;
+        if (manifest.TargetPlatform == "windows")
+            foreach (var prerequisite in manifest.Prerequisites.Where(item => item.Executable is { Length: > 0 }))
+                prerequisite.RequiresAdministrator |= WindowsExecutablePrivileges.Read(Path.Combine(sourceDirectory, prerequisite.Executable!.Replace('/', Path.DirectorySeparatorChar))) == WindowsExecutionLevel.RequireAdministrator;
+        if (manifest.RequiresAdministrator || manifest.ApplicationLaunch?.RequiresAdministrator == true || manifest.Prerequisites.Any(item => item.RequiresAdministrator)) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
         if (manifest.ApplicationLaunch is not null) manifest.FormatVersion = Math.Max(manifest.FormatVersion, 5);
         if (manifest.SharedPackages?.Count > 0 && signingKeyPath is null)
             throw new CryptographicException("Shared dependency declarations require a signed application package.");
@@ -206,9 +214,21 @@ public sealed class PackageReader : IDisposable
         finally { stream.Position = position; }
     }
 
+    public async Task<string> ComputePackageSha256Async(CancellationToken cancellationToken = default)
+    {
+        var position = stream.Position;
+        try
+        {
+            stream.Position = 0;
+            return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
+        }
+        finally { stream.Position = position; }
+    }
+
     // This immutable copy is the exact manifest read from this verified, open archive.
     // Reading it must not reopen and rehash a potentially very large setup executable.
     internal byte[] ReadManifestBytes() => manifestBytes.ToArray();
+    public string ReadSignedManifestSha256() => IncrementalPackageIO.Hash(manifestBytes);
 
     public void VerifySignature(string? trustedPublicKeySha256 = null, bool requireSignature = false)
     {

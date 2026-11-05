@@ -28,3 +28,33 @@ dotnet run --project tests/HeirowInstaller.FileSelection.Tests -c Release -- C:\
 ```
 
 It checks actual-file diffing, skipped releases, missing/corrupt owned files, unchanged timestamps, preserved user data, hostile ZIPs, cancellation, rollback/retry, and process crashes during application files, metadata and receipt commit. It does not update a real installed application.
+
+Every selected shared-package archive is prefetched before a stage becomes ready,
+using the original caller's live authenticated transport. Exact verified archives
+already in the shared store are reused without another staging copy; other
+archives are hash/signature/payload verified under
+`<preparedRoot>/dependencies/<archiveSha256>.hinst`. The helper derives this source
+directory from its verified prepared stage, opens staged sources as the original
+user, rechecks their hashes, then provisions the immutable store. A missing or
+changed staged dependency fails before application closure. No dependency HTTP
+request or saved credential is needed after the initiating session exits.
+
+Legacy readers that support format 4 need an explicit bridge release before a
+format-5 target. The bridge retains a physical signed native updater as ordinary
+payload and declares `updateCompanion.updateProtocol: "hfiles1"`. This additive
+network capability is permitted in format 4; shared packages, application-launch
+bindings and privilege declarations continue to require format 5. An older
+installer ignores the unknown capability while verifying the original signature.
+The new updater restores a missing capability from that pinned signed bridge
+manifest when the old generated profile omitted it. An explicit mismatched
+profile value still fails validation.
+
+Publishers must offer the immutable bridge to legacy protocol requests with the
+normal signed full-package or supported `hupd1` coverage, and offer format-5 file
+targets only after clients negotiate `hfiles1`. Publishing a format-5 target alone
+does not establish legacy coverage. `scripts/Test-LegacyBridge.ps1` builds the
+exact locally available legacy Core commit into an owned directory and checks
+its real signature verification, isolated install of the native updater into the
+old shared slot, omitted profile field, rejection of a direct format-5 package,
+and the subsequent changed-file transition. It never runs the fixture application
+or requests administrator approval.
