@@ -34,10 +34,15 @@ public static class PrerequisiteDetection
 
     public static bool IsSatisfied(PrerequisiteDetectionDefinition definition) => Detect(definition).Satisfied;
 
-    /// <summary>A read-only detection result; it never starts, downloads or modifies a runtime installer.</summary>
-    public static PrerequisiteDetectionResult Detect(PrerequisiteDetectionDefinition definition) => Detect(definition, WindowsPrerequisiteRegistry.Instance);
+    public static bool IsSatisfied(PrerequisiteDetectionDefinition definition, bool includeCurrentUser) => Detect(definition, includeCurrentUser).Satisfied;
 
-    internal static PrerequisiteDetectionResult Detect(PrerequisiteDetectionDefinition definition, IPrerequisiteRegistry reader)
+    /// <summary>A read-only detection result; it never starts, downloads or modifies a runtime installer.</summary>
+    public static PrerequisiteDetectionResult Detect(PrerequisiteDetectionDefinition definition) => Detect(definition, includeCurrentUser: true);
+
+    /// <summary>Exclude user-only WebView2 registrations when provisioning an all-users installation.</summary>
+    public static PrerequisiteDetectionResult Detect(PrerequisiteDetectionDefinition definition, bool includeCurrentUser) => Detect(definition, WindowsPrerequisiteRegistry.Instance, includeCurrentUser);
+
+    internal static PrerequisiteDetectionResult Detect(PrerequisiteDetectionDefinition definition, IPrerequisiteRegistry reader, bool includeCurrentUser = true)
     {
         Validate(definition); ArgumentNullException.ThrowIfNull(reader); TryVersion(definition.MinimumVersion, out var minimum);
         var locations = definition.Kind switch
@@ -52,6 +57,7 @@ public static class PrerequisiteDetection
         // the bitness of the installer process or spelling Wow6432Node twice.
         foreach (var (location, view) in locations)
         {
+            if (location == PrerequisiteRegistryLocation.WebView2CurrentUser && !includeCurrentUser) continue;
             IReadOnlyDictionary<string, PrerequisiteRegistryValue>? values;
             try { values = reader.Read(location, view); }
             catch (Exception error) when (error is UnauthorizedAccessException or SecurityException or IOException or PlatformNotSupportedException) { continue; }

@@ -38,8 +38,7 @@ Copy-Item -LiteralPath $AppHostPath -Destination (Join-Path $taskSource 'fixture
 $taskVersion=(Get-Item -LiteralPath $AppHostPath).VersionInfo.ProductVersion.Split('+')[0]
 Save @{runtimeOptions=@{tfm='net10.0';frameworks=@(@{name='Microsoft.NETCore.App';version='10.0.0'},@{name='Microsoft.WindowsDesktop.App';version='10.0.0'})}} (Join-Path $taskSource 'fixture.runtimeconfig.json')
 $taskNuget=Join-Path $PackageCache 'system.io.hashing/10.0.1'
-$taskSha512=[IO.File]::OpenRead((Join-Path $taskNuget 'system.io.hashing.10.0.1.nupkg'))
-try{$taskContentHash='sha512-'+[Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($taskSha512))}finally{$taskSha512.Dispose()}
+$taskContentHash='sha512-'+(Get-Content -LiteralPath (Join-Path $taskNuget '.nupkg.metadata') -Raw|ConvertFrom-Json).contentHash
 Copy-Item -LiteralPath (Join-Path $taskNuget 'lib/net10.0/System.IO.Hashing.dll') -Destination (Join-Path $taskSource 'System.IO.Hashing.dll')
 Save @{runtimeTarget=@{name='.NETCoreApp,Version=v10.0/win-x64'};targets=@{'.NETCoreApp,Version=v10.0/win-x64'=@{'System.IO.Hashing/10.0.1'=@{runtime=@{'lib/net10.0/System.IO.Hashing.dll'=@{}}}}};libraries=@{'System.IO.Hashing/10.0.1'=@{type='package';path='system.io.hashing/10.0.1';sha512=$taskContentHash}}} (Join-Path $taskSource 'fixture.deps.json')
 Set-Content -LiteralPath (Join-Path $taskSource 'private-data.dll') -Value 'isolated private application bytes'
@@ -129,5 +128,9 @@ $taskApp.id='fixture.elevated-application';$taskApp.requiresAdministrator=$false
 $taskElevatedWeb=Get-Content -LiteralPath (Join-Path $taskRoot 'elevated-application/web-installer/bootstrap-descriptor.json') -Raw|ConvertFrom-Json
 $taskElevatedLaunch=Get-Content -LiteralPath (Join-Path $taskRoot 'elevated-application/staging/application-bootstrap.json') -Raw|ConvertFrom-Json
 if(!$taskElevatedWeb.requiresAdministrator -or !$taskElevatedLaunch.requiresAdministrator){throw 'A signed administrator application must also request setup approval.'}
+$taskApp.features+=@{id='optional-local';name='Optional local file';required=$false;default=$true};$taskApp.payload=@(@{source='private-data.dll';path='private-data.dll';feature='optional-local'});Save $taskApp $taskManifest
+$taskOptionalBlocked=$false
+try{& (Join-Path $PSScriptRoot 'Build-SharedApplication.ps1') @taskCommon -RuntimePackagePath $taskRuntime8Package -MaintenanceRuntimePackagePath $taskRuntimeArchive -MaintenanceRuntimePackageUrl $taskRuntime10Url -OutputDirectory (Join-Path $taskRoot 'blocked-optional-local')}catch{if($_.Exception.Message -like '*Feature-optional app-root files*'){$taskOptionalBlocked=$true}else{throw}}
+if(!$taskOptionalBlocked -or (Test-Path -LiteralPath (Join-Path $taskRoot 'blocked-optional-local/web-installer/application.hinst'))){throw 'An optional local file produced a launcher that cannot open when its feature is off.'}
 Save @{ownedRoot=$taskRoot;purpose='Synthetic authoring acceptance, no payload execution';retain='All outputs until explicit cleanup approval';syntheticPrivateKey=(Join-Path $taskRoot 'fixture.private.pem');sourceInputs=@($CliPath,$GenericBootstrapPath,$AppHostPath)} (Join-Path $taskRoot 'storage-manifest.json')
 Write-Output ('PASS shared authoring: cross-product runtime reuse, complete offline updater/setup closure, exact sealed SecurityLoader policy preservation/block, NuGet relocation, protected aliases/private files; outputs '+$taskRoot)

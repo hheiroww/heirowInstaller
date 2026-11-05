@@ -78,6 +78,9 @@ public static partial class PackageSafety
             ValidateId(feature.Id);
             if (!featureIds.Add(feature.Id)) throw new InvalidDataException($"Duplicate feature: {feature.Id}");
         }
+        var moduleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var moduleId in manifest.Modules.Keys)
+            if (!moduleIds.Add(moduleId)) throw new InvalidDataException($"Duplicate installer module: {moduleId}");
         var affectedResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (manifest.AffectedResources.Count > 256) throw new InvalidDataException("A package may declare at most 256 exact affected-resource files.");
         foreach (var resource in manifest.AffectedResources)

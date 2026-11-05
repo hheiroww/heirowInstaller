@@ -90,6 +90,18 @@ Check(!PrerequisiteDetection.Detect(webview, wrongWebView).Satisfied, "An unrela
 var userFallback = new FakeRegistry { ErrorView = RegistryView.Registry32, ErrorLocation = PrerequisiteRegistryLocation.WebView2Machine, Error = new UnauthorizedAccessException() };
 userFallback.Set(PrerequisiteRegistryLocation.WebView2CurrentUser, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, "134.0.1.2")));
 Check(PrerequisiteDetection.Detect(webview, userFallback).Satisfied, "A denied machine registration does not hide the original user's valid runtime");
+var userOnlyWebView = new FakeRegistry();
+userOnlyWebView.Set(PrerequisiteRegistryLocation.WebView2CurrentUser, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, "150.0.1.2")));
+var machinePlan = new InstallPlan { Scope = "machine" }; var userPlan = new InstallPlan { Scope = "user" };
+Check(!WindowsIntegration.IsPrerequisiteDetected(webview, machinePlan, userOnlyWebView), "Machine installation cannot be satisfied by a user-only WebView2 registration");
+Check(userOnlyWebView.Calls.All(call => call.Location != PrerequisiteRegistryLocation.WebView2CurrentUser), "Machine-scope prerequisite detection never queries an original-user registration");
+Check(WindowsIntegration.IsPrerequisiteDetected(webview, userPlan, userOnlyWebView), "Per-user installation retains original-user WebView2 fallback");
+Check(PrerequisiteDetection.Detect(webview, userOnlyWebView).Satisfied && !PrerequisiteDetection.Detect(webview, userOnlyWebView, includeCurrentUser: false).Satisfied, "Existing detector calls retain user fallback while additive machine-only detection excludes it");
+var machineWebView = new FakeRegistry();
+machineWebView.Set(PrerequisiteRegistryLocation.WebView2Machine, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, "134.0.3124.44")));
+Check(WindowsIntegration.IsPrerequisiteDetected(webview, machinePlan, machineWebView), "Documented HKLM WebView2 registration satisfies an all-users installation");
+Check(!WindowsIntegration.IsPrerequisiteDetected(Definition("webview2", "140.0.0.0"), machinePlan, web), "Newer user WebView2 cannot hide an insufficient machine runtime");
+Check(PrerequisiteDetection.Detect(dotnet, registry, includeCurrentUser: false).Satisfied && PrerequisiteDetection.Detect(vc, registry, includeCurrentUser: false).Satisfied, "Machine-only selection preserves existing fixed machine .NET and VC detection");
 Check(web.Calls.All(call => call.View == RegistryView.Registry32 && call.Location is PrerequisiteRegistryLocation.WebView2Machine or PrerequisiteRegistryLocation.WebView2CurrentUser), "WebView2 detector queries only the two fixed documented locations in the explicit 32-bit view");
 
 // Safe integration controls never allow external prerequisite execution.

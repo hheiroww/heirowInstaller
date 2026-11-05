@@ -24,7 +24,11 @@ The registry reader is internal, injectable for tests, and limited to fixed runt
 its pinned prerequisite. Use `architecture: "x64"` and a stable numeric
 `minimumVersion`, such as `1.0.0.0`. A plain `pv` string in either the fixed
 32-bit machine registration or the original user's registration must be greater
-than `0.0.0.0` and meet the minimum. Newer major versions satisfy this Evergreen
+than `0.0.0.0` and meet the minimum. All-users (`machine`) installation checks
+only the machine registration: one user's runtime cannot satisfy other users.
+Per-user installation keeps the original-user fallback. Existing one-argument
+detector calls retain that fallback; the additive `includeCurrentUser: false`
+overloads request machine-only evidence. Newer major versions satisfy this Evergreen
 requirement. Zero, preview, malformed, non-string and unrelated registry evidence
 does not skip setup. The fixed key is
 `Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`.

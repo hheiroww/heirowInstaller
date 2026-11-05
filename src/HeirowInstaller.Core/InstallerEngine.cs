@@ -74,8 +74,10 @@ public sealed partial class InstallerEngine
         if (recorded is not null) scope = recorded.Scope;
         var stateRoot = GetStateRoot(options, scope);
         var previous = recorded ?? FindInstalled(manifest.Id, options, scope);
-        if (manifest.Modules.TryGetValue("SocketJackSecurityLoader", out var protectedDelivery))
+        var protectedModule = manifest.Modules.FirstOrDefault(module => module.Key.Equals("SocketJackSecurityLoader", StringComparison.OrdinalIgnoreCase));
+        if (protectedModule.Key is not null)
         {
+            var protectedDelivery = protectedModule.Value;
             var trustedKey = options.TrustedPublisherKeySha256 ?? previous?.PublisherKeySha256;
             var registered = trustedKey is null && registeredPublishers.TryResolve(manifest.Id, out trustedKey);
             if (trustedKey == null) throw new CryptographicException("Protected components require the registered publisher key pin from a trusted installation or --trust-key.");

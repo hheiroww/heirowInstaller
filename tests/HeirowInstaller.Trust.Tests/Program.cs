@@ -11,7 +11,7 @@ void Reject(Action action, string message) { try { action(); } catch (Cryptograp
 using var publisher = RSA.Create(2048); using var attacker = RSA.Create(2048);
 string Pin(RSA key) => Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
 var trusted = Pin(publisher); var forged = Pin(attacker);
-string Package(string id, string version, RSA key, string? outerPin = null, string? componentPin = null)
+string Package(string id, string version, RSA key, string? outerPin = null, string? componentPin = null, string moduleId = "SocketJackSecurityLoader", bool duplicateModule = false)
 {
     string area = Path.Combine(root, "package-" + ++build), source = Path.Combine(area, "source"), protectedFiles = Path.Combine(source, "SecurityLoader"); Directory.CreateDirectory(protectedFiles);
     File.WriteAllText(Path.Combine(source, "app.exe"), "Synthetic protected application " + version);
@@ -23,7 +23,8 @@ string Package(string id, string version, RSA key, string? outerPin = null, stri
     if (componentPin is not null) configuration["publisherKeySha256"] = componentPin;
     var manifest = new PackageManifest { Id = id, Name = "Protected trust fixture", Publisher = "SocketJack", Version = version, EntryPoint = "app.exe",
         TargetRuntime = InstallerPlatform.RuntimeIdentifier, TargetPlatform = InstallerPlatform.Current, UpdateUrl = "https://socketjack.com/installers/" + id + "/update.json", LegalDocuments = LegalFixture.For(id) };
-    manifest.Modules["SocketJackSecurityLoader"] = JsonSerializer.SerializeToElement(configuration);
+    manifest.Modules[moduleId] = JsonSerializer.SerializeToElement(configuration);
+    if (duplicateModule) manifest.Modules["socketjacksecurityloader"] = JsonSerializer.SerializeToElement(configuration);
     var keyPath = Path.Combine(area, "fixture.pem"); File.WriteAllText(keyPath, key.ExportPkcs8PrivateKeyPem());
     var json = Path.Combine(area, "manifest.json"); File.WriteAllText(json, JsonSerializer.Serialize(manifest, InstallerJson.Options));
     var output = Path.Combine(area, "package.hinst"); PackageBuilder.Build(json, source, output, new() { SigningKeyPath = keyPath }); return output;
@@ -63,6 +64,27 @@ using (var package = PackageReader.Open(Package("customer.custom", "1", publishe
     var options = Options("unknown"); Reject(() => engine.Plan(package, options), "unknown protected publishers still require their own independent pin despite SocketJack labels and update URLs"); NoEffects(options, "unknown publisher fallback causes no filesystem effects");
     options.TrustedPublisherKeySha256 = trusted; Check(engine.Plan(package, options).Manifest.Id == "customer.custom", "custom publishers retain explicit-key support without using SocketJack's key");
 }
+foreach (var moduleId in new[] { "socketjacksecurityloader", "sOcKeTjAcKsEcUrItYlOaDeR" })
+{
+    using (var package = PackageReader.Open(Package("heirowSnap", "2", publisher, trusted, moduleId: moduleId)))
+    {
+        var options = Options("cased-trusted-" + build); Check(engine.Plan(package, options).Manifest.Version == "2" && options.TrustedPublisherKeySha256 == trusted,
+            "protected module casing uses the same independent registered trust: " + moduleId); NoEffects(options, "cased trusted planning has no filesystem effects");
+    }
+    using (var package = PackageReader.Open(Package("heirowSnap", "2", attacker, forged, moduleId: moduleId)))
+    {
+        var options = Options("cased-forged-" + build); Reject(() => engine.Plan(package, options), "protected module casing cannot authorize a forged official publisher: " + moduleId);
+        Check(options.TrustedPublisherKeySha256 is null && !options.RequireSignature, "cased forged metadata cannot promote an effective pin"); NoEffects(options, "cased forged setup has no filesystem effects");
+    }
+    using (var package = PackageReader.Open(Package("customer.custom", "1", attacker, forged, moduleId: moduleId)))
+    {
+        var options = Options("cased-unknown-" + build); Reject(() => engine.Plan(package, options), "protected module casing cannot bypass the required independent custom publisher pin: " + moduleId);
+        NoEffects(options, "cased unknown publisher setup has no filesystem effects");
+    }
+}
+try { _ = Package("heirowSnap", "2", publisher, trusted, duplicateModule: true); throw new InvalidOperationException("Case-insensitive duplicate module IDs were accepted."); }
+catch (InvalidDataException exception) when (exception.Message.StartsWith("Duplicate installer module:", StringComparison.Ordinal))
+{ Check(true, "case-insensitive duplicate installer module IDs are rejected during package validation"); }
 Check(RegisteredPublisherTrust.Default.TryResolve("HEIROWSNAP", out var officialPin) && officialPin == "eab5ba01a94557088fd7b23d9569b2f289368964e9d4922a79970ecb13409e22", "embedded reviewed identity and public PEM agree on the real SocketJack anchor");
 Check(!RegisteredPublisherTrust.Default.TryResolve("customer.custom", out _), "embedded official identity does not claim arbitrary customer products");
 using (var package = PackageReader.Open(official))

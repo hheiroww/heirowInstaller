@@ -33,6 +33,7 @@ param(
 )
 $ErrorActionPreference='Stop'
 $scriptRoot=$PSScriptRoot
+. (Join-Path $scriptRoot 'Shared-NuGetValidation.ps1')
 function Plain([string]$Path){
     $full=[IO.Path]::GetFullPath($Path)
     for($node=$full;$node;$node=[IO.Path]::GetDirectoryName($node)){
@@ -198,11 +199,9 @@ foreach($libraryName in @($target.Keys|Sort-Object)){
     if($packageOrigin -notin @('https://api.nuget.org/v3/index.json','https://www.nuget.org/api/v2/')){continue}
     $nupkg=Join-Path $packageDirectory ($name.ToLowerInvariant()+'.'+$version.ToLowerInvariant()+'.nupkg')
     if(!(Test-Path -LiteralPath $nupkg)){continue}
-    if($library.sha512){
-        $nupkgInput=[IO.File]::OpenRead($nupkg)
-        try{$contentHash=[Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($nupkgInput))}finally{$nupkgInput.Dispose()}
-        if($library.sha512 -cne ('sha512-'+$contentHash) -and $library.sha512 -cne $contentHash){throw 'The public NuGet archive differs from the application dependency lock.'}
-    }
+    if(!$library.sha512){continue}
+    $nugetReader=Open-VerifiedPublicNuGetArchive $nupkg $name $version $library.sha512 $provenance
+    try{
     $assets=@{};$selected=$target[$libraryName]
     foreach($kind in @('runtime','native','resources','runtimeTargets')){
         if(!$selected.Contains($kind)){continue}
@@ -217,6 +216,7 @@ foreach($libraryName in @($target.Keys|Sort-Object)){
             if($kind -eq 'runtimeTargets' -and $details.rid -notin @($Runtime,'win','any')){continue}
             $original=Join-Path (Join-Path $PackageCache $packagePath) $asset
             if(!(Test-Path -LiteralPath $original -PathType Leaf)){continue}
+            Assert-VerifiedNuGetAsset $nugetReader $asset $original
             $leaf=[IO.Path]::GetFileName($asset)
             $applicationSource=if($entryDirectory){Join-Path $source $entryDirectory}else{$source}
             $candidates=@((Join-Path $applicationSource $asset),(Join-Path $applicationSource $leaf))
@@ -236,6 +236,7 @@ foreach($libraryName in @($target.Keys|Sort-Object)){
         }
     }
     Pack ('nuget.'+$name) $version $assets
+    }finally{$nugetReader.Dispose()}
 }
 if($ResourcePartitionsPath){
     foreach($partition in @(Get-Content -LiteralPath $ResourcePartitionsPath -Raw|ConvertFrom-Json -AsHashtable)){
@@ -325,6 +326,14 @@ $privilege=Invoke-SharedCli @('inspect-execution-level',(Join-Path $payload $hos
 $applicationAdmin=([bool]$manifest.applicationLaunch.requiresAdministrator -or [bool]$privilege.requiresAdministrator)
 $manifest.applicationLaunch=@{executablePath=$hostEntry;runtimeConfigPath=$runtimeConfig;runtimePackageId=$runtimeId;probingPackageIds=$probeIds;requiresAdministrator=$applicationAdmin}
 $localRoot=if($entryDirectory){Join-Path $payload $entryDirectory}else{$payload}
+$originalPayload=@{};foreach($file in @($manifest.payload|Where-Object{$_})){$originalPayload[$file.path]=$file}
+foreach($file in @(Files $localRoot)){
+    $relative=[IO.Path]::GetRelativePath($payload,$file).Replace('\','/')
+    if($originalPayload.ContainsKey($relative) -and $originalPayload[$relative].feature){
+        $feature=@($manifest.features|Where-Object id -IEQ $originalPayload[$relative].feature)
+        if($feature.Count -ne 1 -or !$feature[0].required){throw 'Feature-optional app-root files cannot be required by the signed application launcher. Move optional resources to explicit shared providers or make startup files required.'}
+    }
+}
 $descriptor=[ordered]@{formatVersion=1;productId=$manifest.id;name=$manifest.name;version=$manifest.version;scope=$manifest.scope;hostKind='application';publisherKeySha256=$pin;requiresAdministrator=$applicationAdmin;
     packages=@($manifest.sharedPackages|Where-Object{!$_.feature}|ForEach-Object{[ordered]@{id=$_.id;version=$_.version;targetRuntime=$Runtime;url=$_.downloadUrl;sha256=$_.sha256;size=$_.size}});
     hostEntryPoint=[IO.Path]::GetFileName($hostEntry);dotNetPackageId=$runtimeId;runtimeConfigPath=[IO.Path]::GetFileName($runtimeConfig);probingPackageIds=$probeIds;
@@ -332,7 +341,6 @@ $descriptor=[ordered]@{formatVersion=1;productId=$manifest.id;name=$manifest.nam
 $descriptorPath=Join-Path $work 'application-bootstrap.json';SaveJson $descriptor $descriptorPath
 Invoke-SharedCli @('bind-bootstrap',$descriptorPath,'--launcher',$GenericBootstrapPath,'--output',(Join-Path $payload $entry),'--sign-key',$SigningKey)|Out-Null
 if((Get-Item -LiteralPath (Join-Path $payload $entry)).Length -ge 20000000){throw 'The application launcher exceeds the 20 MB native-host budget.'}
-$originalPayload=@{};foreach($file in @($manifest.payload|Where-Object{$_})){$originalPayload[$file.path]=$file}
 $manifest.payload=@(Files $payload|ForEach-Object{$relative=[IO.Path]::GetRelativePath($payload,$_).Replace('\','/');$record=[ordered]@{source=$relative;path=$relative};
     if($originalPayload.ContainsKey($relative) -and $originalPayload[$relative].feature){$record.feature=$originalPayload[$relative].feature}
     foreach($rootDefinition in @($manifest.installationRoots)){if($relative.StartsWith($rootDefinition.id+'/',[StringComparison]::OrdinalIgnoreCase)){$record.targetRoot=$rootDefinition.id}}

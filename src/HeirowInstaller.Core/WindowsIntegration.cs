@@ -162,7 +162,7 @@ internal static class WindowsIntegration
             PackageSafety.ValidateId(prerequisite.Id);
             if (prerequisite.Detection is { } detection)
             {
-                if (PrerequisiteDetection.IsSatisfied(detection)) continue;
+                if (IsPrerequisiteDetected(detection, plan)) continue;
             }
             else if (prerequisite.DetectFile is { Length: > 0 } detect && File.Exists(InstallerEngine.Expand(detect, plan.InstallDirectory))) continue;
             if (options.Isolated) throw new InvalidOperationException("Isolated validation cannot run an external prerequisite installer.");
@@ -187,6 +187,10 @@ internal static class WindowsIntegration
         }
         return reboot;
     }
+
+    internal static bool IsPrerequisiteDetected(PrerequisiteDetectionDefinition detection, InstallPlan plan, IPrerequisiteRegistry? registry = null) =>
+        (registry is null ? PrerequisiteDetection.Detect(detection, includeCurrentUser: plan.Scope == "user")
+            : PrerequisiteDetection.Detect(detection, registry, includeCurrentUser: plan.Scope == "user")).Satisfied;
 
     public static async Task<int> RunMsiAsync(string operation, string packagePath, string? productCode, LegacyMsiDefinition definition,
         InstallPlan plan, InstallOptions options, CancellationToken token)

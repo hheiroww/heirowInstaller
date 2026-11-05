@@ -188,6 +188,11 @@ the same archive hash and installed store directory.
 Only explicitly allowed public NuGet packages, with public NuGet provenance and
 bytes matching the dependency lock/cache, move into genuine `.deps.json` probing
 layouts. Private overrides stay with the application.
+Authoring uses the selected .NET SDK's NuGet verifier to bind the package's
+signature-aware content hash to `.deps.json`, validate signed archive integrity,
+and compare expanded assets with their original ZIP entries. This follows the
+[NuGet metadata content-hash contract](https://github.com/NuGet/Home/wiki/Nupkg-Metadata-File);
+the raw signed ZIP digest can differ from that content hash.
 Native NuGet assets remain app-local until a reviewed native/renderer/plugin
 provider supports relocation; normal managed probing alone does not establish
 compatibility with absolute native load paths. Resource partitions must
