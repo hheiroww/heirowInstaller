@@ -124,5 +124,10 @@ if($taskEight.applicationLaunch.runtimePackageId -cne 'socketjack.dotnet.desktop
     !$taskEightWeb.requiresAdministrator -or $taskEightWeb.dotNetPackageId -cne 'socketjack.dotnet.desktop.10' -or $taskEightLaunch.requiresAdministrator -or $taskEightLaunch.packages.id -contains 'socketjack.dotnet.desktop.10'){
     throw 'App/runtime scope and signed setup-only admin requirements were confused with the updater runtime.'
 }
+$taskApp.id='fixture.elevated-application';$taskApp.requiresAdministrator=$false;$taskApp.applicationLaunch=@{requiresAdministrator=$true};Save $taskApp $taskManifest
+& (Join-Path $PSScriptRoot 'Build-SharedApplication.ps1') @taskCommon -RuntimePackagePath $taskRuntime8Package -MaintenanceRuntimePackagePath $taskRuntimeArchive -MaintenanceRuntimePackageUrl $taskRuntime10Url -OutputDirectory (Join-Path $taskRoot 'elevated-application')
+$taskElevatedWeb=Get-Content -LiteralPath (Join-Path $taskRoot 'elevated-application/web-installer/bootstrap-descriptor.json') -Raw|ConvertFrom-Json
+$taskElevatedLaunch=Get-Content -LiteralPath (Join-Path $taskRoot 'elevated-application/staging/application-bootstrap.json') -Raw|ConvertFrom-Json
+if(!$taskElevatedWeb.requiresAdministrator -or !$taskElevatedLaunch.requiresAdministrator){throw 'A signed administrator application must also request setup approval.'}
 Save @{ownedRoot=$taskRoot;purpose='Synthetic authoring acceptance, no payload execution';retain='All outputs until explicit cleanup approval';syntheticPrivateKey=(Join-Path $taskRoot 'fixture.private.pem');sourceInputs=@($CliPath,$GenericBootstrapPath,$AppHostPath)} (Join-Path $taskRoot 'storage-manifest.json')
 Write-Output ('PASS shared authoring: cross-product runtime reuse, complete offline updater/setup closure, exact sealed SecurityLoader policy preservation/block, NuGet relocation, protected aliases/private files; outputs '+$taskRoot)

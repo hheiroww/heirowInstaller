@@ -73,7 +73,7 @@ if($manifest.updateCompanion.sharedPackageId){
 $descriptor = [ordered]@{
     formatVersion=1;productId=$manifest.id;name=$manifest.name;version=$manifest.version;scope=$(if($manifest.scope){$manifest.scope}else{'user'});hostKind='installer'
     publisherKeySha256=$applicationInspection.publisherKeySha256
-    requiresAdministrator=([bool]$RequiresAdministrator -or [bool]$manifest.requiresAdministrator -or $manifest.scope -eq 'machine')
+    requiresAdministrator=([bool]$RequiresAdministrator -or [bool]$manifest.requiresAdministrator -or [bool]$manifest.applicationLaunch.requiresAdministrator -or $manifest.scope -eq 'machine')
     allowedDownloadOrigins=$AllowedDownloadOrigins
     packages=@($maintenanceBinding,$runtimeBinding)
     hostPackageId=$maintenanceInspection.manifest.id;hostEntryPoint='heirowInstaller.exe';hostArguments=@()
