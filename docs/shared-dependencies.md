@@ -158,6 +158,24 @@ It rejects bundled private .NET runtime files. The signed runtime archive stays
 separate. `Build-WebInstaller.ps1` receives the same runtime path/URL and binds
 both packages before opening the GUI with process-local `DOTNET_ROOT`.
 
+A native-only launcher patch can reuse those exact signed maintenance and runtime
+archives. Pass an explicit native `-Version` to `Build-Bootstrap.ps1`; this does
+not change the managed projects' version or rebuild them. `-CompilerDirectory`
+selects an existing absolute task-owned AOT cache while `-OutputDirectory` selects
+fresh launcher output. Existing generic and bound output files are preserved.
+When binding a descriptor, `-GenericLauncherPath` and `-CliPath` reuse verified
+launcher and CLI files without a source CLI/Core build. The CLI path must be an
+existing absolute executable or command script; failure never falls back to a
+source build. Record and verify these input files' hashes outside source control.
+
+Native PE version, descriptor version and each package version are independent
+bindings: a `2026.11.5.1` standalone entry can select maintenance `2026.11.4.1`
+and its unchanged private runtime. Preserve each archive's original signed
+identity, hash and download URL. Native-only releases use a dedicated tag such as
+`bootstrap-v2026.11.5.1`; the ordinary `v*` workflow builds the full installer.
+The source offer must distinguish the new native source revision/build version
+from the reused maintenance revision and include their matching public notices.
+
 For a .NET 10 app, the common recipe reuses its exact main runtime archive for
 maintenance. For an app on another runtime family, supply the separate
 `-MaintenanceRuntimePackagePath` and `-MaintenanceRuntimePackageUrl`; its own

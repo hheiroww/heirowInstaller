@@ -7,6 +7,9 @@ $administratorName = 'bootstrap-administrator-' + [Guid]::NewGuid().ToString('N'
 $administratorFixtures = if ($OutputDirectory) { Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) $administratorName }
     else { Join-Path ([IO.Path]::GetTempPath()) ('heirowinstaller-' + $administratorName) }
 & (Join-Path $PSScriptRoot 'Test-BootstrapAdministratorRequirement.ps1') -OutputDirectory $administratorFixtures
+$recipeName = 'bootstrap-release-recipe-' + [Guid]::NewGuid().ToString('N')
+$recipeFixtures = if ($OutputDirectory) { Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) $recipeName } else { Join-Path ([IO.Path]::GetTempPath()) $recipeName }
+& (Join-Path $PSScriptRoot 'Test-BootstrapReleaseRecipe.ps1') -OutputDirectory $recipeFixtures
 foreach ($project in @(
     'tests/HeirowInstaller.CrossPlatform.Tests/HeirowInstaller.CrossPlatform.Tests.csproj',
     'tests/HeirowInstaller.CodeSigning.Tests/HeirowInstaller.CodeSigning.Tests.csproj',
