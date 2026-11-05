@@ -5,6 +5,12 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HeirowInstaller.Core;
 
+if (args is ["--scope-default-proof", var scopeRoot])
+{
+    Console.WriteLine($"PASS: {await ScopeDefaultUpdateChecks.RunAsync(scopeRoot)} isolated scope-default update assertions.");
+    return;
+}
+
 if (args.FirstOrDefault() == "--crash")
 {
     var fixtureRoot = args[1]; var phase = args[3];
@@ -152,6 +158,7 @@ await using (var fixture = await Fixture.Create(Path.Combine(root, "selected-mac
     Check(fixture.Installed.Scope == "machine" && File.ReadAllText(Path.Combine(fixture.App, "main.bin")) == "new application bytes", "Metadata-only repair lost the selected all-users scope.");
 }
 
+checks += await ScopeDefaultUpdateChecks.RunAsync(Path.Combine(root, "machine-bridge-user-default"));
 await File.WriteAllTextAsync(Path.Combine(root, "receipt.json"), JsonSerializer.Serialize(new { status = "passed", assertions = checks, root }, InstallerJson.Options));
 Console.WriteLine($"PASS: {checks} file-selection assertions. Owned isolated outputs: {root}");
 
