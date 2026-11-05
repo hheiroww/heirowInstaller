@@ -40,7 +40,7 @@ changed staged dependency fails before application closure. No dependency HTTP
 request or saved credential is needed after the initiating session exits.
 
 Legacy readers that support format 4 need an explicit bridge release before a
-format-5 target. The bridge retains a physical signed native updater as ordinary
+format-5 target. The bridge retains a physical self-contained managed updater as ordinary
 payload and declares `updateCompanion.updateProtocol: "hfiles1"`. This additive
 network capability is permitted in format 4; shared packages, application-launch
 bindings and privilege declarations continue to require format 5. An older
@@ -57,4 +57,10 @@ exact locally available legacy Core commit into an owned directory and checks
 its real signature verification, isolated install of the native updater into the
 old shared slot, omitted profile field, rejection of a direct format-5 package,
 and the subsequent changed-file transition. It never runs the fixture application
-or requests administrator approval.
+or requests administrator approval. With `-ExecuteSelfContainedUpdater`, it also
+starts the actual old-installed updater with global runtime lookup disabled and
+runs its real file-update helper. A physical thin native updater by itself does
+not establish cold-machine bridge readiness: its maintenance host and private
+runtime must already exist before offline launch. The self-contained bridge
+avoids that dependency and stages the modern target's shared startup packages
+before the final thin updater becomes active.

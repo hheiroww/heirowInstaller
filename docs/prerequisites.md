@@ -18,7 +18,23 @@ The executable must still belong to the signed, hash-verified payload. Existing 
 
 `vc-runtime` uses the same structure with `minimumVersion` such as `14.0.0.0`. It reads only `HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64` in both explicit registry views. DWORD `Installed=1` is required, together with a stable v14 `Version` string (an initial `v` is accepted), or the documented `Major`, `Minor`, `Bld`, `Rbld` DWORD components. Newer v14 versions meet the minimum without attempting an older redist installation. Unknown kinds/architectures and malformed minimum versions are rejected. Missing, malformed or unreadable registry evidence never grants an installed result.
 
-The registry reader is internal, injectable for tests, and limited to two fixed locations. Manifests cannot supply registry keys, hives, shell expressions or arbitrary detection commands. Three- and four-component stable versions compare consistently. `PrerequisiteDetection.Detect` exposes only a read-only satisfaction/version result.
+The registry reader is internal, injectable for tests, and limited to fixed runtime registrations. Manifests cannot supply registry keys, hives, shell expressions or arbitrary detection commands. Three- and four-component stable versions compare consistently. `PrerequisiteDetection.Detect` exposes only a read-only satisfaction/version result.
+
+`webview2` detects the Evergreen WebView2 Runtime before setup downloads or runs
+its pinned prerequisite. Use `architecture: "x64"` and a stable numeric
+`minimumVersion`, such as `1.0.0.0`. A plain `pv` string in either the fixed
+32-bit machine registration or the original user's registration must be greater
+than `0.0.0.0` and meet the minimum. Newer major versions satisfy this Evergreen
+requirement. Zero, preview, malformed, non-string and unrelated registry evidence
+does not skip setup. The fixed key is
+`Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`.
+With credentialed elevation, user-hive lookup and value reads run under the
+authenticated original-user token through `InstallerUserContext`; the approving
+administrator's HKCU is not substituted. Detection never changes registry values
+or starts the WebView2 installer. Microsoft's
+[WebView2 deployment documentation](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)
+defines these registrations and the Evergreen Bootstrapper's `/silent /install`
+setup workflow.
 
 The registry conventions come from the [.NET installer registry source](https://github.com/dotnet/arcade/blob/main/src/Microsoft.DotNet.Build.Tasks.Installers/build/wix/product/registrykeys.wxs) and Microsoft's [VC++ redistributable documentation](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170). The required-major rule follows [.NET runtime selection](https://learn.microsoft.com/en-us/dotnet/core/versions/selection).
 

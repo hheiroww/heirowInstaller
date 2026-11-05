@@ -68,8 +68,34 @@ foreach (var invalid in new[] { Definition("shell"), Definition(architecture: "x
     Reject(() => PrerequisiteDetection.Validate(invalid), "Unknown detector, architecture or invalid numeric minimum fails closed");
 Check(registry.Calls.All(value => (value.Location is PrerequisiteRegistryLocation.DotNetDesktopX64 or PrerequisiteRegistryLocation.VisualCppX64) && (value.View is RegistryView.Registry32 or RegistryView.Registry64)), "Injected detection can query only fixed runtime locations and explicit supported views");
 
+var webview = Definition("webview2", "1.0.0.0"); var web = new FakeRegistry();
+Check(!PrerequisiteDetection.Detect(webview, web).Satisfied, "Missing fixed machine and original-user WebView2 registrations require setup provisioning");
+web.Set(PrerequisiteRegistryLocation.WebView2Machine, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, "134.0.3124.44")));
+Check(PrerequisiteDetection.Detect(webview, web) is { Satisfied: true, InstalledVersion: "134.0.3124.44" }, "Documented machine WebView2 pv string satisfies the prerequisite");
+web.Set(PrerequisiteRegistryLocation.WebView2CurrentUser, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, "150.0.1.2")));
+Check(PrerequisiteDetection.Detect(Definition("webview2", "140.0.0.0"), web).InstalledVersion == "150.0.1.2", "Original-user WebView2 can satisfy setup and newer major versions remain compatible");
+Check(!PrerequisiteDetection.Detect(Definition("webview2", "151.0.0.0"), web).Satisfied, "Installed WebView2 below explicit stable minimum remains missing");
+foreach (var version in new[] { "0.0.0.0", "", "134.0", "v134.0.1.2", "134.0.1.2-beta", " 134.0.1.2", "134.0.1.2 ", "999999999999.0.1.2" })
+{
+    var invalid = new FakeRegistry(); invalid.Set(PrerequisiteRegistryLocation.WebView2Machine, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, version)));
+    Check(!PrerequisiteDetection.Detect(webview, invalid).Satisfied, "Zero, preview and malformed WebView2 registration cannot skip setup");
+}
+foreach (var kind in new[] { RegistryValueKind.DWord, RegistryValueKind.QWord, RegistryValueKind.Unknown, RegistryValueKind.Binary })
+{
+    var invalid = new FakeRegistry(); invalid.Set(PrerequisiteRegistryLocation.WebView2CurrentUser, RegistryView.Registry32, Values(("pv", kind, "134.0.1.2")));
+    Check(!PrerequisiteDetection.Detect(webview, invalid).Satisfied, "WebView2 pv must be a plain version string rather than another registry type");
+}
+var wrongWebView = new FakeRegistry(); wrongWebView.Set(PrerequisiteRegistryLocation.WebView2Machine, RegistryView.Registry64, Values(("pv", RegistryValueKind.String, "999.0.1.2")));
+Check(!PrerequisiteDetection.Detect(webview, wrongWebView).Satisfied, "An unrelated registry view cannot invent installed WebView2 authority");
+var userFallback = new FakeRegistry { ErrorView = RegistryView.Registry32, ErrorLocation = PrerequisiteRegistryLocation.WebView2Machine, Error = new UnauthorizedAccessException() };
+userFallback.Set(PrerequisiteRegistryLocation.WebView2CurrentUser, RegistryView.Registry32, Values(("pv", RegistryValueKind.String, "134.0.1.2")));
+Check(PrerequisiteDetection.Detect(webview, userFallback).Satisfied, "A denied machine registration does not hide the original user's valid runtime");
+Check(web.Calls.All(call => call.View == RegistryView.Registry32 && call.Location is PrerequisiteRegistryLocation.WebView2Machine or PrerequisiteRegistryLocation.WebView2CurrentUser), "WebView2 detector queries only the two fixed documented locations in the explicit 32-bit view");
+
 // Safe integration controls never allow external prerequisite execution.
-var temporary = Path.Combine(Path.GetTempPath(), "heirow-prerequisite-fixture-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(temporary);
+var ownedOutput = Environment.GetEnvironmentVariable("HEIROWINSTALLER_TEST_OUTPUT_ROOT");
+var temporary = ownedOutput is null ? Path.Combine(Path.GetTempPath(), "heirow-prerequisite-fixture-" + Guid.NewGuid().ToString("N")) : Path.GetFullPath(ownedOutput);
+if (Directory.Exists(temporary)) throw new IOException("Use a fresh prerequisite test fixture root."); Directory.CreateDirectory(temporary);
 try
 {
     var existing = Path.Combine(temporary, "old-file-marker"); File.WriteAllText(existing, "inert fixture marker");
@@ -103,6 +129,11 @@ try
             Reject(() => PackageSafety.ValidateManifest(package.Manifest, true), "Older package formats cannot claim structured prerequisite semantics");
         }
     }
+    authoring.Prerequisites.Single().Detection = webview;
+    File.WriteAllText(json, JsonSerializer.Serialize(authoring, InstallerJson.Options));
+    var webviewPackage = Path.Combine(temporary, "webview.hinst"); PackageBuilder.Build(json, source, webviewPackage);
+    using (var package = PackageReader.Open(webviewPackage))
+        Check(package.Manifest.FormatVersion == 3 && package.Manifest.Prerequisites.Single().Detection?.Kind == "webview2", "Fixed WebView2 detection survives actual package validation and roundtrip");
     var old = new PrerequisiteDefinition { Id = "old.fixture", Name = "Old file prerequisite", DetectFile = "marker" };
     Check(!JsonSerializer.Serialize(old).Contains("Detection", StringComparison.Ordinal), "Omitted nullable detection preserves legacy prerequisite JSON");
     authoring.Prerequisites = [old]; File.WriteAllText(json, JsonSerializer.Serialize(authoring, InstallerJson.Options));
@@ -112,15 +143,18 @@ try
 }
 finally
 {
-    if (!Path.GetFullPath(temporary).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(temporary).StartsWith("heirow-prerequisite-fixture-", StringComparison.Ordinal)) throw new Exception("Unsafe fixture cleanup root.");
-    Directory.Delete(temporary, true);
+    if (ownedOutput is null)
+    {
+        if (!Path.GetFullPath(temporary).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(temporary).StartsWith("heirow-prerequisite-fixture-", StringComparison.Ordinal)) throw new Exception("Unsafe fixture cleanup root.");
+        Directory.Delete(temporary, true);
+    }
 }
 
-var localDotnet = PrerequisiteDetection.Detect(dotnet); var localVc = PrerequisiteDetection.Detect(vc);
+var localDotnet = PrerequisiteDetection.Detect(dotnet); var localVc = PrerequisiteDetection.Detect(vc); var localWebview = PrerequisiteDetection.Detect(webview);
 if (args.Length == 1)
 {
     var receipt = Path.GetFullPath(args[0]); Directory.CreateDirectory(Path.GetDirectoryName(receipt)!);
-    File.WriteAllText(receipt, JsonSerializer.Serialize(new { passed = true, assertions = checks, localReadOnlyProbe = new { dotnetDesktopX64 = localDotnet, vcRuntimeX64 = localVc }, registryWrites = 0, externalInstallerStarts = 0, productionOperations = 0 }, new JsonSerializerOptions { WriteIndented = true }));
+    File.WriteAllText(receipt, JsonSerializer.Serialize(new { passed = true, assertions = checks, localReadOnlyProbe = new { dotnetDesktopX64 = localDotnet, vcRuntimeX64 = localVc, webview2 = localWebview }, registryWrites = 0, externalInstallerStarts = 0, productionOperations = 0, retained = ownedOutput is not null }, new JsonSerializerOptions { WriteIndented = true }));
 }
 Console.WriteLine($"Passed {checks} prerequisite checks. Read-only local probe: Desktop10={localDotnet.Satisfied}, VC14={localVc.Satisfied}; no installer ran.");
 
@@ -129,10 +163,11 @@ sealed class FakeRegistry : IPrerequisiteRegistry
     readonly Dictionary<(PrerequisiteRegistryLocation, RegistryView), IReadOnlyDictionary<string, PrerequisiteRegistryValue>> values = [];
     public List<(PrerequisiteRegistryLocation Location, RegistryView View)> Calls { get; } = [];
     public RegistryView? ErrorView { get; init; }
+    public PrerequisiteRegistryLocation? ErrorLocation { get; init; }
     public Exception? Error { get; init; }
     public void Set(PrerequisiteRegistryLocation location, RegistryView view, IReadOnlyDictionary<string, PrerequisiteRegistryValue> content) => values[(location, view)] = content;
     public IReadOnlyDictionary<string, PrerequisiteRegistryValue>? Read(PrerequisiteRegistryLocation location, RegistryView view)
     {
-        Calls.Add((location, view)); if (view == ErrorView && Error is not null) throw Error; return values.GetValueOrDefault((location, view));
+        Calls.Add((location, view)); if (view == ErrorView && (ErrorLocation is null || location == ErrorLocation) && Error is not null) throw Error; return values.GetValueOrDefault((location, view));
     }
 }

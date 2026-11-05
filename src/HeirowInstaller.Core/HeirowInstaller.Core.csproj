@@ -7,4 +7,8 @@
     <Description>Modular packaging, transactional installation, Windows Installer compatibility, and verified updates for heirowInstaller.</Description>
   </PropertyGroup>
   <ItemGroup><Compile Include="../Shared/WebBootstrapBinding.cs" Link="WebBootstrapBinding.cs" /></ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../publishers/socketjack.com.json" LogicalName="HeirowInstaller.Publishers.socketjack.com.json" />
+    <EmbeddedResource Include="../../publishers/socketjack.com.public.pem" LogicalName="HeirowInstaller.Publishers.socketjack.com.public.pem" />
+  </ItemGroup>
 </Project>

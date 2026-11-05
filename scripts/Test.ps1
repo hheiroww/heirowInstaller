@@ -15,6 +15,7 @@ foreach ($project in @(
     'tests/HeirowInstaller.SecurityLoader.Integration/HeirowInstaller.SecurityLoader.Integration.csproj',
     'tests/HeirowInstaller.Prerequisites.Tests/HeirowInstaller.Prerequisites.Tests.csproj',
     'tests/HeirowInstaller.Privileges.Tests/HeirowInstaller.Privileges.Tests.csproj',
+    'tests/HeirowInstaller.Trust.Tests/HeirowInstaller.Trust.Tests.csproj',
     'tests/HeirowInstaller.SharedPackages.Tests/HeirowInstaller.SharedPackages.Tests.csproj',
     'tests/HeirowInstaller.NativeMigration.Tests/HeirowInstaller.NativeMigration.Tests.csproj',
     'tests/HeirowInstaller.LegacyCleanup.Tests/HeirowInstaller.LegacyCleanup.Tests.csproj',
@@ -27,6 +28,11 @@ foreach ($project in @(
         continue
     }
     $arguments = @('run','--project',(Join-Path $projectRoot $project),'-c',$Configuration)
+    if ($project -like '*Trust.Tests*') {
+        $trustFixtures = if ($OutputDirectory) { Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) 'registered-trust-fixtures' }
+            else { Join-Path ([IO.Path]::GetTempPath()) ('heirowinstaller-trust-' + [Guid]::NewGuid().ToString('N')) }
+        $arguments += @('--', $trustFixtures)
+    }
     if ($PackageCache) { $arguments += "-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
     if ($project -like '*GraphicsFallback.Tests*') {
         $testOutput = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $projectRoot 'artifacts/tests/graphics-fallback' }

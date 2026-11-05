@@ -9,9 +9,12 @@ public sealed partial class InstallerEngine
 {
     private readonly Dictionary<string, IInstallerModule> modules;
     private readonly INativeMigrationBackend nativeMigrationBackend;
+    private readonly RegisteredPublisherTrust registeredPublishers;
     public InstallerEngine(IEnumerable<IInstallerModule>? modules = null) : this(modules, new WindowsNativeMigrationBackend()) { }
-    internal InstallerEngine(IEnumerable<IInstallerModule>? modules, INativeMigrationBackend nativeMigrationBackend)
+    internal InstallerEngine(IEnumerable<IInstallerModule>? modules, INativeMigrationBackend nativeMigrationBackend) : this(modules, nativeMigrationBackend, RegisteredPublisherTrust.Default) { }
+    internal InstallerEngine(IEnumerable<IInstallerModule>? modules, INativeMigrationBackend nativeMigrationBackend, RegisteredPublisherTrust registeredPublishers)
     {
+        this.registeredPublishers = registeredPublishers ?? throw new ArgumentNullException(nameof(registeredPublishers));
         this.nativeMigrationBackend = nativeMigrationBackend;
         var configured = (modules ?? []).ToArray();
         this.modules = new(StringComparer.OrdinalIgnoreCase) { ["SocketJackSecurityLoader"] = new SecurityLoaderInstallerModule() };
@@ -74,9 +77,11 @@ public sealed partial class InstallerEngine
         if (manifest.Modules.TryGetValue("SocketJackSecurityLoader", out var protectedDelivery))
         {
             var trustedKey = options.TrustedPublisherKeySha256 ?? previous?.PublisherKeySha256;
+            var registered = trustedKey is null && registeredPublishers.TryResolve(manifest.Id, out trustedKey);
             if (trustedKey == null) throw new CryptographicException("Protected components require the registered publisher key pin from a trusted installation or --trust-key.");
             package.VerifySignature(trustedKey, requireSignature: true);
             SecurityLoaderInstallerModule.ValidatePublisherTrust(protectedDelivery, trustedKey);
+            if (registered) { options.TrustedPublisherKeySha256 = trustedKey; options.RequireSignature = true; }
         }
         if (previous?.PublisherKeySha256 is { } pinnedKey && !PackageSafety.HashEquals(pinnedKey, package.PublisherKeySha256 ?? ""))
             throw new CryptographicException("This update does not match the installed product's pinned publisher key.");

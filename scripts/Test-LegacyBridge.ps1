@@ -1,16 +1,17 @@
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$NativeUpdaterPath,
+    [Parameter(Mandatory)][Alias('NativeUpdaterPath')][string]$BridgeUpdaterPath,
     [Parameter(Mandatory)][string]$OutputDirectory,
-    [string]$LegacyCommit = 'f34d328ccfa9c402d964896e4fd3b39d93c7c1dc'
+    [string]$LegacyCommit = 'f34d328ccfa9c402d964896e4fd3b39d93c7c1dc',
+    [switch]$ExecuteSelfContainedUpdater
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'The exact native updater bridge acceptance requires Windows.' }
 $projectRoot = Split-Path $PSScriptRoot -Parent
-$NativeUpdaterPath = [IO.Path]::GetFullPath($NativeUpdaterPath)
+$NativeUpdaterPath = [IO.Path]::GetFullPath($BridgeUpdaterPath)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-if (-not (Test-Path -LiteralPath $NativeUpdaterPath -PathType Leaf)) { throw 'Supply the built native updater bootstrap.' }
+if (-not (Test-Path -LiteralPath $NativeUpdaterPath -PathType Leaf)) { throw 'Supply the built physical bridge updater.' }
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Use a fresh owned output directory; prior fixtures are retained.' }
 $resolvedCommit = (& git -C $projectRoot rev-parse --verify --end-of-options ($LegacyCommit + '^{commit}')).Trim()
 if ($LASTEXITCODE -ne 0 -or $resolvedCommit -notmatch '^[0-9a-f]{40}$') { throw 'The exact legacy commit is not available locally.' }
@@ -28,7 +29,9 @@ $legacyProject = Join-Path $source 'src/HeirowInstaller.Core/HeirowInstaller.Cor
 if ($LASTEXITCODE -ne 0) { throw 'The exact legacy Core did not compile.' }
 $legacyCore = Join-Path $source 'src/HeirowInstaller.Core/bin/Release/net10.0/HeirowInstaller.Core.dll'
 $fixture = Join-Path $OutputDirectory 'fixture'
-& dotnet run --project (Join-Path $projectRoot 'tests/HeirowInstaller.LegacyBridge.Tests') -c Release -- $legacyCore $NativeUpdaterPath $resolvedCommit $fixture
+$fixtureArguments = @($legacyCore, $NativeUpdaterPath, $resolvedCommit, $fixture)
+if ($ExecuteSelfContainedUpdater) { $fixtureArguments += '--execute-self-contained' }
+& dotnet run --project (Join-Path $projectRoot 'tests/HeirowInstaller.LegacyBridge.Tests') -c Release -- @fixtureArguments
 if ($LASTEXITCODE -ne 0) { throw 'The exact legacy installer bridge failed acceptance.' }
 [ordered]@{ purpose='Exact legacy-reader bridge acceptance'; legacyCommit=$resolvedCommit; root=$OutputDirectory; retained=$true;
     cleanup='Review exact source/build/fixture outputs after retaining acceptance receipts; no deletion was performed.' } |
