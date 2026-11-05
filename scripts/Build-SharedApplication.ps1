@@ -232,6 +232,9 @@ foreach($libraryName in @($target.Keys|Sort-Object)){
     }
     if($assets.Count){
         foreach($notice in @(Get-ChildItem -LiteralPath $packageDirectory -File|Where-Object{$_.Name -match '(?i)^(license|notice|third.party)' -or $_.Name -match '(?i)\.nuspec$'})){
+            $noticeEntries=@($nugetReader.GetFiles()|Where-Object{[string]::Equals($_,$notice.Name,[StringComparison]::OrdinalIgnoreCase)})
+            if($noticeEntries.Count -ne 1){throw 'A public package notice lacks a unique verified archive entry.'}
+            Assert-VerifiedNuGetAsset $nugetReader $noticeEntries[0] $notice.FullName
             $assets['ThirdParty/'+$name+'/'+$notice.Name]=$notice.FullName
         }
     }
