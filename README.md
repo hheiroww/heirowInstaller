@@ -27,13 +27,13 @@ The public repository contains the installer tooling and public publisher identi
 
 ## Build and package
 
-The .NET 10 SDK builds the tooling on Windows, Linux, and macOS. Windows uses Project-Z's Windows runtime; Linux and macOS use its DesktopGL packages. Self-contained setups include their .NET runtime. See [cross-platform builds, package manifests, archives, and platform boundaries](docs/cross-platform.md).
+The .NET 10 SDK builds the tooling on Windows, Linux, and macOS. Windows uses Project-Z's Windows runtime; Linux and macOS use its DesktopGL packages. Windows thin setup uses a signed native bootstrap below 20 MB and downloads pinned shared runtimes during setup. Application packages have a separate 100 MB compressed budget. Compatible apps reuse the same immutable dependency archives. See [shared dependency authoring](docs/shared-dependencies.md) and [web installer attachment](docs/web-installer-publishing.md). Legacy self-contained packages remain supported; see [cross-platform builds and platform boundaries](docs/cross-platform.md).
 
 The installer and updater share the `ProjectZPackageVersion` pin and use the smaller base runtime. Native crash capture, model importing, browser hosting and XAML compiler tools are [optional Project-Z packages](https://github.com/hheiroww/Project-Z/blob/master/docs/MODULAR-PACKAGES.md). Release builds check the runtime dependency graph and enforce a 90 MiB budget for each published UI executable.
 
 A compiled application setup opens that application's wizard, with feature selection, verified installation progress, and a final **Open application** choice. Its elevated worker has no second interface. The unbundled desktop tool provides the package-authoring workspace. See [the setup wizard](docs/app-setup-wizard.md).
 
-On Windows, setup tries Project-Z DirectX 12, a bundled DirectX 11 renderer, then a CPU-rendered compatibility wizard if both graphics backends cannot start. Each path uses the same package verification, installation, repair, and consent checks. `--software-rendering` selects CPU rendering directly. See [graphics fallback](docs/graphics-fallback.md).
+On Windows, setup tries Project-Z DirectX 12, an embedded DirectX 11 renderer when supplied, then a CPU-rendered compatibility wizard. The shared maintenance package uses the CPU compatibility path when its graphics backend cannot start. Each path uses the same package verification, installation, repair, and consent checks. `--software-rendering` selects CPU rendering directly. See [graphics fallback](docs/graphics-fallback.md).
 
 When an app uses files being installed, repaired, or removed, the native interface offers **Close apps and continue** or **Cancel installation**. Closing uses the application's normal window request, allowing it to ask about unsaved work. Apps that remain open return to a responsive retry/cancel prompt. [Running-app integration](docs/running-applications.md) includes signed plugin resources and the noninteractive command-line contract.
 
@@ -70,6 +70,8 @@ For a signed release, add `--sign-key C:\Keys\publisher.private.pem` to `pack`. 
 Windows **Verified publisher** uses a separate Authenticode signature. The desktop builder supports Windows certificates (including certificate import) and Microsoft Artifact Signing. The CLI exposes the same providers through `build --windows-signing` and `sign`; `scripts/Build.ps1` can also sign a complete toolkit release. Signing requires a trusted certificate or an existing paid Microsoft signing account. See [Windows code signing](docs/windows-code-signing.md) for setup, prices, free Store distribution and the distinction from SmartScreen reputation.
 
 ## Application updates
+
+New file-update clients compare the actual installed files with the signed remote manifest, download a ZIP containing only missing or changed files, and verify all selected dependencies before asking to close the app. Applying the prepared update uses transactional replacement and recovery. Existing format-4 installations can use a signed compatibility bridge before adopting shared dependencies. See [selected-file updates and legacy compatibility](docs/file-selection-updates.md).
 
 Selecting an application's optional updates feature generates a small `heirowUpdater.json` at its root and provisions one immutable updater runtime in a shared directory for its installation scope. Applications using the same runtime reuse its bytes. The companion opens with the app and waits until all its instances exit before checking. A newer release opens a native Project-Z prompt offering **Update now** or **Postpone 24 hours**. Manual checks show progress and a visible result. Choosing **Update now** asks before closing a running app or plugin host and allows cancellation before replacing files. Leaving the feature off creates no application profile or runtime reference.
 
