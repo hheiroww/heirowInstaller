@@ -54,10 +54,10 @@ internal static class Program
                 start.CreateNoWindow = true;
                 if (descriptor.HostKind is "updater" or "installer")
                 {
-                    using var parent = Process.GetCurrentProcess();
+                    var parent = NativeProcessIdentity.Current();
                     start.Environment["SOCKETJACK_BOOTSTRAP_PID"] = parent.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    start.Environment["SOCKETJACK_BOOTSTRAP_START"] = parent.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    start.Environment["SOCKETJACK_BOOTSTRAP_LAUNCHER"] = Environment.ProcessPath!;
+                    start.Environment["SOCKETJACK_BOOTSTRAP_START"] = parent.StartTicks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    start.Environment["SOCKETJACK_BOOTSTRAP_LAUNCHER"] = parent.Image;
                 }
                 engine.AppendStartupArguments(start, args);
                 window.Report(new(descriptor.HostKind == "application" ? "Opening application" : "Opening setup", "Shared files are ready."));

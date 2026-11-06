@@ -127,8 +127,10 @@ public static class BootstrapWorkerPromotion
     private static void RequireProcess(Process process, long ticks, string image)
     {
         var identity = ReadIdentity(process.Id);
-        if (identity.StartTicks != ticks || !Path.GetFullPath(identity.Image).Equals(Path.GetFullPath(image), InstallerPlatform.PathComparison))
-            throw new CryptographicException("The native coordinator process identity changed.");
+        if (identity.StartTicks != ticks)
+            throw new CryptographicException("The native coordinator start-time identity changed.");
+        if (!Path.GetFullPath(identity.Image).Equals(Path.GetFullPath(image), InstallerPlatform.PathComparison))
+            throw new CryptographicException("The native coordinator executable identity changed.");
         PackageSafety.EnsureNoReparsePoints(identity.Image);
     }
     internal sealed record KernelIdentity(int Id, long StartTicks, string Image, int ParentId);

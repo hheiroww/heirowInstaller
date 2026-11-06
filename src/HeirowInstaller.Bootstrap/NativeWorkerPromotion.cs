@@ -48,10 +48,10 @@ internal static class NativeWorkerPromotion
             if (pinnedDotnet is not null)
             { start.Environment["DOTNET_ROOT"] = pinnedDotnet; start.Environment["DOTNET_ROOT_X64"] = pinnedDotnet; start.Environment["DOTNET_ROOT_ARM64"] = pinnedDotnet; }
             start.Environment["DOTNET_MULTILEVEL_LOOKUP"] = "0"; start.Environment["DOTNET_EnableDiagnostics"] = "0";
-            using var promoter = Process.GetCurrentProcess();
-            start.Environment["SOCKETJACK_BOOTSTRAP_LAUNCHER"] = Environment.ProcessPath!;
+            var promoter = NativeProcessIdentity.Current();
+            start.Environment["SOCKETJACK_BOOTSTRAP_LAUNCHER"] = promoter.Image;
             start.Environment["SOCKETJACK_BOOTSTRAP_PROMOTER_PID"] = promoter.Id.ToString(CultureInfo.InvariantCulture);
-            start.Environment["SOCKETJACK_BOOTSTRAP_PROMOTER_START"] = promoter.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);
+            start.Environment["SOCKETJACK_BOOTSTRAP_PROMOTER_START"] = promoter.StartTicks.ToString(CultureInfo.InvariantCulture);
             start.ArgumentList.Clear();
             foreach (var argument in new[] { "--install-worker", args[1], args[2], args[3], args[4] }) start.ArgumentList.Add(argument);
             start.CreateNoWindow = true;

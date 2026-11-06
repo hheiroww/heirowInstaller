@@ -13,6 +13,22 @@ var pin = Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo()))
 var checks = 0;
 if (OperatingSystem.IsWindows())
 {
+    var self = NativeProcessIdentity.Current();
+    using var process = System.Diagnostics.Process.GetCurrentProcess();
+    Check(self.Id == Environment.ProcessId && self.StartTicks == process.StartTime.ToUniversalTime().Ticks,
+        "native coordinator exports the exact kernel process creation identity");
+    var verify = typeof(HeirowInstaller.Core.BootstrapWorkerPromotion).GetMethod("RequireProcess",
+        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+    verify.Invoke(null, [process, self.StartTicks, self.Image]);
+    Check(true, "actual managed worker accepts the kernel identity exported by the native coordinator under packaged AppData redirection");
+    Check(SHA256.HashData(File.ReadAllBytes(self.Image)).SequenceEqual(SHA256.HashData(File.ReadAllBytes(Environment.ProcessPath!))),
+        "kernel and managed executable aliases identify the same exact image bytes");
+    foreach (var invalid in new[] { (self.StartTicks + 1, self.Image), (self.StartTicks, self.Image + ".other") })
+    {
+        try { verify.Invoke(null, [process, invalid.Item1, invalid.Item2]); throw new InvalidOperationException("Changed coordinator identity accepted."); }
+        catch (System.Reflection.TargetInvocationException error) when (error.InnerException is CryptographicException)
+        { Check(true, "changed coordinator creation time or executable identity remains rejected"); }
+    }
     var security = new System.Security.AccessControl.DirectorySecurity();
     security.SetSecurityDescriptorSddlForm("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
     BootstrapMachineStore.GrantParentReadAccess(security);
