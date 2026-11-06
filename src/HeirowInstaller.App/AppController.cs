@@ -785,7 +785,8 @@ internal sealed partial class AppController : IDisposable
             "install" => "Installing application files",
             "uninstall" => "Removing application files",
             "complete" => MaintenanceOperation == "uninstall" ? "Uninstall complete" : MaintenanceOperation == "repair" ? "Repair complete" : "Installation complete",
-            _ => "Installing " + Manifest!.Name
+            "download" => "Downloading application files",
+            _ => Manifest is { } manifest ? "Installing " + manifest.Name : "Preparing application setup"
         } : value.Phase switch { "check" or "check-complete" => "Checking for updates", "sign-in-required" => "Sign in to SocketJack", _ => value.Phase };
         StatusDetail = IsWizard ? value.Phase.ToLowerInvariant() switch
         {

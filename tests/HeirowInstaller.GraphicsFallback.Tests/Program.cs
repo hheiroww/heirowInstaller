@@ -33,6 +33,7 @@ internal static partial class Program
             WindowsFormsSynchronizationContext.AutoInstall = false;
             SynchronizationContext.SetSynchronizationContext(null);
             Policy();
+            RemoteDownloadProgress();
             using (var key = RSA.Create(2048))
             {
                 signingKey = Path.Combine(root, "synthetic-fixture-key.pem"); File.WriteAllText(signingKey, key.ExportPkcs8PrivateKeyPem());
@@ -55,6 +56,29 @@ internal static partial class Program
             return 1;
         }
         finally { WindowsFormsSynchronizationContext.AutoInstall = oldAutoInstall; Environment.SetEnvironmentVariable("TEMP", oldTemp); Environment.SetEnvironmentVariable("TMP", oldTmp); }
+    }
+
+    static void RemoteDownloadProgress()
+    {
+        var host = new QueuedProgressHost();
+        using var controller = new AppController(host, AppArguments.Parse([]) with { RemotePackageUrl = "https://example.invalid/app.hinst" });
+        var reporter = controller.Reporter();
+        reporter.Report(new("download", "Downloading verified package", 1, 10));
+        host.Flush();
+        Check(controller.Manifest is null && controller.Status == "Downloading application files", "remote download progress renders before the manifest exists");
+        reporter.Report(new("prepare", "Preparing verified package", 2, 10));
+        host.Flush();
+        Check(controller.Status == "Preparing application setup", "unknown pre-manifest progress does not dereference an absent manifest");
+    }
+
+    sealed class QueuedProgressHost : IInstallerDesktopHost
+    {
+        readonly Queue<Action> actions = new();
+        public string Title { set { } }
+        public void Exit() { }
+        public void Enqueue(Action action) => actions.Enqueue(action);
+        public Task OnUiAsync(Action action) { action(); return Task.CompletedTask; }
+        public void Flush() { while (actions.TryDequeue(out var action)) action(); }
     }
 
     static void Policy()
