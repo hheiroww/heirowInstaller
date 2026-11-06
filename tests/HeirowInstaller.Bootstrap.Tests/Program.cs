@@ -11,6 +11,22 @@ Directory.CreateDirectory(root);
 using var key = RSA.Create(2048);
 var pin = Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
 var checks = 0;
+if (OperatingSystem.IsWindows())
+{
+    var security = new System.Security.AccessControl.DirectorySecurity();
+    security.SetSecurityDescriptorSddlForm("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+    BootstrapMachineStore.GrantParentReadAccess(security);
+    BootstrapMachineStore.GrantParentReadAccess(security);
+    var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+        .Cast<System.Security.AccessControl.FileSystemAccessRule>().Where(rule => rule.IdentityReference.Value == "S-1-5-32-545").ToArray();
+    Check(rules.Length == 1, "repairing an administrator-only shared parent is idempotent");
+    Check(rules[0].InheritanceFlags == System.Security.AccessControl.InheritanceFlags.None, "parent read access does not propagate to private scanner or backup directories");
+    Check((rules[0].FileSystemRights & System.Security.AccessControl.FileSystemRights.ReadAndExecute) == System.Security.AccessControl.FileSystemRights.ReadAndExecute,
+        "standard users can inspect and traverse the shared SocketJack parent");
+    Check((rules[0].FileSystemRights & (System.Security.AccessControl.FileSystemRights.Write | System.Security.AccessControl.FileSystemRights.Delete |
+        System.Security.AccessControl.FileSystemRights.ChangePermissions | System.Security.AccessControl.FileSystemRights.TakeOwnership)) == 0,
+        "repairing parent visibility never grants standard users mutation rights");
+}
 void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); checks++; Console.WriteLine("PASS " + message); }
 async Task Reject(Func<Task> action, string message)
 {

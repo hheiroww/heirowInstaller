@@ -293,7 +293,22 @@ internal static partial class ElevatedInstallWorker
                 try { await commands; } catch (OperationCanceledException) { }
             }
         }
-        catch { return 1; } // A worker must never open an exception dialog or a second native window.
+        catch (Exception error)
+        {
+            // Record pre-connection failures in the already protected state tree;
+            // never accept a diagnostic path from the unprivileged caller.
+            try
+            {
+                var root = InstallerEngine.DefaultStateRoot("machine");
+                MachineStateSecurity.ValidateExistingRoot(root);
+                var directory = Path.Combine(root, ".worker-errors");
+                PackageSafety.EnsureNoReparsePoints(directory);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, Guid.NewGuid().ToString("N") + ".log"), error.ToString());
+            }
+            catch { }
+            return 1; // Workers never open an exception dialog or a second native window.
+        }
     }
 
     private static async Task ReadCommandsAsync(WorkerChannel channel,

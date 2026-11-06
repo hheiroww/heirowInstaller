@@ -95,6 +95,15 @@ public static class MachineStateSecurity
                 else ValidateNamespace(node, descriptor);
             }
             if (create) EnsureTrustedMutationToken();
+            var sharedParent = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "SocketJack");
+            if (create && path.Equals(sharedParent, StringComparison.OrdinalIgnoreCase))
+            {
+                var info = new DirectoryInfo(path);
+                var security = info.GetAccessControl();
+                security.AddAccessRule(new(Users, FileSystemRights.ReadAndExecute,
+                    InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
+                info.SetAccessControl(security);
+            }
             if (validateContents) ValidateContents(path);
             return lease;
         }

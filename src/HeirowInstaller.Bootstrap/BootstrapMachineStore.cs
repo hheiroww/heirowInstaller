@@ -31,8 +31,22 @@ internal static class BootstrapMachineStore
                 new DirectoryInfo(directory).Create(security);
             }
             Validate(directory, directory: true, protectedDacl: true);
+            // An older deployment may have created the shared SocketJack parent
+            // with an administrator-only ACL. Normal launchers must be able to
+            // inspect this namespace, but private children keep their own ACLs.
+            if (directory.Equals(Path.GetDirectoryName(root), StringComparison.OrdinalIgnoreCase))
+            {
+                var info = new DirectoryInfo(directory);
+                var security = info.GetAccessControl();
+                GrantParentReadAccess(security);
+                info.SetAccessControl(security);
+                Validate(directory, directory: true, protectedDacl: true);
+            }
         }
     }
+    internal static void GrantParentReadAccess(DirectorySecurity security) =>
+        security.AddAccessRule(new(Users, FileSystemRights.ReadAndExecute,
+            InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
     internal static void ValidateTree(string root, bool requireProtectedDacl = true)
     {
         Validate(root, true, requireProtectedDacl);
