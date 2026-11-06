@@ -116,5 +116,11 @@ using (var original = InstallerUserContext.OpenForProcess(self.Id, ticks))
     Check(InstallerUserContext.Current == null, "ambient original-user context is restored after disposal");
 }
 await UpdaterOwnerHandshakeChecks.RunAsync(root, Check);
+var longMetadataDirectory = Path.Combine(root, new string('a', 90), new string('b', 90), new string('c', 90));
+Directory.CreateDirectory(longMetadataDirectory);
+var longMetadataFile = Path.Combine(longMetadataDirectory, "fixture.txt");
+File.WriteAllText(longMetadataFile, "owned metadata-only regression fixture");
+Check(longMetadataFile.Length > 260, "metadata regression covers a real path beyond MAX_PATH");
+Check(!MachineStateSecurity.IsStateObjectProtected(longMetadataFile), "long-path metadata opens successfully while preserving rejection of user-owned state");
 await File.WriteAllTextAsync(Path.Combine(root, "receipt.json"), JsonSerializer.Serialize(new { passed = true, assertions, actualSameAccount = true, credentialedElevationTested = false, privilegedWrites = false, executedHandshakeChildren = true, retained = true }, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine($"Passed {assertions} privilege, actual-token and real pipe-child checks. No privileged write was performed. Retained outputs: {root}");

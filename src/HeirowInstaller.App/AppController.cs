@@ -790,13 +790,14 @@ internal sealed partial class AppController : IDisposable
         } : value.Phase switch { "check" or "check-complete" => "Checking for updates", "sign-in-required" => "Sign in to SocketJack", _ => value.Phase };
         StatusDetail = IsWizard ? value.Phase.ToLowerInvariant() switch
         {
+            "download" => value.Message,
             "verify" => "Checking your application's installation files.",
             "extract" => "Preparing the selected application files.",
             "install" => "Installing the selected application components.",
             "uninstall" => "Removing the application and its recorded changes.",
             "applications" => "The apps using this installation have closed. Setup is continuing.",
             "complete" => MaintenanceOperation == "uninstall" ? "The application has been removed." : "Your application is ready to use.",
-            _ => "Applying this application's installation changes."
+            _ => Manifest is null ? value.Message : "Applying this application's installation changes."
         } : value.Total > 0 && value.Phase is "check" or "check-complete" ? $"{value.Completed}/{value.Total} applications checked · {value.Message}" : value.Message;
         foreach (var item in values) AddActivity(item.Phase, item.Message);
         ProgressChanged?.Invoke();

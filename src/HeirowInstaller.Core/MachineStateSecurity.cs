@@ -175,7 +175,13 @@ public static class MachineStateSecurity
 
     private static SafeFileHandle OpenMetadata(string path, FileShare share)
     {
-        var handle = CreateFile(path, 0x00020080, share, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        // Managed enumeration supports long paths even when the native apphost
+        // has no longPathAware manifest. Keep the subsequent Win32 ACL check
+        // on that same exact path instead of silently applying MAX_PATH.
+        var full = Path.GetFullPath(path);
+        var native = full.StartsWith(@"\\?\", StringComparison.Ordinal) ? full
+            : full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+        var handle = CreateFile(native, 0x00020080, share, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
         if (handle.IsInvalid) { var error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new Win32Exception(error, "Could not guard machine installer state metadata."); }
         return handle;
     }

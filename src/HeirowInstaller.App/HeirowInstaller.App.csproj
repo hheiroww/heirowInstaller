@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>heirowInstaller</AssemblyName>
+    <ApplicationManifest Condition="'$(InstallerDesktopPlatform)' == 'Windows'">../Shared/DesktopApplication.manifest</ApplicationManifest>
     <RootNamespace>HeirowInstaller.App</RootNamespace>
     <ApplicationIcon Condition="Exists('../../assets/heirowInstaller.ico')">../../assets/heirowInstaller.ico</ApplicationIcon>
     <DefineConstants Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">$(DefineConstants);INSTALLER_DIRECTX11</DefineConstants>

@@ -1,4 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup Condition="'$(InstallerDesktopPlatform)' == 'Windows'">
+    <ApplicationManifest>../Shared/DesktopApplication.manifest</ApplicationManifest>
+  </PropertyGroup>
   <PropertyGroup>
     <TargetFramework>$(InstallerDesktopFramework)</TargetFramework><OutputType>WinExe</OutputType><AssemblyName>heirowUpdater</AssemblyName>
     <UseWindowsForms Condition="'$(InstallerDesktopPlatform)' == 'Windows'">true</UseWindowsForms><UseWPF Condition="'$(InstallerDesktopPlatform)' == 'Windows'">true</UseWPF><PlatformTarget>AnyCPU</PlatformTarget>
