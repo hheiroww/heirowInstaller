@@ -8,6 +8,12 @@ bound to that exact application version, URL, digest and size. The application
 package must be smaller than 100,000,000 bytes. Public toolkit dependencies are
 pinned independently; private application files remain on their protected feed.
 
+Remote setup keeps its application download in a per-user directory keyed by
+the signed SHA-256. Reopening the same setup checks the complete size and hash
+and reuses matching bytes. Missing or changed files are downloaded again, and
+the package signature and installation identity are checked before use. Shared
+runtime archives retain their existing immutable cache.
+
 Attach the finished web installer with a native administrator publisher session:
 
 ```powershell

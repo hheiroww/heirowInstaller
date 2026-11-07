@@ -92,6 +92,34 @@ public sealed class UpdateClient : IDisposable
         return await selected.PrepareAsync(feed, installed, destinationDirectory, options, progress, cancellationToken);
     }
 
+    /// <summary>Reuses a complete, hash-verified application download for a bound remote setup.</summary>
+    public async Task<string> DownloadCachedApplicationAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        ValidateFeed(feed);
+        RequireIncremental(feed);
+        _ = ValidateUrl(feed.InstallerUrl);
+        if (feed.PackageType != "hinst" || feed.Size <= 0) throw new InvalidDataException("Cached setup requires an exact application package size and digest.");
+        destinationDirectory = Path.GetFullPath(destinationDirectory);
+        PackageSafety.EnsureNoReparsePoints(destinationDirectory);
+        var cached = PackageSafety.UnderRoot(destinationDirectory, feed.ProductId + "-" + feed.Version.Replace('+', '_') + ".hinst");
+        PackageSafety.EnsureNoReparsePoints(cached);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (File.Exists(cached))
+        {
+            using var file = new FileStream(cached, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if (file.Length == feed.Size)
+            {
+                var hash = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken));
+                if (PackageSafety.HashEquals(hash, feed.Sha256))
+                {
+                    progress?.Report(new("cache", "Reusing verified application files", 1, 1));
+                    return cached;
+                }
+            }
+        }
+        return await DownloadAsync(feed, destinationDirectory, progress, cancellationToken);
+    }
+
     public async Task<string> DownloadAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         ValidateFeed(feed);

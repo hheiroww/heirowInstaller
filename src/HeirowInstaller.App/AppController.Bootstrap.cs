@@ -22,11 +22,11 @@ internal sealed partial class AppController
             };
             var parent = arguments.Isolated ? Path.Combine(arguments.StateRoot!, ".bootstrap-downloads")
                 : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "downloads");
-            var directory = Path.Combine(parent, Guid.NewGuid().ToString("N"));
+            var directory = Path.Combine(parent, feed.Sha256.ToLowerInvariant());
             async Task<string> Download()
             {
                 using var client = CreateUpdateClient();
-                return await client.DownloadAsync(feed, directory, Reporter(), token);
+                return await client.DownloadCachedApplicationAsync(feed, directory, Reporter(), token);
             }
             string path;
             try { path = await Download(); }

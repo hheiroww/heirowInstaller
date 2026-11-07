@@ -32,6 +32,7 @@ internal sealed partial class AcceptanceSuite
         Directory.CreateDirectory(root);
         var cases = new (string Name, Func<Task> Test)[]
         {
+            ("remote setup reuses exact cached application bytes and downloads altered or missing files", CachedRemoteSetup),
             ("install, selected features, upgrade, repair, downgrade guard, uninstall and original-file preservation", Lifecycle),
             ("rollback restores previous payload and receipt after an interrupted upgrade", Rollback),
             ("cancellation rolls back partially installed files", Cancellation),
