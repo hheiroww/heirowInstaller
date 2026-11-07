@@ -13,6 +13,7 @@ internal static class Program
         AppArguments? options = null;
         try
         {
+            args = NormalizeMaintenanceArguments(args);
             var maintenance = args.Length >= 2 && args[0] is "uninstall" or "repair";
             options = maintenance ? AppArguments.Parse(args.Skip(2).ToArray(), maintenanceInvocation: true) with { MaintenanceProductId = args[1], MaintenanceOperation = args[0] } : AppArguments.Parse(args);
             using var graphicsContext = DirectX11Fallback.EnterChildContext(options);
@@ -93,6 +94,33 @@ internal static class Program
                 DesktopPlatform.ShowError($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}");
             return 1;
         }
+    }
+
+    internal static string[] NormalizeMaintenanceArguments(string[] args)
+    {
+        var retained = new List<string>();
+        string? product = null;
+        var index = 0;
+        while (index < args.Length)
+        {
+            var option = args[index];
+            if (option is "repair" or "uninstall")
+            {
+                if (index + 1 >= args.Length) return args;
+                if (product is not null && product != args[index + 1])
+                    throw new InvalidDataException("This setup cannot maintain another application.");
+                return args[index..(index + 2)].Concat(retained).Concat(args[(index + 2)..]).ToArray();
+            }
+            if (option is "--require-signature" or "--request-admin-on-open")
+            { retained.Add(option); index++; continue; }
+            if (option is not ("--scope" or "--trust-key" or "--remote-package" or "--remote-package-size" or
+                "--expected-product-id" or "--expected-version" or "--expected-sha256") || index + 1 >= args.Length) return args;
+            var value = args[index + 1];
+            if (option == "--expected-product-id") product = value;
+            if (option is "--scope" or "--trust-key") { retained.Add(option); retained.Add(value); }
+            index += 2;
+        }
+        return args;
     }
 
     private static void RunSoftwareDesktop(AppArguments options)

@@ -34,6 +34,7 @@ internal static partial class Program
             SynchronizationContext.SetSynchronizationContext(null);
             Policy();
             RemoteDownloadProgress();
+            NativeMaintenanceArguments();
             using (var key = RSA.Create(2048))
             {
                 signingKey = Path.Combine(root, "synthetic-fixture-key.pem"); File.WriteAllText(signingKey, key.ExportPkcs8PrivateKeyPem());
@@ -56,6 +57,22 @@ internal static partial class Program
             return 1;
         }
         finally { WindowsFormsSynchronizationContext.AutoInstall = oldAutoInstall; Environment.SetEnvironmentVariable("TEMP", oldTemp); Environment.SetEnvironmentVariable("TMP", oldTmp); }
+    }
+
+    static void NativeMaintenanceArguments()
+    {
+        var normalize = typeof(AppController).Assembly.GetType("HeirowInstaller.App.Program")!
+            .GetMethod("NormalizeMaintenanceArguments", BindingFlags.Static | BindingFlags.NonPublic)!;
+        string[] Run(string[] values) => (string[])normalize.Invoke(null, [values])!;
+        var generic = Run(["--scope", "user", "repair", "fixture", "--silent"]);
+        Check(generic.SequenceEqual(new[] { "repair", "fixture", "--scope", "user", "--silent" }), "native bootstrap defaults preserve the leading maintenance command");
+        var bound = Run(["--remote-package", "https://example.invalid/app.hinst", "--remote-package-size", "100", "--require-signature", "--trust-key", new string('a',64),
+            "--expected-product-id", "fixture", "--expected-version", "1", "--expected-sha256", new string('b',64), "--scope", "machine", "uninstall", "fixture", "--silent"]);
+        Check(bound[0] == "uninstall" && bound[1] == "fixture" && !bound.Contains("--remote-package") && !bound.Contains("--expected-version") && bound.Contains("--trust-key"), "product-bound maintenance uses its installed receipt while retaining the publisher constraint");
+        try { Run(["--expected-product-id", "other", "repair", "fixture"]); throw new Exception("Foreign maintenance identity accepted."); }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException) { Check(true, "a native product carrier cannot maintain another application"); }
+        var install = new[] { "--scope", "user", "--install", "application.hinst" };
+        Check(Run(install).SequenceEqual(install), "ordinary native installation arguments remain intact");
     }
 
     static void RemoteDownloadProgress()
