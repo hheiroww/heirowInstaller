@@ -265,6 +265,23 @@ System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(withCertificate.A
 var authenticodeShape = Path.Combine(root,"certificate-overlay-fixture.exe"); await File.WriteAllBytesAsync(authenticodeShape,withCertificate);
 var afterWindowsSigning = WebBootstrapBindings.Read(authenticodeShape,pin);
 Check(afterWindowsSigning.DescriptorBytes.SequenceEqual(signedBinding.DescriptorBytes) && WebBootstrapBindings.LauncherSha256(authenticodeShape,afterWindowsSigning.LauncherLength)==WebBootstrapBindings.LauncherSha256(generic), "certificate overlay and alignment preserve product binding and normalized launcher identity");
+var maintenanceDescriptor = System.Text.Json.Nodes.JsonNode.Parse(originalDescriptorBytes)!;
+maintenanceDescriptor["hostKind"] = "installer";
+maintenanceDescriptor["hostEntryPoint"] = "heirowInstaller.exe";
+var maintenanceCarrier = Path.Combine(root, "maintenance-installer.exe");
+await WebBootstrapBindings.WriteAsync(generic, Encoding.UTF8.GetBytes(maintenanceDescriptor.ToJsonString()), maintenanceCarrier, key);
+var maintenanceState = Path.Combine(root, "maintenance-state", "state");
+var pooled = HeirowInstaller.Core.SharedInstallerHost.Provision(maintenanceCarrier, "machine", maintenanceState, isolated: true)!;
+Check(File.ReadAllBytes(pooled).SequenceEqual(File.ReadAllBytes(maintenanceCarrier)), "native maintenance caching retains the entire signed descriptor without requiring a single-file runtime");
+Check(HeirowInstaller.Core.SharedInstallerHost.Validate(pooled, "machine", maintenanceState, true) == pooled, "cached native maintenance carrier validates its immutable content binding");
+Check(HeirowInstaller.Core.SharedInstallerHost.Provision(maintenanceCarrier, "machine", maintenanceState, true) == pooled, "repeated native maintenance provisioning reuses the verified carrier");
+await Reject(() => { HeirowInstaller.Core.SharedInstallerHost.Provision(generic, "user", maintenanceState, false); return Task.CompletedTask; }, "loose framework-dependent apphosts remain rejected outside isolated fixtures");
+maintenanceDescriptor["hostKind"] = "updater";
+var updaterCarrier = Path.Combine(root, "maintenance-updater.exe");
+await WebBootstrapBindings.WriteAsync(generic, Encoding.UTF8.GetBytes(maintenanceDescriptor.ToJsonString()), updaterCarrier, key);
+await Reject(() => { HeirowInstaller.Core.SharedInstallerHost.Provision(updaterCarrier, "user", maintenanceState, false); return Task.CompletedTask; }, "updater carriers cannot replace installer maintenance hosts");
+File.AppendAllText(pooled, "tampered");
+await Reject(() => { HeirowInstaller.Core.SharedInstallerHost.Validate(pooled, "machine", maintenanceState, true); return Task.CompletedTask; }, "changed native maintenance carriers fail content verification");
 Console.WriteLine($"PASS {checks} bootstrap checks; fixture binding: {fixtureDescriptor}");
 await File.WriteAllTextAsync(Path.Combine(root, "receipt.json"), JsonSerializer.Serialize(new { passed = true, checks, realUacTested = false, credentialedElevationTested = false, protectedMachineWrites = false, retained = true }));
 

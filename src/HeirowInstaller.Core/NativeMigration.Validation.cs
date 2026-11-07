@@ -121,7 +121,7 @@ internal static class NativeMigrationValidation
             if (previous.RegisteredProduct && !platform.IsIsolated)
             {
                 if (options.InstallerPath is null) throw new InvalidDataException("A registered owned migration requires its current standalone maintenance host.");
-                StandaloneRuntimeInspector.RequireEmbeddedRuntime(options.InstallerPath);
+                SharedInstallerHost.RequireMaintenanceHost(BootstrapWorkerPromotion.MaintenanceLauncher(options.InstallerPath, options.TrustedPublisherKeySha256));
             }
             if (previous.UninstallerPath is { } host)
             {

@@ -756,6 +756,7 @@ public sealed partial class InstallerEngine
         if (source is null || !File.Exists(source)) return null;
         if (Path.GetFileNameWithoutExtension(source).Equals("heirowUpdater", StringComparison.OrdinalIgnoreCase)) return null;
         source = Path.GetFullPath(source);
+        source = BootstrapWorkerPromotion.MaintenanceLauncher(source, options.TrustedPublisherKeySha256);
         // Preserve older per-user framework-dependent maintenance hosts. New
         // format-2/shared packages require the standalone pooled executable.
         var legacyDevelopmentHost = scope == "user" && manifest.FormatVersion == 1 &&

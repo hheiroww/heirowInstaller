@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using HeirowInstaller.BootstrapContract;
 
 namespace HeirowInstaller.Core;
 
@@ -9,7 +11,7 @@ public static class SharedInstallerHost
     public static string? Provision(string currentTrustedInstallerPath, string scope, string stateRoot, bool isolated)
     {
         var source = Path.GetFullPath(currentTrustedInstallerPath); PackageSafety.EnsureNoReparsePoints(source);
-        try { StandaloneRuntimeInspector.RequireEmbeddedRuntime(source); }
+        try { RequireMaintenanceHost(source); }
         catch (InvalidDataException) when (isolated) { return null; }
         var launcherLength = BundleBuilder.LauncherLength(source);
         if (launcherLength is < 64 or > 512L * 1024 * 1024) throw new InvalidDataException("The trusted maintenance host has invalid executable bounds.");
@@ -48,7 +50,7 @@ public static class SharedInstallerHost
                 output.Flush(flushToDisk: true);
             }
             if (!PackageSafety.HashEquals(PackageSafety.HashFile(temporary), hash)) throw new CryptographicException("The maintenance executable failed integrity verification.");
-            StandaloneRuntimeInspector.RequireEmbeddedRuntime(temporary);
+            RequireMaintenanceHost(temporary);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, File.GetUnixFileMode(source));
             try { File.Move(temporary, destination); }
             catch (IOException) when (File.Exists(destination)) { }
@@ -75,8 +77,22 @@ public static class SharedInstallerHost
         using var protection = Guard(scope, stateRoot, isolated, create: false);
         if (!File.Exists(path) || BundleBuilder.LauncherLength(path) is < 64 or > 512L * 1024 * 1024 || !PackageSafety.HashEquals(PackageSafety.HashFile(path), hash))
             throw new CryptographicException("The shared maintenance host failed its content binding.");
-        StandaloneRuntimeInspector.RequireEmbeddedRuntime(path);
+        RequireMaintenanceHost(path);
         return path;
+    }
+
+    internal static void RequireMaintenanceHost(string path)
+    {
+        try { StandaloneRuntimeInspector.RequireEmbeddedRuntime(path); return; }
+        catch (InvalidDataException) { }
+        // Native bootstraps carry a signed descriptor instead of a .NET bundle.
+        // Retain the entire carrier so maintenance can recover its exact shared closure.
+        var binding = WebBootstrapBindings.Read(path);
+        using var document = JsonDocument.Parse(binding.DescriptorBytes);
+        var descriptor = document.RootElement;
+        if (descriptor.GetProperty("hostKind").GetString() != "installer" ||
+            descriptor.GetProperty("hostEntryPoint").GetString() != "heirowInstaller.exe")
+            throw new InvalidDataException("Maintenance requires an installer bootstrap.");
     }
 
     private static IDisposable? Guard(string scope, string stateRoot, bool isolated, bool create)

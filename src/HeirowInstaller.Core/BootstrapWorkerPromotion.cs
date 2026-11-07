@@ -16,6 +16,24 @@ public static class BootstrapWorkerPromotion
     public const string PromoterIdVariable = "SOCKETJACK_BOOTSTRAP_PROMOTER_PID";
     public const string PromoterStartVariable = "SOCKETJACK_BOOTSTRAP_PROMOTER_START";
 
+    internal static string MaintenanceLauncher(string image, string? publisherPin)
+    {
+        var native = Environment.GetEnvironmentVariable(LauncherVariable);
+        if (native is null) return image;
+        if (publisherPin is null || !OperatingSystem.IsWindows())
+            throw new CryptographicException("Native maintenance requires a verified publisher.");
+        var self = ReadIdentity(Environment.ProcessId);
+        if (!PackageSafety.HashEquals(PackageSafety.HashFile(image), PackageSafety.HashFile(self.Image)) ||
+            !BootstrapProcessTrust.IsTrustedUpdaterOwner(self.Id, self.StartTicks,
+                new UpdateCompanionConfiguration { PublisherKeySha256 = publisherPin }, native))
+            throw new CryptographicException("The maintenance host differs from its signed native coordinator.");
+        var parent = ReadIdentity(self.ParentId);
+        if (!Path.GetFullPath(native).Equals(Path.GetFullPath(parent.Image), InstallerPlatform.PathComparison))
+            throw new CryptographicException("The native maintenance coordinator changed.");
+        SharedInstallerHost.RequireMaintenanceHost(native);
+        return native;
+    }
+
     public static bool TryStart(string pipeName, int originalGuiPid, long originalGuiStart, string nonce, string? expectedPublisherPin,
         out BootstrapWorkerLaunch? launch)
     {
