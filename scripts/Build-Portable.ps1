@@ -53,7 +53,11 @@ $projectZVersion = if ($ProjectZPackageVersion) { $ProjectZPackageVersion.Trim('
 $packageId = if ($platform -eq 'linux') { 'projectz.linux' } else { 'projectz.macos' }
 $notices = Join-Path $payload 'ThirdParty'
 New-Item -ItemType Directory -Path $notices -Force | Out-Null
-foreach ($item in @(@("$packageId/$projectZVersion/THIRD-PARTY-NOTICES.md",'ProjectZ-NOTICES.md'),@('socketjack/2026.10.24/License.txt','SocketJack-LICENSE.txt'))) {
+$assets = Get-Content -LiteralPath (Join-Path $projectRoot 'src/HeirowInstaller.App/obj/project.assets.json') -Raw | ConvertFrom-Json -AsHashtable
+$socketJack = @($assets.libraries.Keys | Where-Object { $_ -match '^SocketJack/' -and $assets.libraries[$_].type -eq 'package' })
+if ($socketJack.Count -ne 1) { throw 'The restored application must identify exactly one SocketJack package for its license notice.' }
+$socketJackPath = $assets.libraries[$socketJack[0]].path
+foreach ($item in @(@("$packageId/$projectZVersion/THIRD-PARTY-NOTICES.md",'ProjectZ-NOTICES.md'),@("$socketJackPath/License.txt",'SocketJack-LICENSE.txt'))) {
     Copy-Item -LiteralPath (Join-Path $cache $item[0]) -Destination (Join-Path $notices $item[1])
 }
 $manifest = [ordered]@{
