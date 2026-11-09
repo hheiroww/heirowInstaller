@@ -91,7 +91,7 @@ public static class BootstrapWorkerPromotion
         var binding = WebBootstrapBindings.Read(native);
         using var document = JsonDocument.Parse(binding.DescriptorBytes); var descriptor = document.RootElement;
         RequireDescriptor(descriptor, publisherPin);
-        if (scope is not ("user" or "machine") || operation is not ("install" or "repair" or "uninstall" or "files") || publisherPin is null || !PackageSafety.HashEquals(publisherPin, binding.PublisherKeySha256))
+        if (scope is not ("user" or "machine") || operation is not ("install" or "repair" or "uninstall" or "apply-files") || publisherPin is null || !PackageSafety.HashEquals(publisherPin, binding.PublisherKeySha256))
             throw new CryptographicException("The privileged request has a different native publisher or operation binding.");
         using var package = PackageReader.Open(packagePath);
         package.VerifySignature(binding.PublisherKeySha256, requireSignature: true);

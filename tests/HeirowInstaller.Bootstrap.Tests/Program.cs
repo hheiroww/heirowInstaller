@@ -297,6 +297,39 @@ async Task<string> UpdatePackage(string version)
     HeirowInstaller.Core.PackageBuilder.Build(updateManifestPath, updateSource, path, new() { SigningKeyPath = updateKey }); return path;
 }
 var oldLauncherEnvironment = Environment.GetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable);
+var oldPromoterEnvironment = Environment.GetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.PromoterIdVariable);
+try
+{
+    var requestedPackage = await UpdatePackage("0.5.0");
+    Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, maintenanceCarrier);
+    Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.PromoterIdVariable, "1");
+    var requestedMetadata = Path.Combine(updateArea, "target.hmeta");
+    using (var original = ZipFile.OpenRead(requestedPackage))
+    using (var metadata = ZipFile.Open(requestedMetadata, ZipArchiveMode.Create))
+        foreach (var name in new[] { "manifest.json", "signature.json" })
+        { using var input = original.GetEntry(name)!.Open(); using var output = metadata.CreateEntry(name).Open(); input.CopyTo(output); }
+    Check(HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedMetadata, updateManifest.Id, "0.5.0", pin, "machine", "apply-files"),
+        "native promotion accepts the signed metadata used by elevated sparse GUI updates");
+    foreach (var operation in new[] { "install", "repair", "uninstall", "apply-files" })
+        Check(HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "0.5.0", pin, "machine", operation),
+            "native promotion accepts the GUI worker's exact signed " + operation + " operation");
+    foreach (var operation in new[] { "files", "apply-incremental", "unknown" })
+        await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "0.5.0", pin, "machine", operation); return Task.CompletedTask; },
+            "native promotion still rejects an unauthored operation: " + operation);
+    await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "0.5.0", new string('0',64), "machine", "apply-files"); return Task.CompletedTask; },
+        "file updates still reject a substituted native publisher");
+    await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, "another.product", "0.5.0", pin, "machine", "apply-files"); return Task.CompletedTask; },
+        "file updates still reject a different signed product");
+    await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "9.0.0", pin, "machine", "apply-files"); return Task.CompletedTask; },
+        "file updates still reject a substituted target version");
+    await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "0.5.0", pin, "other", "apply-files"); return Task.CompletedTask; },
+        "file updates still reject an unknown installation scope");
+}
+finally
+{
+    Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, oldLauncherEnvironment);
+    Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.PromoterIdVariable, oldPromoterEnvironment);
+}
 Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, null);
 try
 {
