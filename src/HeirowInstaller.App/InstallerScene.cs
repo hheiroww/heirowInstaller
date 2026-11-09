@@ -53,7 +53,7 @@ internal sealed partial class InstallerScene : Scene
     internal InstallerScene(SceneManager manager, InstallerGame game, AppArguments arguments) : base(manager)
     {
         this.game = game;
-        BackgroundColor = Theme.Background;
+        BackgroundColor = Theme.Background * 0.65f;
         EnableDesignTimeControls = false;
         isCursorVisible = false;
         Controller = new AppController(game, arguments);
@@ -112,7 +112,7 @@ internal sealed partial class InstallerScene : Scene
         var previousRoot = root;
         var previousControls = controls.ToArray();
         controls.Clear();
-        root = new RectangleElement(this) { Position = Vector2.Zero, Size = new Vector2(Width, Height), BackgroundColor = Theme.Background, Padding = new Thickness(0) };
+        root = new RectangleElement(this) { Position = Vector2.Zero, Size = new Vector2(Width, Height), BackgroundColor = Color.Transparent, Padding = new Thickness(0) };
         try
         {
             if (Controller.IsWizard) { BuildWizardRail(); BuildWizardHeader(); if (Controller.IsMaintenanceWizard) BuildMaintenanceWizard(); else BuildInstall(); }
@@ -234,7 +234,7 @@ internal sealed partial class InstallerScene : Scene
 
     private void BuildRail()
     {
-        Box(0, 0, RailWidth, Height, Theme.Rail, 0, Color.Transparent);
+        Box(0, 0, RailWidth, Height, Theme.Rail * 0.88f, 0, Color.Transparent);
         Box(RailWidth - 1, 0, 1, Height, Theme.Border, 0, Color.Transparent);
         Logo(21, 23, 45);
         Text("heirowInstaller", 77, 27, 138, 25, 13, bold: true);

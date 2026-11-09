@@ -9,6 +9,15 @@ internal static class DesktopUpdateHandoff
     {
         var executable = Environment.ProcessPath;
         if (executable is null) return false;
+        if (IsWithinProduct(product, executable)) return true;
+        var native = Environment.GetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable);
+        if (native is null || !IsWithinProduct(product, native)) return false;
+        executable = BootstrapWorkerPromotion.MaintenanceLauncher(executable, product.PublisherKeySha256);
+        return IsWithinProduct(product, executable);
+    }
+
+    internal static bool IsWithinProduct(InstalledProduct product, string executable)
+    {
         var root = Path.GetFullPath(product.InstallDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return Path.GetFullPath(executable).StartsWith(root, StringComparison.OrdinalIgnoreCase);
     }
@@ -56,6 +65,15 @@ internal static class DesktopUpdateHandoff
 
     private static string CopyHelper(InstallOptions options)
     {
+        var sourceImage = DirectX11Fallback.CurrentPrimaryHostPath;
+        var launcher = BootstrapWorkerPromotion.MaintenanceLauncher(sourceImage, options.TrustedPublisherKeySha256);
+        if (!Path.GetFullPath(launcher).Equals(Path.GetFullPath(sourceImage), InstallerPlatform.PathComparison))
+        {
+            // Copy the complete signed native carrier. Copying only the shared
+            // apphost loses its descriptor and private .NET runtime binding.
+            return SharedInstallerHost.Provision(launcher, "user", options.StateRoot ?? InstallerEngine.DefaultStateRoot(), options.Isolated)
+                ?? throw new InvalidDataException("The native self-update maintenance host is unavailable.");
+        }
         var helperRoot = options.Isolated
             ? Path.Combine(options.StateRoot ?? throw new InvalidOperationException("Isolated self-updates require a separate state root."), ".update-host")
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "UpdateHost");

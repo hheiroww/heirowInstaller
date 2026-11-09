@@ -35,6 +35,7 @@ internal static partial class Program
             Policy();
             RemoteDownloadProgress();
             NativeMaintenanceArguments();
+            SelfUpdateProductIdentity();
             using (var key = RSA.Create(2048))
             {
                 signingKey = Path.Combine(root, "synthetic-fixture-key.pem"); File.WriteAllText(signingKey, key.ExportPkcs8PrivateKeyPem());
@@ -57,6 +58,22 @@ internal static partial class Program
             return 1;
         }
         finally { WindowsFormsSynchronizationContext.AutoInstall = oldAutoInstall; Environment.SetEnvironmentVariable("TEMP", oldTemp); Environment.SetEnvironmentVariable("TMP", oldTmp); }
+    }
+
+    static void SelfUpdateProductIdentity()
+    {
+        var product = new InstalledProduct { InstallDirectory = Path.Combine(root, "installed-app") };
+        Check(DesktopUpdateHandoff.IsWithinProduct(product, Path.Combine(product.InstallDirectory, "heirowInstaller.exe")),
+            "self-update recognizes the native launcher inside the installed application");
+        Check(!DesktopUpdateHandoff.IsWithinProduct(product, Path.Combine(product.InstallDirectory + "-other", "heirowInstaller.exe")),
+            "self-update excludes a sibling with the same path prefix");
+        var oldLauncher = Environment.GetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable, Path.Combine(root, "another-app", "setup.exe"));
+            Check(!DesktopUpdateHandoff.IsRunningProduct(product), "another application's coordinator does not turn maintenance into a self-update");
+        }
+        finally { Environment.SetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable, oldLauncher); }
     }
 
     static void NativeMaintenanceArguments()

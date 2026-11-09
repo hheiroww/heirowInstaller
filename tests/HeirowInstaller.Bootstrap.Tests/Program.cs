@@ -275,6 +275,51 @@ var pooled = HeirowInstaller.Core.SharedInstallerHost.Provision(maintenanceCarri
 Check(File.ReadAllBytes(pooled).SequenceEqual(File.ReadAllBytes(maintenanceCarrier)), "native maintenance caching retains the entire signed descriptor without requiring a single-file runtime");
 Check(HeirowInstaller.Core.SharedInstallerHost.Validate(pooled, "machine", maintenanceState, true) == pooled, "cached native maintenance carrier validates its immutable content binding");
 Check(HeirowInstaller.Core.SharedInstallerHost.Provision(maintenanceCarrier, "machine", maintenanceState, true) == pooled, "repeated native maintenance provisioning reuses the verified carrier");
+// Reproduce a shared host opened directly from Explorer: no bootstrap environment,
+// a loose framework-dependent apphost, and an existing verified maintenance pool.
+var updateArea = Path.Combine(root, "direct-shared-host-update");
+var updateState = Path.Combine(updateArea, "state");
+var updateTarget = Path.Combine(updateArea, "installed");
+var updateSource = Path.Combine(updateArea, "payload"); Directory.CreateDirectory(updateSource);
+var updateKey = Path.Combine(updateArea, "synthetic-key.pem"); await File.WriteAllTextAsync(updateKey, key.ExportPkcs8PrivateKeyPem());
+var documents = HeirowInstaller.Core.LegalDocumentRules.CreateDraft("fixture.self-update");
+documents.PrivacyPolicy!.Content = "Local synthetic installer acceptance fixture.";
+documents.TermsAndConditions!.Content = "For isolated installer acceptance testing only.";
+var updateManifest = new HeirowInstaller.Core.PackageManifest { FormatVersion = 4, Id = "fixture.self-update", Name = "Self-update fixture", Publisher = "Fixture", Version = "1.0.0", Scope = "user",
+    LegalDocuments = HeirowInstaller.Core.LegalDocumentRules.PrepareForCreation("fixture.self-update", documents) };
+var updateManifestPath = Path.Combine(updateArea, "manifest.json");
+async Task<string> UpdatePackage(string version)
+{
+    updateManifest.Version = version;
+    await File.WriteAllTextAsync(Path.Combine(updateSource, "version.txt"), version);
+    await File.WriteAllTextAsync(updateManifestPath, JsonSerializer.Serialize(updateManifest, HeirowInstaller.Core.InstallerJson.Options));
+    var path = Path.Combine(updateArea, version + ".hinst");
+    HeirowInstaller.Core.PackageBuilder.Build(updateManifestPath, updateSource, path, new() { SigningKeyPath = updateKey }); return path;
+}
+var oldLauncherEnvironment = Environment.GetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable);
+Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, null);
+try
+{
+    var installOptions = new HeirowInstaller.Core.InstallOptions { StateRoot = updateState, TargetDirectory = updateTarget, Scope = "user", Isolated = true, RegisterProduct = false,
+        InstallerPath = maintenanceCarrier, TrustedPublisherKeySha256 = pin, RequireSignature = true };
+    var installer = new HeirowInstaller.Core.InstallerEngine();
+    using (var firstPackage = HeirowInstaller.Core.PackageReader.Open(await UpdatePackage("1.0.0"))) await installer.InstallAsync(firstPackage, installOptions);
+    var beforeUpdate = HeirowInstaller.Core.InstallerEngine.ListInstalled(updateState).Single();
+    var looseHost = Path.Combine(updateArea, "loose-host.exe"); File.Copy(generic, looseHost);
+    await File.WriteAllTextAsync(Path.ChangeExtension(looseHost, ".dll"), "synthetic managed entry point");
+    await File.WriteAllTextAsync(Path.ChangeExtension(looseHost, ".runtimeconfig.json"), "{}");
+    installOptions.InstallerPath = looseHost;
+    using (var nextPackage = HeirowInstaller.Core.PackageReader.Open(await UpdatePackage("2.0.0"))) await installer.InstallAsync(nextPackage, installOptions);
+    var afterUpdate = HeirowInstaller.Core.InstallerEngine.ListInstalled(updateState).Single();
+    Check(afterUpdate.Version == "2.0.0" && File.ReadAllText(Path.Combine(updateTarget, "version.txt")) == "2.0.0" &&
+        afterUpdate.UninstallerPath == beforeUpdate.UninstallerPath, "updating from a direct shared apphost retains the receipt's verified signed maintenance carrier");
+    File.AppendAllText(afterUpdate.UninstallerPath!, "changed carrier");
+    using (var badUpdate = HeirowInstaller.Core.PackageReader.Open(await UpdatePackage("3.0.0")))
+        await Reject(() => installer.InstallAsync(badUpdate, installOptions), "direct shared-host updates reject a changed retained maintenance carrier");
+    Check(HeirowInstaller.Core.InstallerEngine.ListInstalled(updateState).Single().Version == "2.0.0" && File.ReadAllText(Path.Combine(updateTarget, "version.txt")) == "2.0.0",
+        "rejected maintenance carrier rolls back both the installed payload and receipt");
+}
+finally { Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, oldLauncherEnvironment); }
 await Reject(() => { HeirowInstaller.Core.SharedInstallerHost.Provision(generic, "user", maintenanceState, false); return Task.CompletedTask; }, "loose framework-dependent apphosts remain rejected outside isolated fixtures");
 maintenanceDescriptor["hostKind"] = "updater";
 var updaterCarrier = Path.Combine(root, "maintenance-updater.exe");

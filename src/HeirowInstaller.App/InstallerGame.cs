@@ -72,6 +72,15 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
         quality.Filtering = TextureFiltering.Anisotropic16x;
         quality.PpiPerfectText = true;
         manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(980, 760) };
+        // Project-Z captures the desktop and blurs it with its own GPU shader.
+        // The CPU wizard has no SceneManager and retains its opaque native UI.
+        var backdrop = manager.DesktopBackdrop.Settings;
+        backdrop.BlurRadius = 20;
+        backdrop.CaptureFramesPerSecond = 60;
+        backdrop.Saturation = 1.05f;
+        backdrop.NoiseOpacity = 0.006f;
+        backdrop.FallbackColor = Theme.Background;
+        backdrop.Enabled = true;
 #if WINDOWS
         manager.UseHardwareInput = arguments.PerformanceSmokeDirectory is null;
 #endif

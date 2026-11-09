@@ -6,7 +6,7 @@ internal sealed partial class InstallerScene
 {
     private void BuildWizardRail()
     {
-        Box(0, 0, RailWidth, Height, Theme.Rail, 0, Color.Transparent);
+        Box(0, 0, RailWidth, Height, Theme.Rail * 0.88f, 0, Color.Transparent);
         Box(RailWidth - 1, 0, 1, Height, Theme.Border, 0, Color.Transparent);
         Logo(27, 28, 56);
         var applicationName = Controller.Manifest?.Name ?? "Application setup";

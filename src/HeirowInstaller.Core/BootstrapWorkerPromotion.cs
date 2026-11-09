@@ -16,7 +16,8 @@ public static class BootstrapWorkerPromotion
     public const string PromoterIdVariable = "SOCKETJACK_BOOTSTRAP_PROMOTER_PID";
     public const string PromoterStartVariable = "SOCKETJACK_BOOTSTRAP_PROMOTER_START";
 
-    internal static string MaintenanceLauncher(string image, string? publisherPin)
+    /// <summary>Resolves the live signed native coordinator, or the supplied image when no coordinator is present.</summary>
+    public static string MaintenanceLauncher(string image, string? publisherPin)
     {
         var native = Environment.GetEnvironmentVariable(LauncherVariable);
         if (native is null) return image;

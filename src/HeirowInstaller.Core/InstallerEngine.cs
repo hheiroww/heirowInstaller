@@ -234,7 +234,7 @@ public sealed partial class InstallerEngine
             };
             if (plan.UpdateCompanionEnabled && (product.IsMsi || product.IsExecutable) && !options.Isolated)
             {
-                product.UninstallerPath = CacheUninstaller(options, cache, transaction, plan.Scope, package.Manifest) ?? previous?.UninstallerPath;
+                product.UninstallerPath = CacheUninstaller(options, cache, transaction, plan.Scope, package.Manifest, previous) ?? previous?.UninstallerPath;
                 if (product.UninstallerPath is null || !File.Exists(product.UninstallerPath)) throw new InvalidOperationException("A selected backend updater requires an available trusted maintenance host. Supply InstallOptions.InstallerPath.");
             }
             var reboot = await WindowsIntegration.InstallPrerequisitesAsync(package.Manifest, plan, extracted, options, progress, cancellationToken);
@@ -323,7 +323,7 @@ public sealed partial class InstallerEngine
             product.PackagePath = PackageSafety.UnderRoot(cache, "packages/" + digest + ".hinst");
             if (!File.Exists(product.PackagePath)) transaction.ReplaceFile(product.PackagePath, package.PackagePath);
             else if (!PackageSafety.HashEquals(PackageSafety.HashFile(product.PackagePath), digest)) throw new IOException("Cached package hash mismatch.");
-            product.UninstallerPath ??= CacheUninstaller(options, cache, transaction, plan.Scope, package.Manifest) ?? previous?.UninstallerPath;
+            product.UninstallerPath ??= CacheUninstaller(options, cache, transaction, plan.Scope, package.Manifest, previous) ?? previous?.UninstallerPath;
             product.RegisteredProduct = OperatingSystem.IsWindows() && options.RegisterProduct && !options.Isolated && (!(product.IsMsi || product.IsExecutable) || plan.UpdateCompanionEnabled) && product.UninstallerPath is not null;
             var registrationValues = product.RegisteredProduct ? WindowsIntegration.ProductRegistrationValues(product, root, package.Manifest) : null;
             if (migration is not null) await migration.PlanNativeMetadataAsync(registrationValues, cancellationToken);
@@ -426,7 +426,7 @@ public sealed partial class InstallerEngine
                 product.BackendRegistrations = BackendMaintenance.Configure(product, previous, plan, transaction);
                 if (plan.UpdateCompanionEnabled)
                 {
-                    product.UninstallerPath = CacheUninstaller(options, cache, transaction, product.Scope, package.Manifest) ?? previous.UninstallerPath;
+                    product.UninstallerPath = CacheUninstaller(options, cache, transaction, product.Scope, package.Manifest, previous) ?? previous.UninstallerPath;
                     if (product.UninstallerPath is null || !File.Exists(product.UninstallerPath)) throw new InvalidOperationException("The backend companion's maintenance host is missing.");
                     product.RegisteredProduct = true;
                     WindowsIntegration.RegisterProduct(product, root, transaction, package.Manifest);
@@ -745,7 +745,7 @@ public sealed partial class InstallerEngine
         else transaction.DeleteFile(destination);
     }
 
-    private static string? CacheUninstaller(InstallOptions options, string cache, InstallTransaction transaction, string scope, PackageManifest manifest)
+    private static string? CacheUninstaller(InstallOptions options, string cache, InstallTransaction transaction, string scope, PackageManifest manifest, InstalledProduct? previous)
     {
         var source = options.InstallerPath;
         if (source is null)
@@ -757,6 +757,16 @@ public sealed partial class InstallerEngine
         if (Path.GetFileNameWithoutExtension(source).Equals("heirowUpdater", StringComparison.OrdinalIgnoreCase)) return null;
         source = Path.GetFullPath(source);
         source = BootstrapWorkerPromotion.MaintenanceLauncher(source, options.TrustedPublisherKeySha256);
+        // A shared framework-dependent host can also be opened directly, without
+        // its native coordinator. Its apphost has neither an embedded runtime nor
+        // a product descriptor. Retain the receipt's content-verified standalone
+        // maintenance host instead of caching that apphost as a new installer.
+        if (previous?.UninstallerPath is { } retained &&
+            !(scope == "user" && manifest.FormatVersion == 1) &&
+            (!options.Isolated || Path.GetFullPath(retained).StartsWith(SharedInstallerHost.Root(scope, Path.GetDirectoryName(cache)!, true) + Path.DirectorySeparatorChar, InstallerPlatform.PathComparison)) &&
+            Environment.GetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable) is null &&
+            File.Exists(Path.ChangeExtension(source, ".dll")) && File.Exists(Path.ChangeExtension(source, ".runtimeconfig.json")))
+            return SharedInstallerHost.Validate(retained, scope, Path.GetDirectoryName(cache)!, options.Isolated);
         // Preserve older per-user framework-dependent maintenance hosts. New
         // format-2/shared packages require the standalone pooled executable.
         var legacyDevelopmentHost = scope == "user" && manifest.FormatVersion == 1 &&
