@@ -459,7 +459,13 @@ internal static class InnoOwnedFootprintChecks
                 throw new InvalidOperationException("The synthetic owned fixture escaped its explicitly marked temp root.");
             PackageSafety.EnsureNoReparsePoints(Root);
         }
-        public void Dispose() { Guard(); Directory.Delete(Path.GetFullPath(Root), recursive: true); }
+        public void Dispose()
+        {
+            Guard();
+            if (Environment.GetEnvironmentVariable("HEIROWINSTALLER_KEEP_TEST_OUTPUTS") == "1")
+                Console.WriteLine("Retained Inno footprint fixture: " + Root);
+            else Directory.Delete(Path.GetFullPath(Root), recursive: true);
+        }
     }
     private sealed class FixtureBackend(FixturePlatform platform) : INativeMigrationBackend, IInnoOwnedPlatformProvider
     {

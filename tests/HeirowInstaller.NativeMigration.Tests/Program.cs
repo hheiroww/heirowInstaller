@@ -72,7 +72,7 @@ static async Task Format()
     True(target.Manifest.FormatVersion == 3);
     var invalid = NativeMigrationValidation.Clone(target.Manifest); invalid.FormatVersion = 2;
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
-    invalid.FormatVersion = 5;
+    invalid.FormatVersion = 6;
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
     invalid.FormatVersion = 3; invalid.NativeMigration!.Baselines[0].FromManifestSha256 = "not-a-digest";
     await Throws<InvalidDataException>(() => Task.Run(() => PackageSafety.ValidateManifest(invalid, true)));
@@ -486,7 +486,13 @@ sealed class Fixture : IDisposable
     }
     internal void Unchanged()
     { if (Backend.Uninstalls != 0 || File.ReadAllText(AppFile) != "original application" || !File.Exists(Original.ReceiptPath)) throw new InvalidOperationException("The rejected migration changed its fixture."); }
-    public void Dispose() { Guard(); Directory.Delete(Root, recursive: true); }
+    public void Dispose()
+    {
+        Guard();
+        if (Environment.GetEnvironmentVariable("HEIROWINSTALLER_KEEP_TEST_OUTPUTS") == "1")
+            Console.WriteLine("Retained native migration fixture: " + Root);
+        else Directory.Delete(Root, recursive: true);
+    }
 }
 sealed class FakeBackend(Fixture fixture) : INativeMigrationBackend
 {
