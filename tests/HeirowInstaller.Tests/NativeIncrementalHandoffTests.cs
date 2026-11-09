@@ -11,6 +11,7 @@ internal sealed partial class AcceptanceSuite
         if (!OperatingSystem.IsWindows()) return;
         var area = Area("native-incremental-handoff"); var source = Path.Combine(area, "source"); Directory.CreateDirectory(source);
         var native = FindUpdaterCli(); File.Copy(native, Path.Combine(source, "heirowUpdater.exe"));
+        SignedHandoffOwner.CopyPayload(source);
         File.WriteAllText(Path.Combine(source, "application.exe"), "non-executed app fixture");
         File.WriteAllText(Path.Combine(source, "value.txt"), "before"); File.WriteAllText(Path.Combine(source, "unchanged.txt"), "preserve bytes and timestamp");
         File.WriteAllText(Path.Combine(source, "obsolete.txt"), "owned obsolete file");
@@ -70,28 +71,23 @@ internal sealed partial class AcceptanceSuite
         {
             var copy = new ProcessStartInfo(start.FileName) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = start.WorkingDirectory };
             foreach (var argument in start.ArgumentList) copy.ArgumentList.Add(argument);
-            // Owner proofs are one-shot. Each rejected mutation and the final
-            // valid launch need their own live authorization server.
-            foreach (var name in new[] { "--owner-pipe", "--owner-nonce", "--owner-pid", "--owner-start" })
-            { var index = copy.ArgumentList.IndexOf(name); copy.ArgumentList.RemoveAt(index + 1); copy.ArgumentList.RemoveAt(index); }
-            UpdaterOwnerHandshake.Attach(copy, ownerPid, ownerStart, new(updaterTarget.ProductId, installed.InstallDirectory, profile.StateRoot,
-                installed.Scope, update.Feed.TargetManifestSha256!, Path.GetFullPath(start.ArgumentList[1])));
             if (option is not null) { var index = copy.ArgumentList.IndexOf(option); copy.ArgumentList[index + 1] = value!; }
             ApplicationUpdater.SetSessionEnvironment(copy, null, null, replace: false); return copy;
         }
         var lastDiagnostic = "";
         async Task<int> Execute(ProcessStartInfo launch)
         {
-            using var process = Process.Start(launch) ?? throw new InvalidOperationException("Could not start owned incremental helper.");
-            var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30)); _ = await output; lastDiagnostic = await error;
+            var result = await SignedHandoffOwner.ExecuteAsync(installed.InstallDirectory, area, launch,
+                new(updaterTarget.ProductId, installed.InstallDirectory, profile.StateRoot, installed.Scope,
+                    update.Feed.TargetManifestSha256!, Path.GetFullPath(start.ArgumentList[1])));
+            lastDiagnostic = result.Diagnostic;
             var statusIndex = launch.ArgumentList.IndexOf("--status-file");
-            if (process.ExitCode != 0 && statusIndex >= 0 && File.Exists(launch.ArgumentList[statusIndex + 1]))
+            if (result.ExitCode != 0 && statusIndex >= 0 && File.Exists(launch.ArgumentList[statusIndex + 1]))
             {
                 using var status = JsonDocument.Parse(File.ReadAllText(launch.ArgumentList[statusIndex + 1]));
                 if (status.RootElement.TryGetProperty("error", out var message)) lastDiagnostic = message.GetString() ?? "";
             }
-            return process.ExitCode;
+            return result.ExitCode;
         }
         void StillBefore()
         {

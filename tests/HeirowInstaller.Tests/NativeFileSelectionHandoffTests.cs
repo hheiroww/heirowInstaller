@@ -22,6 +22,7 @@ internal sealed partial class AcceptanceSuite
         // including when the caller supplies a long task-owned TEMP root.
         var area = Area("nfs"); var source = Path.Combine(area, "source"); Directory.CreateDirectory(source);
         var native = FindUpdaterCli(); File.Copy(native, Path.Combine(source, "heirowUpdater.exe"));
+        SignedHandoffOwner.CopyPayload(source);
         File.WriteAllText(Path.Combine(source, "application.exe"), "non-executed owned fixture");
         File.WriteAllText(Path.Combine(source, "value.txt"), "before"); File.WriteAllText(Path.Combine(source, "keep.txt"), "unchanged owned bytes");
         using var key = RSA.Create(2048); var keyPath = Path.Combine(area, "fixture.pem"); File.WriteAllText(keyPath, key.ExportPkcs8PrivateKeyPem());
@@ -118,19 +119,13 @@ internal sealed partial class AcceptanceSuite
         {
             var start = new ProcessStartInfo(launch.FileName) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = launch.WorkingDirectory };
             foreach (var argument in launch.ArgumentList) start.ArgumentList.Add(argument);
-            if (OperatingSystem.IsWindows())
-            {
-                foreach (var name in new[] { "--owner-pipe", "--owner-nonce", "--owner-pid", "--owner-start" })
-                { var index = start.ArgumentList.IndexOf(name); start.ArgumentList.RemoveAt(index + 1); start.ArgumentList.RemoveAt(index); }
-                UpdaterOwnerHandshake.Attach(start, ownerPid, ownerStart, new(target.ProductId, installed.InstallDirectory, profile.StateRoot,
-                    installed.Scope, update.Feed.TargetManifestSha256!, Path.GetFullPath(launch.ArgumentList[1])));
-            }
             if (option is not null) start.ArgumentList[start.ArgumentList.IndexOf(option) + 1] = value!;
             start.ArgumentList.Add("--no-prompt");
-            using var child = Process.Start(start)!; var output = child.StandardOutput.ReadToEndAsync(); var error = child.StandardError.ReadToEndAsync();
-            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60)); _ = await output; var diagnostic = await error;
-            if (child.ExitCode != 0 && option is null && !expectFailure) throw new Exception("Selected-file helper failed: " + diagnostic);
-            return child.ExitCode;
+            var result = await SignedHandoffOwner.ExecuteAsync(installed.InstallDirectory, area, start,
+                new(target.ProductId, installed.InstallDirectory, profile.StateRoot, installed.Scope,
+                    update.Feed.TargetManifestSha256!, Path.GetFullPath(launch.ArgumentList[1])));
+            if (result.ExitCode != 0 && option is null && !expectFailure) throw new Exception("Selected-file helper failed: " + result.Diagnostic);
+            return result.ExitCode;
         }
         True(await Execute("--target", Path.Combine(area, "unrelated")) != 0); Equal(receiptBefore, PackageSafety.HashFile(installed.ReceiptPath));
         True(await Execute("--target-manifest-sha256", new string('0', 64)) != 0); Equal(receiptBefore, PackageSafety.HashFile(installed.ReceiptPath));

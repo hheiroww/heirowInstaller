@@ -10,6 +10,7 @@ using System.Text.Json;
 using HeirowInstaller.Core;
 using HeirowUpdater.SocketJack;
 
+if (args is ["--owned-handoff", var ownerRequest]) return await SignedHandoffOwner.RunAsync(ownerRequest);
 if (args.FirstOrDefault() == "uninstall")
 {
     var stateIndex = Array.IndexOf(args, "--state-root");
