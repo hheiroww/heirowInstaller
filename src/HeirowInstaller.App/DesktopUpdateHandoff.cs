@@ -41,9 +41,12 @@ internal static class DesktopUpdateHandoff
         // The signed package does not authenticate an arbitrary downloaded EXE prefix.
         // Run our already installed engine and treat the entire download as package data.
         var executable = CopyHelper(options);
-        var start = new ProcessStartInfo(executable) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(executable)! };
+        var start = new ProcessStartInfo(executable) { UseShellExecute = product.Scope == "machine", WorkingDirectory = Path.GetDirectoryName(executable)! };
         if (product.Scope == "machine" && !InstallerEngine.IsElevated) start.Verb = "runas";
-        start.ArgumentList.Add("--close-on-complete");
+        // Per-user updates already have the caller's explicit update consent.
+        // The silent engine honors --launch; the interactive setup wizard
+        // reserves launching for its Finish action and otherwise closes first.
+        start.ArgumentList.Add(product.Scope == "user" ? "--silent" : "--close-on-complete");
         start.ArgumentList.Add("--install"); start.ArgumentList.Add(download);
         start.ArgumentList.Add("--expected-product-id"); start.ArgumentList.Add(product.Id);
         start.ArgumentList.Add("--expected-version"); start.ArgumentList.Add(feed.Version);
