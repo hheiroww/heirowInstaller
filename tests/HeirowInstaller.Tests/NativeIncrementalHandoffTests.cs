@@ -70,6 +70,12 @@ internal sealed partial class AcceptanceSuite
         {
             var copy = new ProcessStartInfo(start.FileName) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = start.WorkingDirectory };
             foreach (var argument in start.ArgumentList) copy.ArgumentList.Add(argument);
+            // Owner proofs are one-shot. Each rejected mutation and the final
+            // valid launch need their own live authorization server.
+            foreach (var name in new[] { "--owner-pipe", "--owner-nonce", "--owner-pid", "--owner-start" })
+            { var index = copy.ArgumentList.IndexOf(name); copy.ArgumentList.RemoveAt(index + 1); copy.ArgumentList.RemoveAt(index); }
+            UpdaterOwnerHandshake.Attach(copy, ownerPid, ownerStart, new(updaterTarget.ProductId, installed.InstallDirectory, profile.StateRoot,
+                installed.Scope, update.Feed.TargetManifestSha256!, Path.GetFullPath(start.ArgumentList[1])));
             if (option is not null) { var index = copy.ArgumentList.IndexOf(option); copy.ArgumentList[index + 1] = value!; }
             ApplicationUpdater.SetSessionEnvironment(copy, null, null, replace: false); return copy;
         }

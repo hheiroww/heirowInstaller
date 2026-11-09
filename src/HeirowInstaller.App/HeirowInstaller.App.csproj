@@ -45,13 +45,13 @@
   <Target Name="ValidateInstallerGraphicsBackend" BeforeTargets="PrepareForBuild">
     <Error Condition="'$(InstallerGraphicsBackend)' != 'DirectX12' and '$(InstallerGraphicsBackend)' != 'DirectX11'" Text="InstallerGraphicsBackend must be DirectX12 or DirectX11." />
     <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and ('$(InstallerDesktopPlatform)' != 'Windows' or '$(UseLocalProjectZ)' == 'true' or !Exists('$(InstallerProjectZDx11RuntimePath)'))" Text="The Windows DX11 host requires the reviewed official Project-Z template runtime via InstallerProjectZDx11RuntimePath." />
-    <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and '$(ProjectZPackageVersion)' != '[2026.11.2.2]'" Text="The reviewed DirectX 11 template runtime requires the matching exact ProjectZ [2026.11.2.2] package." />
+    <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and '$(ProjectZPackageVersion)' != '[2026.11.4.1]'" Text="The reviewed DirectX 11 template runtime requires the matching exact ProjectZ [2026.11.4.1] package." />
     <Error Condition="'$(InstallerGraphicsBackend)' != 'DirectX11' and '$(InstallerRequireDx11Fallback)' == 'true' and !Exists('$(InstallerDx11FallbackExecutable)')" Text="Release launchers must embed the verified signed DX11 host via InstallerDx11FallbackExecutable." />
     <Error Condition="'$(InstallerGraphicsBackend)' == 'DirectX11' and '$(InstallerDx11FallbackExecutable)' != ''" Text="The secondary must not embed another fallback host." />
   </Target>
   <Target Name="ValidateInstallerDx11Runtime" BeforeTargets="ResolveAssemblyReferences" Condition="'$(InstallerGraphicsBackend)' == 'DirectX11'">
     <GetFileHash Files="$(InstallerProjectZDx11RuntimePath)" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="_InstallerDx11RuntimeHash" /></GetFileHash>
-    <Error Condition="'%(_InstallerDx11RuntimeHash.FileHash)' != '61138878B47F176FFF2A08B7E448E8757AF293C605310DF99427D458A561E1CD'" Text="The DX11 framework differs from the reviewed official 2026.11.2.2 VSIX payload." />
+    <Error Condition="'%(_InstallerDx11RuntimeHash.FileHash)' != '1B8899BED12A636590605CB3E7C57802CC3773330E693E3A4953E9F0C7D8C3CA'" Text="The DX11 framework differs from the reviewed official 2026.11.4.1 VSIX payload." />
     <PropertyGroup><AssemblySearchPaths>{HintPathFromItem};$(AssemblySearchPaths)</AssemblySearchPaths></PropertyGroup>
   </Target>
   <Target Name="RequirePublishedInstallerDx11Fallback" BeforeTargets="PrepareForPublish" Condition="'$(InstallerDesktopPlatform)' == 'Windows' and '$(InstallerGraphicsBackend)' == 'DirectX12'">

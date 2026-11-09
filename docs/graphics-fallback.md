@@ -27,12 +27,12 @@ failure. Install, repair, uninstall, license and legal documents, feature and
 destination choices, cancellation, and running-application consent all use the
 existing installation controller.
 
-The DX11 host uses the reviewed Project-Z 2026.11.2.2 template runtime and
+The DX11 host uses the reviewed Project-Z 2026.11.4.1 template runtime and
 `MonoGame.Framework.WindowsDX` 3.8.5.1, with matching DX11 shader resources. Its
 build excludes the Native/DX12 framework and `mgruntime.dll`. Changing a property
 on the public precompiled DX12 NuGet binary cannot turn that binary into DX11.
 The official VSIX's DirectX11 `ProjectZ.dll` is pinned by SHA-256
-`61138878b47f176fff2a08b7e448e8757af293c605310df99427d458a561e1cd`.
+`1b8899bed12a636590605cb3e7c57802cc3773330e693e3a4953e9f0c7d8c3ca`.
 
 `scripts/Build.ps1` produces the self-contained secondary first and signs it when
 requested, then embeds those exact bytes in the primary. Builds use
