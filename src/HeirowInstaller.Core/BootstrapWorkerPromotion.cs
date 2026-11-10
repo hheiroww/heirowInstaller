@@ -40,25 +40,101 @@ public static class BootstrapWorkerPromotion
     {
         launch = null;
         var native = Environment.GetEnvironmentVariable(LauncherVariable);
+        if (!OperatingSystem.IsWindows())
+        {
+            if (native is null) return false;
+            throw new PlatformNotSupportedException("Native worker elevation requires Windows.");
+        }
+        var detached = native is null;
+        var products = detached ? InstallerEngine.ListInstalled() : null;
+        if (detached) native = FindDetachedCoordinator(ReadIdentity(Environment.ProcessId).Image, products!);
         if (native is null) return false;
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Native worker elevation requires Windows.");
         if (originalGuiPid != Environment.ProcessId || originalGuiStart <= 0 || nonce.Length != 64 || !nonce.All(Uri.IsHexDigit) ||
             pipeName.Length is < 1 or > 160 || pipeName.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '.' and not '-'))
             throw new InvalidDataException("Invalid elevated worker request binding.");
         using var self = Process.GetCurrentProcess();
-        if (self.StartTime.ToUniversalTime().Ticks != originalGuiStart ||
-            !int.TryParse(Environment.GetEnvironmentVariable(BootstrapProcessTrust.ParentIdVariable), out var nativeId) ||
-            !long.TryParse(Environment.GetEnvironmentVariable(BootstrapProcessTrust.ParentStartVariable), out var nativeStart) || Parent(self) != nativeId)
+        if (self.StartTime.ToUniversalTime().Ticks != originalGuiStart)
             throw new CryptographicException("The native setup coordinator identity changed.");
-        using var coordinator = Process.GetProcessById(nativeId);
-        RequireProcess(coordinator, nativeStart, native);
-        var binding = WebBootstrapBindings.Read(native);
-        using var descriptor = JsonDocument.Parse(binding.DescriptorBytes);
-        RequireDescriptor(descriptor.RootElement, expectedPublisherPin);
-        var start = new ProcessStartInfo(native) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
-        foreach (var value in new[] { "--bootstrap-worker", pipeName, originalGuiPid.ToString(CultureInfo.InvariantCulture), originalGuiStart.ToString(CultureInfo.InvariantCulture), nonce }) start.ArgumentList.Add(value);
-        var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the protected installation host.");
-        launch = new(child, binding, descriptor.RootElement.Clone()); return true;
+        if (!detached)
+        {
+            if (!int.TryParse(Environment.GetEnvironmentVariable(BootstrapProcessTrust.ParentIdVariable), out var nativeId) ||
+                !long.TryParse(Environment.GetEnvironmentVariable(BootstrapProcessTrust.ParentStartVariable), out var nativeStart) || Parent(self) != nativeId)
+                throw new CryptographicException("The native setup coordinator identity changed.");
+            using var coordinator = Process.GetProcessById(nativeId);
+            RequireProcess(coordinator, nativeStart, native);
+        }
+        FileStream? nativeLease = null;
+        try
+        {
+            if (detached)
+            {
+                nativeLease = File.Open(native, FileMode.Open, FileAccess.Read, FileShare.Read);
+                // Recheck after locking the carrier; it is not already protected
+                // against replacement by a running native coordinator.
+                if (!native.Equals(FindDetachedCoordinator(ReadIdentity(Environment.ProcessId).Image, products!), InstallerPlatform.PathComparison))
+                    throw new CryptographicException("The native authoring coordinator changed before administrator approval.");
+            }
+            var binding = WebBootstrapBindings.Read(native);
+            using var descriptor = JsonDocument.Parse(binding.DescriptorBytes);
+            RequireDescriptor(descriptor.RootElement, expectedPublisherPin);
+            var start = new ProcessStartInfo(native) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
+            foreach (var value in new[] { "--bootstrap-worker", pipeName, originalGuiPid.ToString(CultureInfo.InvariantCulture), originalGuiStart.ToString(CultureInfo.InvariantCulture), nonce }) start.ArgumentList.Add(value);
+            var child = Process.Start(start) ?? throw new InvalidOperationException("Windows did not start the protected installation host.");
+            launch = new(child, binding, descriptor.RootElement.Clone(), nativeLease); nativeLease = null; return true;
+        }
+        finally { nativeLease?.Dispose(); }
+    }
+
+    // Explorer and older shortcuts can open the shared apphost directly. Recover
+    // only the installed authoring application's signed, unbound native carrier;
+    // the elevated bootstrap still provisions and authenticates its protected host.
+    internal static string? FindDetachedCoordinator(string image, IEnumerable<InstalledProduct> products)
+    {
+        foreach (var product in products.Where(item => item.Id.Equals("heirowinstaller", StringComparison.OrdinalIgnoreCase) && !item.IsMsi && !item.IsExecutable && !item.Isolated))
+        {
+            using var package = PackageReader.Open(product.PackagePath);
+            package.VerifySignature(product.PublisherKeySha256, requireSignature: true);
+            if (package.Manifest.Id != product.Id || package.Manifest.Version != product.Version)
+                throw new CryptographicException("The installed authoring application differs from its signed receipt.");
+            var entry = package.Manifest.Payload.Single(item => item.Path == package.Manifest.EntryPoint && item.TargetRoot is null);
+            var native = PackageSafety.UnderRoot(product.InstallDirectory, entry.Path);
+            PackageSafety.EnsureNoReparsePoints(native);
+            if (new FileInfo(native).Length != entry.Size || !PackageSafety.HashEquals(PackageSafety.HashFile(native), entry.Sha256))
+                throw new CryptographicException("The installed native authoring launcher changed. Repair heirowInstaller before updating applications.");
+            var binding = WebBootstrapBindings.Read(native, product.PublisherKeySha256);
+            using var document = JsonDocument.Parse(binding.DescriptorBytes);
+            var descriptor = document.RootElement;
+            RequireDescriptor(descriptor, product.PublisherKeySha256);
+            if (descriptor.TryGetProperty("applicationPackage", out var application) && application.ValueKind != JsonValueKind.Null) continue;
+            if (!MatchesDescriptorHost(descriptor, binding.PublisherKeySha256, image)) continue;
+            return native;
+        }
+        return null;
+    }
+
+    private static bool MatchesDescriptorHost(JsonElement descriptor, string publisher, string image)
+    {
+        var entry = descriptor.GetProperty("hostEntryPoint").GetString()!;
+        if (!Path.GetFileName(image).Equals(entry, InstallerPlatform.PathComparison)) return false;
+        var id = descriptor.GetProperty("hostPackageId").GetString();
+        var definition = descriptor.GetProperty("packages").EnumerateArray().Single(item => item.GetProperty("id").GetString() == id);
+        var files = Path.GetDirectoryName(Path.GetFullPath(image))!;
+        var directory = Path.GetDirectoryName(files)!;
+        var digest = definition.GetProperty("sha256").GetString()!;
+        if (!Path.GetFileName(files).Equals("files", InstallerPlatform.PathComparison) ||
+            !Path.GetFileName(directory).Equals(digest, StringComparison.OrdinalIgnoreCase)) return false;
+        var archive = PackageSafety.UnderRoot(directory, "package.hinst");
+        PackageSafety.EnsureNoReparsePoints(image); PackageSafety.EnsureNoReparsePoints(archive);
+        using var package = PackageReader.Open(archive);
+        package.VerifySignature(publisher, requireSignature: true);
+        if (package.Manifest.Id != id || package.Manifest.Version != definition.GetProperty("version").GetString() ||
+            package.Manifest.TargetRuntime != definition.GetProperty("targetRuntime").GetString() ||
+            new FileInfo(archive).Length != definition.GetProperty("size").GetInt64() || !PackageSafety.HashEquals(package.ComputePackageSha256(), digest))
+            throw new CryptographicException("The detached desktop host differs from its native coordinator's signed package.");
+        var payload = package.Manifest.Payload.Single(item => item.Path == entry);
+        if (new FileInfo(image).Length != payload.Size || !PackageSafety.HashEquals(PackageSafety.HashFile(image), payload.Sha256))
+            throw new CryptographicException("The detached desktop executable changed before administrator approval.");
+        return true;
     }
 
     /// <summary>The worker independently verifies its native promoter and the original medium-integrity GUI.</summary>
@@ -186,7 +262,9 @@ public sealed class BootstrapWorkerLaunch : IDisposable
     private readonly WebBootstrapBinding binding;
     private readonly JsonElement descriptor;
     private (string Path, string Hash)? protectedHost;
-    internal BootstrapWorkerLaunch(Process process, WebBootstrapBinding binding, JsonElement descriptor) { Process = process; this.binding = binding; this.descriptor = descriptor; }
+    private readonly FileStream? nativeLease;
+    internal BootstrapWorkerLaunch(Process process, WebBootstrapBinding binding, JsonElement descriptor, FileStream? nativeLease = null)
+    { Process = process; this.binding = binding; this.descriptor = descriptor; this.nativeLease = nativeLease; }
     public Process Process { get; }
     private (string Path, string Hash) Host => protectedHost ??= BootstrapWorkerPromotion.ProtectedHost(descriptor, binding.PublisherKeySha256);
     public string ExpectedWorkerImage => Host.Path;
@@ -199,5 +277,5 @@ public sealed class BootstrapWorkerLaunch : IDisposable
             !PackageSafety.HashEquals(PackageSafety.HashFile(peer.Image), expected.Hash))
             throw new CryptographicException("The protected worker pipe peer changed.");
     }
-    public void Dispose() => Process.Dispose();
+    public void Dispose() { Process.Dispose(); nativeLease?.Dispose(); }
 }

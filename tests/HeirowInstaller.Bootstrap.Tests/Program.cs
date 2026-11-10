@@ -360,6 +360,7 @@ await WebBootstrapBindings.WriteAsync(generic, Encoding.UTF8.GetBytes(maintenanc
 await Reject(() => { HeirowInstaller.Core.SharedInstallerHost.Provision(updaterCarrier, "user", maintenanceState, false); return Task.CompletedTask; }, "updater carriers cannot replace installer maintenance hosts");
 File.AppendAllText(pooled, "tampered");
 await Reject(() => { HeirowInstaller.Core.SharedInstallerHost.Validate(pooled, "machine", maintenanceState, true); return Task.CompletedTask; }, "changed native maintenance carriers fail content verification");
+await DetachedCoordinatorChecks.Run(root, key, generic, Check);
 Console.WriteLine($"PASS {checks} bootstrap checks; fixture binding: {fixtureDescriptor}");
 await File.WriteAllTextAsync(Path.Combine(root, "receipt.json"), JsonSerializer.Serialize(new { passed = true, checks, realUacTested = false, credentialedElevationTested = false, protectedMachineWrites = false, retained = true }));
 
