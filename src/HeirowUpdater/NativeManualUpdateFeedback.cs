@@ -185,6 +185,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             !PackageSafety.HashEquals(first.PublisherKeySha256, configuration.PublisherKeySha256))
             throw new InvalidDataException("Manual update feedback application identity mismatch.");
         if (first.Status == "closed") return 0;
+        first = first with { ProductName = configuration.Name, CurrentVersion = configuration.CurrentVersion };
         string? Fixture(string variable) => configuration.Isolated ? Environment.GetEnvironmentVariable(variable) : null;
         var choice = Fixture("HEIROWUPDATER_TEST_MANUAL_CHOICE");
         if (choice is not null && choice != "close") throw new ArgumentException("Manual feedback acceptance choice must be close.");
@@ -201,7 +202,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             catch (IOException) { return first; }
             catch (JsonException) { return first; }
         }
-        return await RunGameAsync(first with { ProductName = configuration.Name, CurrentVersion = configuration.CurrentVersion }, Current,
+        return await RunGameAsync(first, Current,
             choice, Fixture("HEIROWUPDATER_TEST_MANUAL_CAPTURE"), Fixture("HEIROWUPDATER_TEST_MANUAL_REPORT"), path + ".ack.json",
             Fixture("HEIROWUPDATER_TEST_MANUAL_EVENTS"), stop.Token, configuration);
     }

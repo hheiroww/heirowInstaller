@@ -19,9 +19,10 @@ internal sealed partial class CpuInstallerForm
             ClearOwnedControls(footer);
             controls.Clear();
             var manifest = Controller.Manifest;
-            heading.Text = manifest is null ? "heirowInstaller" : manifest.Name + " Setup";
+            heading.Text = Controller.SetupProductName is { } name ? name + " Setup" : arguments.InitialSetupTitle ?? "heirowInstaller";
             subtitle.Text = "Windows compatibility interface · CPU rendering";
-            if (manifest is not null) subtitle.Text += " · " + manifest.Version + " · " + manifest.Publisher;
+            if (Controller.SetupProductVersion is { } version) subtitle.Text += " · " + version;
+            if (manifest is not null) subtitle.Text += " · " + manifest.Publisher;
             var page = NewPage();
             if (Controller.RunningApplicationsDialog is not null) BuildRunningApplications(page);
             else if (manifest is null) BuildPreparingOrHub(page);
@@ -47,7 +48,7 @@ internal sealed partial class CpuInstallerForm
     private void BuildPreparingOrHub(Forms.TableLayoutPanel page)
     {
         AddRow(page, Paragraph(Controller.Busy ? "Checking the application and its installation files." : Controller.Failed ? "Setup needs attention" : "Install an application", true));
-        AddRow(page, Paragraph(Controller.Failed ? Controller.StatusDetail : "Open a .hinst package or a published setup executable. You can review its license, selected features and destination before choosing Install."));
+        AddRow(page, Paragraph(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Open a .hinst package or a published setup executable. You can review its license, selected features and destination before choosing Install."));
         if (!Controller.Busy && !Controller.IsMaintenanceWizard)
             ActionButton("setup.open", "Open installer…", BrowsePackage, primary: true);
         ActionButton("wizard.cancel", Controller.Busy ? "Cancel setup" : "Close", RequestClose);
@@ -56,7 +57,7 @@ internal sealed partial class CpuInstallerForm
     private void BuildPackagePage(Forms.TableLayoutPanel page)
     {
         var app = Controller.Manifest!;
-        AddRow(page, Paragraph("Welcome to " + app.Name, true));
+        AddRow(page, Paragraph("Welcome to " + Controller.SetupProductName, true));
         if (!string.IsNullOrWhiteSpace(app.Description)) AddRow(page, Paragraph(app.Description));
         AddRow(page, Paragraph("Choose the features and installation location, then review the planned changes. Installation begins when you choose Install application."));
         if (Controller.Plan is { } plan)
@@ -148,7 +149,7 @@ internal sealed partial class CpuInstallerForm
 
     private void BuildReviewPage(Forms.TableLayoutPanel page)
     {
-        AddRow(page, Paragraph("Ready to install " + Controller.Manifest!.Name, true));
+        AddRow(page, Paragraph("Ready to install " + Controller.SetupProductName, true));
         AddRow(page, Paragraph("Changes begin only when you choose Install application."));
         AddRow(page, Paragraph("Location: " + Controller.DisplayInstallDirectory));
         AddRow(page, Paragraph(Controller.Scope == "machine" ? "Scope: everyone on this computer" : "Scope: current user"));
@@ -176,7 +177,7 @@ internal sealed partial class CpuInstallerForm
     private void BuildMaintenancePage(Forms.TableLayoutPanel page)
     {
         var repair = Controller.MaintenanceOperation == "repair";
-        AddRow(page, Paragraph((repair ? "Repair " : "Uninstall ") + Controller.Manifest!.Name, true));
+        AddRow(page, Paragraph((repair ? "Repair " : "Uninstall ") + Controller.SetupProductName, true));
         AddRow(page, Paragraph(repair ? "Repair verifies and restores this application's installed files and configured components." : "Uninstall removes this application and its recorded installation changes."));
         AddRow(page, ReadOnlyText("maintenance.location", Controller.DisplayInstallDirectory), 58);
         AddRow(page, Paragraph("Save your work before continuing. Setup asks before closing any application using these files."));
@@ -202,11 +203,11 @@ internal sealed partial class CpuInstallerForm
     private void BuildCompletePage(Forms.TableLayoutPanel page)
     {
         var removed = Controller.MaintenanceOperation == "uninstall";
-        AddRow(page, Paragraph(removed ? Controller.Manifest!.Name + " was removed." : Controller.Manifest!.Name + " is ready.", true));
+        AddRow(page, Paragraph(Controller.SetupProductName + (removed ? " was removed." : " is ready."), true));
         AddRow(page, Paragraph(Controller.LastInstallation?.RebootRequired == true ? "Restart Windows to finish applying all changes." : "Choose Finish to close setup."));
         if (Controller.CanOpenInstalledApplication)
         {
-            var launch = Remember("wizard.open", new Forms.CheckBox { AutoSize = true, Text = "Open " + Controller.Manifest.Name + " after setup", Checked = Controller.OpenApplicationOnFinish });
+            var launch = Remember("wizard.open", new Forms.CheckBox { AutoSize = true, Text = "Open " + Controller.SetupProductName + " after setup", Checked = Controller.OpenApplicationOnFinish });
             launch.CheckedChanged += (_, _) => Controller.OpenApplicationOnFinish = launch.Checked;
             AddRow(page, launch);
         }

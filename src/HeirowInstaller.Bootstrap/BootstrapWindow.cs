@@ -9,7 +9,7 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
     private static BootstrapWindow? current;
     private readonly CancellationTokenSource cancellation = new();
     private readonly string title;
-    private nint window, heading, detail, bar, cancel, font;
+    private nint window, detail, bar, cancel, font;
     private BootstrapProgress latest = new("Preparing setup", "Checking the required shared files.");
     private Task<int>? operation;
     private Exception? failure;
@@ -52,8 +52,8 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
             var buttonY = Math.Max(0, client.Bottom - margin - buttonHeight);
             var barHeight = Math.Min(D(22), Math.Max(10, client.Bottom / 8));
             var barY = Math.Max(margin, buttonY - margin - barHeight);
-            heading = CreateWindowExW(0, "STATIC", latest.Phase, 0x50000000, margin, margin, contentWidth, D(26), window, 0, instance, 0);
-            detail = CreateWindowExW(0, "STATIC", latest.Detail, 0x50000000, margin, margin + D(34), contentWidth, Math.Max(D(24), barY - margin - D(40)), window, 0, instance, 0);
+            var heading = CreateWindowExW(0, "STATIC", title, 0x50000000, margin, margin, contentWidth, D(26), window, 0, instance, 0);
+            detail = CreateWindowExW(0, "STATIC", ProgressText(latest), 0x50000000, margin, margin + D(34), contentWidth, Math.Max(D(24), barY - margin - D(40)), window, 0, instance, 0);
             bar = CreateWindowExW(0, "msctls_progress32", "", 0x50000000, margin, barY, contentWidth, barHeight, window, 0, instance, 0);
             cancel = CreateWindowExW(0, "BUTTON", "Cancel", 0x50010000, client.Right - margin - buttonWidth, buttonY, buttonWidth, buttonHeight, window, 100, instance, 0);
             font = CreateFontW(-D(16), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
@@ -68,6 +68,9 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
         return operation?.GetAwaiter().GetResult() ?? 1;
     }
     internal void Hide() { if (window != 0) PostMessageW(window, 0x8003, 0, 0); }
+    private static string ProgressText(BootstrapProgress value) => value.Total > 0
+        ? $"{value.Phase}\n{value.Detail}\n{value.Completed:N0} / {value.Total:N0} bytes"
+        : $"{value.Phase}\n{value.Detail}";
     private int RunOperation(Func<CancellationToken, Task<int>> action)
     {
         try { return action(cancellation.Token).GetAwaiter().GetResult(); }
@@ -86,8 +89,7 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
             if (message == 0x8001)
             {
                 var value = Volatile.Read(ref self.latest);
-                SetWindowTextW(self.heading, value.Phase);
-                SetWindowTextW(self.detail, value.Total > 0 ? $"{value.Detail}\n{value.Completed:N0} / {value.Total:N0} bytes" : value.Detail);
+                SetWindowTextW(self.detail, ProgressText(value));
                 SendMessageW(self.bar, 0x402, (nuint)(value.Total > 0 ? Math.Clamp((int)(100d * value.Completed / value.Total), 0, 100) : 0), 0);
                 return 0;
             }

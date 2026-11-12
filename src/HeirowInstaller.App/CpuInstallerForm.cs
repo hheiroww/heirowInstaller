@@ -45,7 +45,7 @@ internal sealed partial class CpuInstallerForm : Forms.Form, IInstallerDesktopHo
     internal CpuInstallerForm(AppArguments arguments, bool startOnShown = true)
     {
         this.arguments = arguments;
-        Text = arguments.PackagePath is not null || arguments.MaintenanceProductId is not null ? "Application setup" : "heirowInstaller";
+        Text = arguments.InitialSetupTitle ?? "heirowInstaller";
         Name = "CpuInstallerForm";
         AutoScaleMode = Forms.AutoScaleMode.Dpi;
         ClientSize = new Drawing.Size(850, 680);

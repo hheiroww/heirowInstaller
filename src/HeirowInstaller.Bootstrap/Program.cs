@@ -11,12 +11,19 @@ internal static class Program
     {
         if (!OperatingSystem.IsWindows()) return 50;
         if (!SetDefaultDllDirectories(0x800)) return 1; // Native bootstrap imports come only from Windows' system directory.
+        var title = "heirowInstaller";
         try
         {
             var descriptor = BootstrapEngine.ReadEmbeddedDescriptor(); BootstrapEngine.Validate(descriptor);
+            title = descriptor.HostKind switch
+            {
+                "application" => descriptor.Name,
+                "updater" => descriptor.Name + " Update",
+                _ => descriptor.Name + " Setup"
+            };
             if (args.FirstOrDefault() == "--bootstrap-worker") return NativeWorkerPromotion.Run(args, descriptor);
             if (args.FirstOrDefault() == "--bootstrap-application") return NativeApplicationPromotion.Run(args, descriptor);
-            using var window = new BootstrapWindow(descriptor.HostKind == "application" ? descriptor.Name : descriptor.Name + " Setup");
+            using var window = new BootstrapWindow(title);
             return window.Run(async token =>
             {
                 if (descriptor.HostKind == "application" && IsAdministrator())
@@ -82,7 +89,7 @@ internal static class Program
                 window.Hide(); await child.WaitForExitAsync(CancellationToken.None); return child.ExitCode;
             });
         }
-        catch (Exception error) { BootstrapWindow.MessageBoxW(0, error.Message, "heirowInstaller", 0x10); return 1; }
+        catch (Exception error) { BootstrapWindow.MessageBoxW(0, error.Message, title, 0x10); return 1; }
     }
     internal static bool IsAdministrator()
     {

@@ -9,9 +9,9 @@ internal sealed partial class InstallerScene
         Box(0, 0, RailWidth, Height, Theme.Rail * 0.88f, 0, Color.Transparent);
         Box(RailWidth - 1, 0, 1, Height, Theme.Border, 0, Color.Transparent);
         Logo(27, 28, 56);
-        var applicationName = Controller.Manifest?.Name ?? "Application setup";
+        var applicationName = Controller.SetupProductName ?? "Application setup";
         Text(applicationName, 27, 105, RailWidth - 54, 57, applicationName.Length > 14 ? 17 : 19, bold: true, wrap: true);
-        Text(Controller.Manifest is { } manifest ? "Version " + manifest.Version : "Preparing your installation", 28, 174, RailWidth - 56, 26, 9.5f, Theme.Muted);
+        Text(Controller.SetupProductVersion is { } version ? "Version " + version : "Preparing your installation", 28, 174, RailWidth - 56, 26, 9.5f, Theme.Muted);
         var labels = Controller.IsMaintenanceWizard ? new[] { "Review", Controller.MaintenanceOperation == "repair" ? "Repairing" : "Uninstalling", "Finish" }
             : new[] { "Welcome", "Features", "Location", "Ready to install", "Installing", "Finish" };
         var selectedStage = Controller.IsMaintenanceWizard ? Controller.Stage == SetupStage.Complete ? 2 : Controller.Stage == SetupStage.Progress ? 1 : 0 : (int)Controller.Stage;
@@ -32,8 +32,9 @@ internal sealed partial class InstallerScene
 
     private void BuildWizardHeader()
     {
-        var name = Controller.Manifest?.Name;
-        var title = name is null ? "Preparing setup" : Controller.Stage == SetupStage.Complete ? name + " is ready" : "Install " + name;
+        var name = Controller.SetupProductName;
+        var title = name is null ? "Preparing setup" : Controller.Manifest is null ? name + " Setup" :
+            Controller.Stage == SetupStage.Complete ? name + " is ready" : "Install " + name;
         if (Controller.IsMaintenanceWizard && name is not null)
             title = Controller.Stage == SetupStage.Complete && Controller.MaintenanceOperation == "uninstall" ? name + " was removed" :
                 Controller.Stage == SetupStage.Complete ? name + " is ready" : (Controller.MaintenanceOperation == "repair" ? "Repair " : "Uninstall ") + name;
@@ -60,7 +61,7 @@ internal sealed partial class InstallerScene
     {
         Box(Left, 158, BodyWidth, 296, Theme.Surface, 14);
         Text(Controller.Failed ? "Setup needs attention" : "Getting your setup ready", Left + 28, 196, BodyWidth - 56, 46, 24, bold: true);
-        Text(Controller.Failed ? Controller.StatusDetail : "Checking the application and its installation files.", Left + 29, 267, BodyWidth - 58, 95, 12, Theme.Muted, wrap: true);
+        Text(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Checking the application and its installation files.", Left + 29, 267, BodyWidth - 58, 95, 12, Theme.Muted, wrap: true);
         Action("wizard.cancel", "Close", Width - 186, BodyBottom - 48, 152, game.Exit);
     }
 
@@ -69,9 +70,9 @@ internal sealed partial class InstallerScene
         var app = Controller.Manifest!;
         Box(Left, y, BodyWidth, 250, Theme.Surface, 14);
         Logo(Left + 28, y + 29, 82);
-        Text("Welcome to " + app.Name, Left + 134, y + 34, BodyWidth - 162, 78, 24, bold: true, wrap: true);
+        Text("Welcome to " + Controller.SetupProductName, Left + 134, y + 34, BodyWidth - 162, 78, 24, bold: true, wrap: true);
         Text("Version " + app.Version + "  ·  " + app.Publisher, Left + 29, y + 137, BodyWidth - 58, 30, 11, Theme.Muted);
-        Text(string.IsNullOrWhiteSpace(app.Description) ? "Setup will guide you through installing " + app.Name + "." : app.Description,
+        Text(string.IsNullOrWhiteSpace(app.Description) ? "Setup will guide you through installing " + Controller.SetupProductName + "." : app.Description,
             Left + 29, y + 183, BodyWidth - 58, 51, 11.5f, Theme.Muted, wrap: true);
         var bottom = y + 278;
         Text("Make it yours", Left + 2, bottom, BodyWidth - 4, 36, 17, bold: true);
@@ -93,7 +94,7 @@ internal sealed partial class InstallerScene
         Logo(Left + 29, y + 29, 76);
         Pill(removed ? "✓  REMOVED" : repaired ? "✓  REPAIRED" : "✓  INSTALLED", Left + 129, y + 35, 149);
         Text(removed ? "Uninstall complete." : repaired ? "Ready again." : "You're all set.", Left + 29, y + 131, BodyWidth - 58, 57, 31, bold: true);
-        Text(app.Name + " " + app.Version + (removed ? " has been removed." : repaired ? " has been repaired." : " has been installed."), Left + 31, y + 204, BodyWidth - 62, 55, 13, Theme.Muted, wrap: true);
+        Text(Controller.SetupProductName + " " + app.Version + (removed ? " has been removed." : repaired ? " has been repaired." : " has been installed."), Left + 31, y + 204, BodyWidth - 62, 55, 13, Theme.Muted, wrap: true);
         Text(Controller.LastInstallation?.RebootRequired == true ? "Restart Windows to finish applying all changes." : "Choose Finish to close setup.", Left + 31, y + 281, BodyWidth - 62, 31, 10.5f, Theme.Muted);
         if (Controller.CanOpenInstalledApplication)
         {
@@ -101,7 +102,7 @@ internal sealed partial class InstallerScene
             open.BackgroundColor = Controller.OpenApplicationOnFinish ? Theme.GreenSurface : Theme.Surface;
             open.Size = new(BodyWidth - 2, 62);
             Text(Controller.OpenApplicationOnFinish ? "✓" : "○", Left + 19, y + 386, 29, 27, 12, Theme.Lime, true);
-            Text("Open " + app.Name, Left + 56, y + 384, BodyWidth - 78, 29, 11.5f, bold: true);
+            Text("Open " + Controller.SetupProductName, Left + 56, y + 384, BodyWidth - 78, 29, 11.5f, bold: true);
         }
         Action("wizard.finish", "Finish", Width - 202, BodyBottom - 48, 168, () => _ = Controller.FinishAsync(), true);
     }
@@ -113,7 +114,7 @@ internal sealed partial class InstallerScene
         var x = (Width - width) / 2; var y = (Height - height) / 2;
         Box(x, y, width, height, Theme.Surface, 14);
         Text("Installation details", x + 25, y + 24, width - 50, 41, 21, bold: true);
-        Text(Controller.Manifest?.Name ?? "Setup", x + 27, y + 79, width - 54, 28, 11, Theme.Muted);
+        Text(Controller.SetupProductName ?? "Setup", x + 27, y + 79, width - 54, 28, 11, Theme.Muted);
         var details = Field("wizard.details", string.Join(Environment.NewLine, Controller.Activity.Select(entry => $"{entry.Time:HH:mm:ss}  {entry.Title}: {entry.Detail}")),
             x + 25, y + 127, width - 50, _ => { }, true, height - 217);
         ReadOnlyField(details);
@@ -129,7 +130,7 @@ internal sealed partial class InstallerScene
         var repair = Controller.MaintenanceOperation == "repair";
         Box(Left, 151, BodyWidth, 333, Theme.Surface, 14);
         Logo(Left + 29, 181, 78);
-        Text(app.Name, Left + 131, 187, BodyWidth - 160, 70, 24, bold: true, wrap: true);
+        Text(Controller.SetupProductName!, Left + 131, 187, BodyWidth - 160, 70, 24, bold: true, wrap: true);
         Text("Version " + app.Version + "  ·  " + app.Publisher, Left + 30, 289, BodyWidth - 60, 30, 11, Theme.Muted);
         Text(repair ? "Repair restores this application's installed files and configured components." : "Uninstall removes this application and its recorded installation changes.",
             Left + 30, 345, BodyWidth - 60, 60, 12, Theme.Muted, wrap: true);

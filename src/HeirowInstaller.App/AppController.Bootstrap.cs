@@ -10,7 +10,9 @@ internal sealed partial class AppController
     internal async Task OpenRemotePackageAsync()
     {
         if (Busy || arguments.RemotePackageUrl is null) return;
-        Begin("Downloading application setup", "Preparing the verified application files. Shared dependencies are downloaded during installation.");
+        Begin("Downloading application setup", SetupProductName is { } name
+            ? $"Preparing {name} setup. Shared dependencies are downloaded during installation."
+            : "Preparing the application files. Shared dependencies are downloaded during installation.");
         try
         {
             var token = Cancellation!.Token;

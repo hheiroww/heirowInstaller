@@ -23,10 +23,10 @@ internal static class DesktopPlatform
         System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
 #endif
     }
-    internal static void ShowError(string message)
+    internal static void ShowError(string message, string title = "heirowInstaller")
     {
 #if WINDOWS
-        System.Windows.Forms.MessageBox.Show(message, "heirowInstaller", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
+        System.Windows.Forms.MessageBox.Show(message, title, System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
 #else
         Console.Error.WriteLine(message);
 #endif

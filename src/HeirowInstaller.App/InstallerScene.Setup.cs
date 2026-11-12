@@ -184,7 +184,7 @@ internal sealed partial class InstallerScene
         Text("Ready to make it yours.", Left, y, BodyWidth, 40, 21, bold: true);
         Text("Review the installation. Changes begin when you choose Install application.", Left, y + 50, BodyWidth, 29, 10.5f, Theme.Muted);
         Box(Left, y + 100, BodyWidth, 135, Theme.Surface, 12);
-        Text(Controller.Manifest!.Name + "  " + Controller.Manifest.Version, Left + 24, y + 117, BodyWidth - 48, 35, 16, bold: true);
+        Text(Controller.SetupProductName + "  " + Controller.Manifest!.Version, Left + 24, y + 117, BodyWidth - 48, 35, 16, bold: true);
         Text(Controller.DisplayInstallDirectory, Left + 24, y + 164, BodyWidth - 48, 26, 10.5f, Theme.Muted);
         Text(Controller.Scope == "machine" ? "All users · Administrator access required" : "Current user", Left + 24, y + 201, BodyWidth - 48, 24, 9, Theme.Orange);
         var operations = Field("setup.operations", string.Join(Environment.NewLine, Controller.Plan!.Operations.Select(operation => "✓  " + operation)), Left, y + 258, BodyWidth, _ => { }, true, Math.Max(80, BodyBottom - 63 - y - 258));
@@ -195,7 +195,7 @@ internal sealed partial class InstallerScene
     {
         Logo(Left + BodyWidth / 2 - 48, y + 14, 96);
         Text(Controller.Failed ? "Setup needs attention" : Controller.MaintenanceOperation == "uninstall" ? "Removing the application." : Controller.MaintenanceOperation == "repair" ? "Getting you ready again." : "Making everything ready.", Left + 24, y + 132, BodyWidth - 48, 48, 25, bold: true);
-        Text(Controller.Manifest!.Name, Left + 24, y + 195, BodyWidth - 48, 31, 13, Theme.Muted);
+        Text(Controller.SetupProductName!, Left + 24, y + 195, BodyWidth - 48, 31, 13, Theme.Muted);
         Box(Left + 24, y + 262, BodyWidth - 48, 8, Theme.SurfaceRaised, 4, Color.Transparent);
         progressBar = Box(Left + 24, y + 262, Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8, Controller.Failed ? Theme.Danger : Theme.Lime, 4, Color.Transparent);
         progressPercent = Text($"{Controller.Progress:P0}", Left + 24, y + 294, BodyWidth - 48, 30, 14, Theme.Lime, true);

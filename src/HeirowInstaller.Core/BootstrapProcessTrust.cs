@@ -9,6 +9,47 @@ public static class BootstrapProcessTrust
     public const string ParentIdVariable = "SOCKETJACK_BOOTSTRAP_PID";
     public const string ParentStartVariable = "SOCKETJACK_BOOTSTRAP_START";
 
+    /// <summary>Reads the presentation name from the signed, live setup coordinator for these exact package arguments.</summary>
+    public static string? ReadBoundSetupName(string productId, string version, string packageSha256, string publisherPin,
+        string? remoteUrl, long remoteSize, int? primaryDesktopPid = null)
+    {
+        if (!OperatingSystem.IsWindows() ||
+            !PackageSafety.HashPattern().IsMatch(publisherPin ?? "") || !PackageSafety.HashPattern().IsMatch(packageSha256 ?? "") ||
+            !int.TryParse(Environment.GetEnvironmentVariable(ParentIdVariable), out var parentId) || parentId <= 0 ||
+            !long.TryParse(Environment.GetEnvironmentVariable(ParentStartVariable), out var parentStart) || parentStart <= 0 ||
+            Environment.GetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable) is not { } launcher ||
+            !Path.IsPathFullyQualified(launcher)) return null;
+        try
+        {
+            var desktop = BootstrapWorkerPromotion.ReadIdentity(Environment.ProcessId);
+            if (primaryDesktopPid is { } primary)
+            {
+                if (desktop.ParentId != primary) return null;
+                desktop = BootstrapWorkerPromotion.ReadIdentity(primary);
+            }
+            if (desktop.ParentId != parentId) return null;
+            var coordinator = BootstrapWorkerPromotion.ReadIdentity(parentId);
+            if (coordinator.StartTicks != parentStart ||
+                !Path.GetFullPath(coordinator.Image).Equals(Path.GetFullPath(launcher), InstallerPlatform.PathComparison)) return null;
+            PackageSafety.EnsureNoReparsePoints(coordinator.Image);
+            var binding = WebBootstrapBindings.Read(coordinator.Image, publisherPin);
+            using var document = JsonDocument.Parse(binding.DescriptorBytes);
+            var descriptor = document.RootElement;
+            if (descriptor.GetProperty("hostKind").GetString() != "installer" ||
+                !string.Equals(descriptor.GetProperty("productId").GetString(), productId, StringComparison.OrdinalIgnoreCase) ||
+                descriptor.GetProperty("version").GetString() != version ||
+                !descriptor.TryGetProperty("applicationPackage", out var package) || package.ValueKind != JsonValueKind.Object ||
+                package.GetProperty("sha256").GetString() is not { } digest || !PackageSafety.HashEquals(digest, packageSha256!) ||
+                remoteUrl is not null && (package.GetProperty("url").GetString() != remoteUrl || package.GetProperty("size").GetInt64() != remoteSize))
+                return null;
+            var name = descriptor.GetProperty("name").GetString();
+            return string.IsNullOrWhiteSpace(name) || name.Length > 160 || name.Any(char.IsControl) ? null : name;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or
+            System.Security.Cryptography.CryptographicException or InvalidDataException or JsonException or KeyNotFoundException or FormatException)
+        { return null; }
+    }
+
     public static bool IsTrustedUpdaterProcess(UpdateCompanionConfiguration configuration, string verifiedRuntime)
     {
         var current = Environment.ProcessPath;

@@ -16,12 +16,15 @@ internal static partial class Program
     [STAThread]
     static int Main(string[] args)
     {
+        if (args.FirstOrDefault() is "--setup-name-carrier" or "--setup-name-intermediate" or "--setup-name-child")
+            return RunSetupNameProcess(args);
         string? oldTemp = Environment.GetEnvironmentVariable("TEMP"), oldTmp = Environment.GetEnvironmentVariable("TMP");
         bool oldAutoInstall = WindowsFormsSynchronizationContext.AutoInstall;
         try
         {
             if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("These hidden form checks require Windows.");
-            if (args.Length != 1 || !Path.IsPathFullyQualified(args[0])) throw new ArgumentException("Supply one absolute owned output root.");
+            var setupNameOnly = args is [_, "--setup-name-checks"];
+            if (args.Length != 1 && !setupNameOnly || !Path.IsPathFullyQualified(args[0])) throw new ArgumentException("Supply one absolute owned output root.");
             string taskRoot = Path.GetFullPath(args[0]);
             PackageSafety.EnsureNoReparsePoints(taskRoot);
             Check(taskRoot.TrimEnd(Path.DirectorySeparatorChar).Length > 3, "test outputs use an explicit owned output directory");
@@ -32,15 +35,21 @@ internal static partial class Program
             // capture an unpumped WindowsFormsSynchronizationContext while rebuilt.
             WindowsFormsSynchronizationContext.AutoInstall = false;
             SynchronizationContext.SetSynchronizationContext(null);
-            Policy();
-            RemoteDownloadProgress();
-            NativeMaintenanceArguments();
-            SelfUpdateProductIdentity();
             using (var key = RSA.Create(2048))
             {
                 signingKey = Path.Combine(root, "synthetic-fixture-key.pem"); File.WriteAllText(signingKey, key.ExportPkcs8PrivateKeyPem());
                 signingPin = Convert.ToHexString(SHA256.HashData(key.ExportSubjectPublicKeyInfo()));
             }
+            if (setupNameOnly)
+            {
+                SetupNameChecks();
+                Console.WriteLine($"PASS {checks.Count} signed setup-name checks; output {root}");
+                return 0;
+            }
+            Policy();
+            RemoteDownloadProgress();
+            NativeMaintenanceArguments();
+            SelfUpdateProductIdentity();
             Wizard();
             WizardScope();
             GraphicsBackendChecks.Run(checks);

@@ -17,6 +17,13 @@ internal static class Program
             var maintenance = args.Length >= 2 && args[0] is "uninstall" or "repair";
             options = maintenance ? AppArguments.Parse(args.Skip(2).ToArray(), maintenanceInvocation: true) with { MaintenanceProductId = args[1], MaintenanceOperation = args[0] } : AppArguments.Parse(args);
             using var graphicsContext = DirectX11Fallback.EnterChildContext(options);
+            if (!options.Silent && options.RequireSignature && options.TrustedPublisherKeySha256 is { } publisher &&
+                options.ExpectedProductId is { } expectedProduct && options.ExpectedVersion is { } version && options.ExpectedSha256 is { } hash)
+            {
+                var name = BootstrapProcessTrust.ReadBoundSetupName(expectedProduct, version, hash, publisher,
+                    options.RemotePackageUrl, options.RemotePackageSize, DirectX11Fallback.CurrentPrimaryProcessId);
+                options = options with { VerifiedBootstrapProductName = name };
+            }
 #if WINDOWS
             if (options.GraphicsHandoffSmokeRoot is { } handoffSmoke)
             {
@@ -91,7 +98,8 @@ internal static class Program
             var path = Path.Combine(directory, "desktop-error.log");
             File.AppendAllText(path, $"{DateTimeOffset.Now:O}\n{error}\n\n");
             if (!args.Any(value => new[] { "--silent", "--quiet", "/quiet", "/qn", "/silent", "/verysilent", "--defer", "--wizard-smoke", "--ui-smoke", "--ui-performance", "--graphics-handoff-smoke" }.Contains(value, StringComparer.OrdinalIgnoreCase)))
-                DesktopPlatform.ShowError($"heirowInstaller could not start.\n\n{error.Message}\n\nDetails: {path}");
+                DesktopPlatform.ShowError($"{options?.VerifiedBootstrapProductName ?? "heirowInstaller"} could not start.\n\n{error.Message}\n\nDetails: {path}",
+                    options?.InitialSetupTitle ?? "heirowInstaller");
             return 1;
         }
     }
@@ -211,6 +219,9 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal bool RequestAdministratorOnOpen { get; init; }
     internal string? RemotePackageUrl { get; init; }
     internal long RemotePackageSize { get; init; }
+    internal string? VerifiedBootstrapProductName { get; init; }
+    internal bool IsWizardInvocation => PackagePath is not null || RemotePackageUrl is not null || MaintenanceProductId is not null;
+    internal string? InitialSetupTitle => VerifiedBootstrapProductName is { } name ? name + " Setup" : IsWizardInvocation ? "Application setup" : null;
     internal void ValidatePackageIdentity(PackageReader package)
     {
         if (ExpectedProductId is not null && !package.Manifest.Id.Equals(ExpectedProductId, StringComparison.OrdinalIgnoreCase))

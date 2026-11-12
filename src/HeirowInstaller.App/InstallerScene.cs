@@ -226,7 +226,7 @@ internal sealed partial class InstallerScene : Scene
         else
         {
             Box(x, y, size, size, Theme.GreenSurface, 10, Color.Transparent);
-            var letter = Controller.Manifest?.Name.FirstOrDefault(char.IsLetterOrDigit) ?? '\0';
+            var letter = Controller.SetupProductName?.FirstOrDefault(char.IsLetterOrDigit) ?? '\0';
             var initial = Controller.IsWizard ? letter == '\0' ? "↓" : letter.ToString().ToUpperInvariant() : "h";
             Text(initial, x + size * 0.22f, y + size * 0.01f, size, size, size * 0.5f, Theme.Lime, true);
         }

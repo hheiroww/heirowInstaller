@@ -31,7 +31,7 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
     public InstallerGame(AppArguments arguments)
     {
         this.arguments = arguments;
-        Window.Title = arguments.PackagePath is not null || arguments.MaintenanceProductId is not null ? "Application setup" : "heirowInstaller | SocketJack";
+        Window.Title = arguments.InitialSetupTitle ?? "heirowInstaller | SocketJack";
         Window.AllowUserResizing = true;
         IsMouseVisible = true;
         IsFixedTimeStep = true;
@@ -40,7 +40,7 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
         Content.RootDirectory = "Content";
         graphics = new GraphicsDeviceManager(this)
         {
-            PreferredBackBufferWidth = arguments.PackagePath is not null || arguments.MaintenanceProductId is not null ? 1060 : 1180,
+            PreferredBackBufferWidth = arguments.IsWizardInvocation ? 1060 : 1180,
             PreferredBackBufferHeight = 800,
             PreferMultiSampling = OperatingSystem.IsWindows(),
             SynchronizeWithVerticalRetrace = true,
