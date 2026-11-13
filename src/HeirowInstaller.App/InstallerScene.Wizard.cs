@@ -60,8 +60,11 @@ internal sealed partial class InstallerScene
     private void BuildWizardPreparing()
     {
         Box(Left, 158, BodyWidth, 296, Theme.Surface, 14);
-        Text(Controller.Failed ? "Setup needs attention" : "Getting your setup ready", Left + 28, 196, BodyWidth - 56, 46, 24, bold: true);
-        Text(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Checking the application and its installation files.", Left + 29, 267, BodyWidth - 58, 95, 12, Theme.Muted, wrap: true);
+        var title = Text(Controller.Failed ? "Setup needs attention" : Controller.Busy ? Controller.Status : "Getting your setup ready",
+            Left + 28, 196, BodyWidth - 56, 46, 24, bold: true);
+        var detail = Text(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Checking the application and its installation files.",
+            Left + 29, 267, BodyWidth - 58, 95, 12, Theme.Muted, wrap: true);
+        if (Controller.Busy) { preparingTitle = title; progressDetail = detail; }
         Action("wizard.cancel", "Close", Width - 186, BodyBottom - 48, 152, game.Exit);
     }
 

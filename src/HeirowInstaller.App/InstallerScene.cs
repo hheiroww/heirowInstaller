@@ -36,7 +36,7 @@ internal sealed partial class InstallerScene : Scene
     internal int RebuildCount { get; private set; }
     private readonly Dictionary<string, Texture2D> artwork = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> usedArtwork = new(StringComparer.OrdinalIgnoreCase);
-    private TextElement? statusTitle, statusDetail, progressPercent, progressDetail;
+    private TextElement? statusTitle, statusDetail, progressPercent, progressDetail, preparingTitle;
     private RectangleElement? progressBar;
     private RectangleElement? busyProgress;
     private TextElement? busyElapsed;
@@ -104,7 +104,7 @@ internal sealed partial class InstallerScene : Scene
     internal void Rebuild()
     {
         RebuildCount++;
-        statusTitle = statusDetail = progressPercent = progressDetail = null;
+        statusTitle = statusDetail = progressPercent = progressDetail = preparingTitle = null;
         progressBar = null;
         busyProgress = null; busyElapsed = null;
         legalBusyIndicator = null;
@@ -303,6 +303,7 @@ internal sealed partial class InstallerScene : Scene
     {
         static void Set(TextElement? element, string value) { if (element is not null && element.Text != value) element.Text = value; }
         Set(statusTitle, Controller.Status); Set(statusDetail, Controller.StatusDetail);
+        Set(preparingTitle, Controller.Status);
         Set(progressPercent, $"{Controller.Progress:P0}"); Set(progressDetail, Controller.StatusDetail);
         if (progressBar is not null) progressBar.Size = new(Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8);
         if (Controller.Page == DesktopPage.Activity || showWizardDetails) activityDirty = true;

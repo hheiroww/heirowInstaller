@@ -677,10 +677,15 @@ internal sealed partial class AppController : IDisposable
         else Cancellation?.Cancel();
     }
 
-    private SocketJackUpdateTransport CreateDownloadTransport() => new(
-        credentialOrigin: new Uri("https://socketjack.com"),
-        cookie: PublisherSignedIn ? null : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE"),
-        bearerToken: PublisherSignedIn ? publisherSession!.AccessToken : Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN"));
+    private (string? Cookie, string? Bearer) DownloadCredentials() => PublisherSignedIn
+        ? (null, publisherSession!.AccessToken)
+        : (Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE"), Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN"));
+
+    private SocketJackUpdateTransport CreateDownloadTransport()
+    {
+        var (cookie, bearer) = DownloadCredentials();
+        return new(AccountOrigin, cookie, bearer);
+    }
 
     private UpdateClient CreateUpdateClient() => new(allowLoopback: arguments.SelfUpdateSmokeFeed is not null, transport: CreateDownloadTransport());
 

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using HeirowInstaller.Core;
 using HeirowInstaller.Publishing;
+using HeirowUpdater.SocketJack;
 
 namespace HeirowInstaller.App;
 
@@ -22,13 +23,24 @@ internal sealed partial class AppController
                 ProductId = arguments.ExpectedProductId!, Version = arguments.ExpectedVersion!,
                 InstallerUrl = arguments.RemotePackageUrl, Sha256 = arguments.ExpectedSha256!, Size = arguments.RemotePackageSize, PackageType = "hinst"
             };
+            var endpoint = new Uri(feed.InstallerUrl);
+            var useStreaming = SetupPackageTransport.SameOrigin(endpoint, AccountOrigin) || arguments.Isolated && endpoint.IsLoopback;
             var parent = arguments.Isolated ? Path.Combine(arguments.StateRoot!, ".bootstrap-downloads")
                 : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SocketJack", "heirowInstaller", "downloads");
             var directory = Path.Combine(parent, feed.Sha256.ToLowerInvariant());
             async Task<string> Download()
             {
-                using var client = CreateUpdateClient();
-                return await client.DownloadCachedApplicationAsync(feed, directory, Reporter(), token);
+                if (!useStreaming)
+                {
+                    using var existingClient = CreateUpdateClient();
+                    return await existingClient.DownloadCachedApplicationAsync(feed, directory, Reporter(), token);
+                }
+                var (cookie, bearer) = DownloadCredentials();
+                var session = new ApplicationSessionSnapshot(sessionCookie: cookie, bearerToken: bearer);
+                using var transport = new SetupPackageTransport(AccountOrigin, session);
+                using var client = new UpdateClient(allowLoopback: arguments.Isolated && endpoint.IsLoopback, transport: transport);
+                return await client.DownloadStreamingApplicationAsync(feed, directory, TimeSpan.FromMinutes(1),
+                    new SetupDownloadProgress(value => ReportSetupDownload(value, token)), token);
             }
             string path;
             try { path = await Download(); }
@@ -57,4 +69,14 @@ internal sealed partial class AppController
         }
         catch (Exception error) { await ErrorAsync("Could not download application setup", error); }
     }
+
+    private void ReportSetupDownload(InstallProgress value, CancellationToken token) => game.Enqueue(() =>
+    {
+        if (!Busy || token.IsCancellationRequested || Cancellation?.Token != token) return;
+        Progress = value.CompletedBytes is { } bytes && value.TotalBytes is > 0
+            ? Math.Clamp((double)bytes / value.TotalBytes.Value, 0, 1) : value.Fraction;
+        Status = value.Phase == "cache" ? "Using downloaded application files" : "Downloading application files";
+        StatusDetail = value.Message;
+        ProgressChanged?.Invoke();
+    });
 }

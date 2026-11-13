@@ -94,6 +94,19 @@ public sealed class UpdateClient : IDisposable
 
     /// <summary>Reuses a complete, hash-verified application download for a bound remote setup.</summary>
     public async Task<string> DownloadCachedApplicationAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+        => await DownloadCachedApplicationCoreAsync(feed, destinationDirectory, null, progress, cancellationToken);
+
+    /// <summary>Downloads a bound setup package with a deadline on each idle network read and reports exact byte counts.</summary>
+    public async Task<string> DownloadStreamingApplicationAsync(UpdateFeed feed, string destinationDirectory, TimeSpan readIdleTimeout,
+        IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        if (readIdleTimeout <= TimeSpan.Zero || readIdleTimeout > TimeSpan.FromMinutes(5))
+            throw new ArgumentOutOfRangeException(nameof(readIdleTimeout));
+        return await DownloadCachedApplicationCoreAsync(feed, destinationDirectory, readIdleTimeout, progress, cancellationToken);
+    }
+
+    private async Task<string> DownloadCachedApplicationCoreAsync(UpdateFeed feed, string destinationDirectory, TimeSpan? readIdleTimeout,
+        IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
         ValidateFeed(feed);
         RequireIncremental(feed);
@@ -117,10 +130,14 @@ public sealed class UpdateClient : IDisposable
                 }
             }
         }
-        return await DownloadAsync(feed, destinationDirectory, progress, cancellationToken);
+        return await DownloadCoreAsync(feed, destinationDirectory, progress, cancellationToken, readIdleTimeout);
     }
 
     public async Task<string> DownloadAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress = null, CancellationToken cancellationToken = default)
+        => await DownloadCoreAsync(feed, destinationDirectory, progress, cancellationToken, null);
+
+    private async Task<string> DownloadCoreAsync(UpdateFeed feed, string destinationDirectory, IProgress<InstallProgress>? progress,
+        CancellationToken cancellationToken, TimeSpan? readIdleTimeout)
     {
         ValidateFeed(feed);
         RequireIncremental(feed);
@@ -142,15 +159,28 @@ public sealed class UpdateClient : IDisposable
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, FileOptions.Asynchronous))
             {
-                var buffer = new byte[131072]; long total = 0; int read;
-                while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+                var buffer = new byte[131072]; long total = 0;
+                using var idle = readIdleTimeout is null ? null : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var expected = feed.Size > 0 ? feed.Size : length ?? 0;
+                if (readIdleTimeout is not null)
+                    progress?.Report(new("download", "Waiting for application data", 0, 1000) { CompletedBytes = 0, TotalBytes = expected });
+                while (true)
                 {
+                    int read;
+                    if (idle is not null) idle.CancelAfter(readIdleTimeout!.Value);
+                    try { read = await input.ReadAsync(buffer, idle?.Token ?? cancellationToken); }
+                    catch (OperationCanceledException error) when (idle?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+                    { throw new TimeoutException("No application data arrived within the download idle limit. Check your connection and try again.", error); }
+                    finally { idle?.CancelAfter(Timeout.InfiniteTimeSpan); }
+                    if (read == 0) break;
                     total += read;
                     if (total > 16L * 1024 * 1024 * 1024 || (feed.Size > 0 && total > feed.Size)) throw new InvalidDataException("Installer exceeds the declared download size.");
                     hash.AppendData(buffer.AsSpan(0, read));
                     await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-                    var expected = feed.Size > 0 ? feed.Size : length ?? 0;
-                    progress?.Report(new("download", $"Downloaded {total:N0} bytes", expected > 0 ? (int)Math.Min(1000, total * 1000 / expected) : 0, 1000));
+                    var update = new InstallProgress("download", $"Downloaded {total:N0} bytes",
+                        expected > 0 ? (int)Math.Min(1000, total * 1000 / expected) : 0, 1000);
+                    if (readIdleTimeout is not null) update = update with { CompletedBytes = total, TotalBytes = expected };
+                    progress?.Report(update);
                 }
                 if (feed.Size > 0 && total != feed.Size) throw new InvalidDataException("Installer download is incomplete.");
             }

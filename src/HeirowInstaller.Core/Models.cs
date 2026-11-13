@@ -346,6 +346,10 @@ public sealed class InstallPlan
 public sealed record InstallProgress(string Phase, string Message, int Completed, int Total)
 {
     public double Fraction => Total <= 0 ? 0 : Math.Clamp((double)Completed / Total, 0, 1);
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public long? CompletedBytes { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public long? TotalBytes { get; init; }
 }
 
 public sealed class InstallResult

@@ -47,8 +47,11 @@ internal sealed partial class CpuInstallerForm
 
     private void BuildPreparingOrHub(Forms.TableLayoutPanel page)
     {
-        AddRow(page, Paragraph(Controller.Busy ? "Checking the application and its installation files." : Controller.Failed ? "Setup needs attention" : "Install an application", true));
-        AddRow(page, Paragraph(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Open a .hinst package or a published setup executable. You can review its license, selected features and destination before choosing Install."));
+        var title = Paragraph(Controller.Busy ? Controller.Status : Controller.Failed ? "Setup needs attention" : "Install an application", true);
+        var detail = Paragraph(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Open a .hinst package or a published setup executable. You can review its license, selected features and destination before choosing Install.");
+        if (Controller.Busy) { Remember("setup.progress.status", title); Remember("setup.progress.detail", detail); }
+        AddRow(page, title);
+        AddRow(page, detail);
         if (!Controller.Busy && !Controller.IsMaintenanceWizard)
             ActionButton("setup.open", "Open installer…", BrowsePackage, primary: true);
         ActionButton("wizard.cancel", Controller.Busy ? "Cancel setup" : "Close", RequestClose);
