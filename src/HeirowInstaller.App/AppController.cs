@@ -26,6 +26,7 @@ internal sealed partial class AppController : IDisposable
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
     internal bool IsMaintenanceWizard => arguments.MaintenanceProductId is not null;
+    internal bool IsPreparedUpdate => arguments.PreparedPackagePath is not null;
     internal bool IsWizard => arguments.IsWizardInvocation;
     internal string? MaintenanceOperation => arguments.MaintenanceOperation;
     internal PackageManifest? Manifest { get; private set; }
@@ -134,6 +135,12 @@ internal sealed partial class AppController : IDisposable
             var token = Cancellation!.Token;
             var loaded = await Task.Run(async () =>
             {
+                if (IsPreparedUpdate)
+                {
+                    PackageSafety.EnsureNoReparsePoints(path);
+                    if (new FileInfo(path).Length != arguments.RemotePackageSize)
+                        throw new InvalidDataException("The prepared application has a different length from signed setup.");
+                }
                 var package = PackageReader.Open(path);
                 try
                 {
@@ -147,6 +154,7 @@ internal sealed partial class AppController : IDisposable
                     options.Features = features;
                     options.Scope = arguments.Scope ?? (InstallerEngine.RequiresMachineScope(metadata,
                         features.Concat(metadata.Features.Where(feature => feature.Required).Select(feature => feature.Id))) ? "machine" : metadata.Scope);
+                    if (IsPreparedUpdate) BindPreparedUpdate(package, options);
                     // Planning also enforces installed and registered publisher pins.
                     // Do not expose this package's metadata before those checks.
                     var plan = engine.Plan(package, options);
@@ -180,12 +188,12 @@ internal sealed partial class AppController : IDisposable
                 LicenseText = loaded.License;
                 LicenseAccepted = arguments.AcceptLicense;
                 Features.Clear();
-                foreach (var feature in loaded.Features) Features.Add(feature);
+                foreach (var feature in IsPreparedUpdate ? loaded.Plan.Features : loaded.Features) Features.Add(feature);
                 targetDirectory = arguments.TargetDirectory ?? (OriginalInstallerDestination ? "" : loaded.Plan.InstallDirectory);
                 hasExplicitTarget = arguments.TargetDirectory is not null;
                 Scope = loaded.Scope;
                 Plan = loaded.Plan;
-                Stage = SetupStage.Package;
+                Stage = IsPreparedUpdate && loaded.License is null ? SetupStage.Review : SetupStage.Package;
                 Page = DesktopPage.Install;
                 End(IsWizard ? "Ready to install" : "Package verified", IsWizard ? $"{SetupProductName} {metadata.Version} · {metadata.Publisher}" : $"{metadata.Name} {metadata.Version} · {metadata.Payload.Count} files");
             });
@@ -205,6 +213,7 @@ internal sealed partial class AppController : IDisposable
             // The reader retains its read-only archive handle from the initial
             // whole-package and payload checks. No timestamp-based trust cache.
             // InstallAsync independently opens and validates the actual input again.
+            if (IsPreparedUpdate) BindPreparedUpdate(package, options);
             var result = engine.Plan(package, options);
             token.ThrowIfCancellationRequested();
             return result;
@@ -223,6 +232,13 @@ internal sealed partial class AppController : IDisposable
         if (Manifest is null || Busy) return;
         if (Stage == SetupStage.Review) { await InstallAsync(); return; }
         if (Stage >= SetupStage.Review) return;
+        if (IsPreparedUpdate)
+        {
+            if (LicenseText is not null && !LicenseAccepted) return;
+            Stage = SetupStage.Review;
+            Notify();
+            return;
+        }
         // Features and location do not display the operation plan. Revalidate
         // the chosen configuration when entering Review and again before install.
         if (Stage < SetupStage.Destination)
@@ -268,6 +284,11 @@ internal sealed partial class AppController : IDisposable
 
     internal void PreviousStage()
     {
+        if (IsPreparedUpdate)
+        {
+            if (Stage == SetupStage.Review && LicenseText is not null) { Stage = SetupStage.Package; Notify(); }
+            return;
+        }
         if (Stage > SetupStage.Package && Stage < SetupStage.Progress) { Stage--; Notify(); }
     }
 
@@ -286,7 +307,7 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = arguments.RequireSignature,
         LegacyArguments = arguments.LegacyArguments,
         LogPath = arguments.LogPath,
-        SharedPackageTransport = CreateAuthenticatedDownloadTransport(),
+        SharedPackageTransport = IsPreparedUpdate ? null : CreateAuthenticatedDownloadTransport(),
         RunningApplicationsPrompt = PromptRunningApplicationsAsync
     };
 
@@ -313,9 +334,15 @@ internal sealed partial class AppController : IDisposable
             {
                 using var reader = PackageReader.Open(packagePath);
                 arguments.ValidatePackageIdentity(reader);
-                await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(engine.Plan(reader, options), "install", options.Isolated), Cancellation!.Token);
+                if (IsPreparedUpdate)
+                {
+                    BindPreparedUpdate(reader, options);
+                    options.SharedPackageTransport = new PreparedDependencyTransport(reader.Manifest, packagePath);
+                }
+                var plan = engine.Plan(reader, options);
+                await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(plan, IsPreparedUpdate ? "update" : "install", options.Isolated), Cancellation!.Token);
                 if (useWorker)
-                    return await ElevatedInstallWorker.InstallAsync(packagePath, engine.Plan(reader, options), options,
+                    return await ElevatedInstallWorker.InstallAsync(packagePath, plan, options,
                         PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token);
                 return await engine.InstallAsync(reader, options, Reporter(), Cancellation!.Token);
             });

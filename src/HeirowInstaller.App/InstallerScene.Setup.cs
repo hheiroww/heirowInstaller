@@ -32,7 +32,8 @@ internal sealed partial class InstallerScene
         {
             if (Controller.IsWizard) Action("wizard.cancel", "Cancel", Left, BodyBottom - 48, 112, game.Exit, enabled: !Controller.Busy);
             else Action("setup.open", "Change package", Left, BodyBottom - 48, 152, BrowsePackage, enabled: !Controller.Busy);
-            if (stage != SetupStage.Package) Action("setup.back", "Back", Width - 300, BodyBottom - 48, 100, Controller.PreviousStage, enabled: !Controller.Busy);
+            if (stage != SetupStage.Package && (!Controller.IsPreparedUpdate || Controller.LicenseText is not null))
+                Action("setup.back", "Back", Width - 300, BodyBottom - 48, 100, Controller.PreviousStage, enabled: !Controller.Busy);
             Action("setup.next", stage == SetupStage.Review ? "Install application  →" : "Continue  →", Width - 186, BodyBottom - 48, 152, () =>
             {
                 if (Controller.LicenseText is not null && !Controller.LicenseAccepted) { showLicense = true; Controller.Notify(); }

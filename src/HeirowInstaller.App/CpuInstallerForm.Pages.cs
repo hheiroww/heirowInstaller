@@ -173,7 +173,8 @@ internal sealed partial class CpuInstallerForm
             ActionButton("setup.next", "Install application", () => _ = RunCommandAsync(Controller.InstallAsync), !Controller.Busy && licensed && Controller.Plan is not null, primary: true);
         else
             ActionButton("setup.next", "Continue", () => _ = RunCommandAsync(Controller.NextStageAsync), !Controller.Busy && licensed, primary: true);
-        if (stage > SetupStage.Package) ActionButton("setup.back", "Back", Controller.PreviousStage, !Controller.Busy);
+        if (stage > SetupStage.Package && (!Controller.IsPreparedUpdate || Controller.LicenseText is not null))
+            ActionButton("setup.back", "Back", Controller.PreviousStage, !Controller.Busy);
         ActionButton("wizard.cancel", "Cancel", RequestClose);
     }
 

@@ -39,7 +39,7 @@ internal sealed partial class AppController
     {
         var manifest = Manifest ?? throw new InvalidOperationException("The installed application is unavailable.");
         var result = LastInstallation ?? throw new InvalidOperationException("Installation has not completed.");
-        var updaterEnabled = Plan!.UpdateCompanionEnabled;
+        var updaterEnabled = !IsPreparedUpdate && Plan!.UpdateCompanionEnabled;
         return Task.Run(() =>
         {
             var product = InstallerEngine.ListInstalled(arguments.StateRoot).SingleOrDefault(x => x.Id == manifest.Id && x.Version == result.Version &&

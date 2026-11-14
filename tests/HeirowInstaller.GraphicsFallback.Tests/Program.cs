@@ -49,6 +49,7 @@ internal static partial class Program
             Policy();
             RemoteDownloadProgress();
             StreamingRemoteSetup();
+            PreparedSetupChecks();
             NativeMaintenanceArguments();
             SelfUpdateProductIdentity();
             Wizard();
@@ -84,6 +85,39 @@ internal static partial class Program
             Check(!DesktopUpdateHandoff.IsRunningProduct(product), "another application's coordinator does not turn maintenance into a self-update");
         }
         finally { Environment.SetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable, oldLauncher); }
+    }
+
+    static void PreparedSetupChecks()
+    {
+        var archive = Path.Combine(root, "prepared", "fixture.hinst");
+        var destination = Path.Combine(root, "installed");
+        var args = new[] { "--remote-package", "https://example.invalid/app.hinst", "--remote-package-size", "100",
+            "--require-signature", "--trust-key", signingPin, "--expected-product-id", "fixture",
+            "--expected-version", "2.0.0", "--expected-sha256", new string('a', 64), "--scope", "user",
+            "--target", destination, "--request-admin-on-open", "--prepared-package", archive };
+        var parsed = AppArguments.Parse(args);
+        Check(parsed.PreparedPackagePath == archive && parsed.IsWizardInvocation && !parsed.RequestAdministratorOnOpen,
+            "prepared setup opens interactively and defers UAC until install");
+        Check(AppArguments.Parse(args[..^2]).RequestAdministratorOnOpen, "ordinary remote setup keeps its signed administrator policy");
+        try { AppArguments.Parse(["--prepared-package", archive, "--scope", "user", "--target", destination]); throw new Exception("Unbound stage accepted"); }
+        catch (ArgumentException) { Check(true, "a prepared file cannot start an unbound setup"); }
+
+        var uri = new Uri("https://example.invalid/shared/fixture.hinst");
+        byte[] bytes = [2, 4, 6];
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var manifest = new PackageManifest();
+        manifest.SharedPackages = [new() { DownloadUrl = uri.AbsoluteUri, Size = bytes.Length, Sha256 = hash }];
+        var dependencyRoot = Path.Combine(root, "prepared", "dependencies");
+        Directory.CreateDirectory(dependencyRoot);
+        var transport = new AppController.PreparedDependencyTransport(manifest, archive);
+        try { _ = transport.GetAsync(uri, bytes.Length, null, default); throw new Exception("Missing dependency accepted"); }
+        catch (InvalidDataException) { Check(true, "a missing prepared dependency fails locally"); }
+        File.WriteAllBytes(Path.Combine(dependencyRoot, hash + ".hinst"), bytes);
+        using var response = transport.GetAsync(uri, bytes.Length, null, default).GetAwaiter().GetResult();
+        Check(response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult().SequenceEqual(bytes),
+            "setup reads the exact staged dependency without an account transport");
+        try { _ = transport.GetAsync(new Uri(uri, "other.hinst"), bytes.Length, null, default); throw new Exception("Undeclared download accepted"); }
+        catch (InvalidDataException) { Check(true, "setup rejects URLs outside the prepared dependencies"); }
     }
 
     static void NativeMaintenanceArguments()

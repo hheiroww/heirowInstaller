@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>2026.11.12.1</Version>
+    <Version>2026.11.13.1</Version>
     <ProjectZPackageVersion Condition="'$(ProjectZPackageVersion)' == ''">[2026.11.4.1]</ProjectZPackageVersion>
     <InstallerGraphicsBackend Condition="'$(InstallerGraphicsBackend)' == ''">DirectX12</InstallerGraphicsBackend>
     <ProjectZRoot Condition="'$(UseLocalProjectZ)' == 'true' and '$(ProjectZRoot)' == ''">$(USERPROFILE)\Documents\GitHub\Project-Z</ProjectZRoot>
