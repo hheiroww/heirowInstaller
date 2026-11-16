@@ -240,7 +240,9 @@ internal static class NativeUpdatePrompt
     internal static async Task<bool> SignInAsync(HeirowInstaller.Core.UpdateCompanionConfiguration profile, string configurationPath, CancellationToken token)
     {
         var context = new ApplicationUpdatePrompt(profile, new() { CurrentVersion = profile.CurrentVersion, Feed = new() { Version = profile.CurrentVersion,
-            ReleaseNotes = "Approve sign-in in your browser to access this application's updates. Your session stays in memory; no account credentials are saved in the app's update profile." } }, true);
+            ReleaseNotes = OperatingSystem.IsWindows() && ApplicationCommands.UsesInstallerAccount(profile)
+                ? "Approve sign-in in your browser. heirowInstaller and heirowUpdater will share the sign-in saved for your Windows user."
+                : "Approve sign-in in your browser to access this application's updates. Your session stays in memory; no account credentials are saved in the app's update profile." } }, true);
         return await ShowAsync(context, null, null, null, token, configurationPath, authentication: true) == ApplicationUpdateChoice.UpdateNow;
     }
     internal static Task<ApplicationUpdateChoice> ShowFailureAsync(HeirowInstaller.Core.UpdateCompanionConfiguration profile, string configurationPath, Exception error, CancellationToken token)

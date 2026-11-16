@@ -16,6 +16,7 @@ public sealed class ApplicationLifecycleOptions
     public string? DownloadDirectory { get; set; }
     public string? ApplicationHost { get; set; }
     public Func<UpdateCompanionConfiguration, CancellationToken, Task<string?>>? AuthenticateAsync { get; set; }
+    internal Func<UpdateCompanionConfiguration, CancellationToken, Task<ApplicationSessionSnapshot?>>? RestoreRememberedSessionAsync { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public ApplicationSessionSnapshot? SessionSnapshot { get; set; }
     public Action<ApplicationLifecycleResult>? StatusChanged { get; set; }
@@ -252,7 +253,13 @@ public static class ApplicationUpdater
                 System.Environment.SetEnvironmentVariable(name, null); // Native UI children never inherit the application's credentials.
         Task<T> Authorized<T>(Func<SocketJackUpdater, Task<T>> operation) => ApplicationAuthorization.RunAsync(sessions, async () =>
         {
-            using var client = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), () => sessions.Read().Snapshot,
+            var remembered = !supplied && sessions.Read().Revision == 0 && options.RestoreRememberedSessionAsync is { } restore
+                ? await restore(configuration, cancellationToken) : null;
+            using var client = new SocketJackUpdater(configuration.Isolated, new Uri(configuration.CredentialOrigin), () =>
+            {
+                var current = sessions.Read();
+                return current.Revision == 0 && remembered is not null ? remembered : current.Snapshot;
+            },
                 requireIncrementalUpdates: configuration.UpdateMode == "files", fileSelectionUpdates: configuration.UpdateProtocol == "hfiles1");
             return await operation(client);
         }, options.NoPrompt || options.AuthenticateAsync is null || configuration.AuthApplication is null ? null : token => options.AuthenticateAsync(configuration, token),

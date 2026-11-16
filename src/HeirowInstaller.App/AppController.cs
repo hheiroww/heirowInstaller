@@ -340,6 +340,8 @@ internal sealed partial class AppController : IDisposable
                     options.SharedPackageTransport = new PreparedDependencyTransport(reader.Manifest, packagePath);
                 }
                 var plan = engine.Plan(reader, options);
+                if (IsWizard && !IsPreparedUpdate && reader.Manifest.SharedPackages is { Count: > 0 })
+                    await RestoreAccountAsync(renew: false, Cancellation!.Token);
                 await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(plan, IsPreparedUpdate ? "update" : "install", options.Isolated), Cancellation!.Token);
                 if (useWorker)
                     return await ElevatedInstallWorker.InstallAsync(packagePath, plan, options,

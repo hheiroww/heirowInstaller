@@ -8,6 +8,8 @@ namespace HeirowUpdater;
 
 internal static class ApplicationCommands
 {
+    private static readonly Uri AccountOrigin = new("https://socketjack.com/");
+
     internal static async Task<int> RunAsync(string command, UpdaterProgram.Arguments args, CancellationToken token)
     {
         if (command is "repair" or "uninstall") return await MaintainAsync(command, args, token);
@@ -60,17 +62,32 @@ internal static class ApplicationCommands
         int? pid = args.Get("application-pid") is { } pidText ? int.Parse(pidText, System.Globalization.CultureInfo.InvariantCulture) : null;
         long? ticks = args.Get("application-start") is { } ticksText ? long.Parse(ticksText, System.Globalization.CultureInfo.InvariantCulture) : null;
         await using var manualFeedback = new NativeManualUpdateFeedback(configuration, configurationPath);
+        var account = OperatingSystem.IsWindows() && UsesInstallerAccount(configuration) ? new RememberedPublisherAccount(AccountOrigin) : null;
         var options = new ApplicationLifecycleOptions { AllowLoopback = args.Has("allow-loopback"), NoPrompt = args.Has("no-prompt"),
             ApplicationHost = args.Get("application-host"), StatusPath = Acceptance("status-file", "HEIROWUPDATER_TEST_STATUS_FILE"), DownloadDirectory = args.Get("download-directory"),
             StatusChanged = manualFeedback.ObserveStatus, ManualStatusChangedAsync = manualFeedback.StatusChangedAsync,
+            RestoreRememberedSessionAsync = account is null ? null : async (profile, cancellation) =>
+            {
+                if (!UsesInstallerAccount(profile)) return null;
+                using var remembered = await account.RestoreAsync(cancellationToken: cancellation);
+                return remembered is null ? null : new ApplicationSessionSnapshot(bearerToken: remembered.AccessToken);
+            },
             RunningApplicationsPrompt = (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, configuration, configurationPath, cancellation),
             AuthenticateAsync = async (profile, cancellation) =>
             {
                 await manualFeedback.SuspendAsync();
                 if (!await NativeUpdatePrompt.SignInAsync(profile, configurationPath, cancellation)) return null;
+                var rememberedAccount = UsesInstallerAccount(profile) ? account : null;
+                var revision = rememberedAccount is null ? null : await rememberedAccount.GetRevisionAsync(cancellation);
                 using var approval = await PublisherSignInClient.BeginAsync(new Uri(profile.CredentialOrigin), cancellation, profile.Isolated, profile.AuthApplication!);
                 Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
                 using var session = await approval.CompleteAsync(cancellation);
+                if (rememberedAccount is not null && !await rememberedAccount.RememberAsync(session, revision, cancellation))
+                {
+                    using var latest = await rememberedAccount.RestoreAsync(cancellationToken: cancellation);
+                    await manualFeedback.ResumeCheckingAsync(cancellation);
+                    return latest?.AccessToken;
+                }
                 await manualFeedback.ResumeCheckingAsync(cancellation);
                 return session.AccessToken;
             } };
@@ -117,6 +134,11 @@ internal static class ApplicationCommands
             throw;
         }
     }
+
+    internal static bool UsesInstallerAccount(UpdateCompanionConfiguration configuration) =>
+        !configuration.Isolated && configuration.ProductId.Equals("heirowinstaller", StringComparison.OrdinalIgnoreCase) &&
+        configuration.AuthApplication == "heirowinstaller" && new Uri(configuration.CredentialOrigin) == AccountOrigin &&
+        new Uri(configuration.FeedUrl).GetLeftPart(UriPartial.Authority) == AccountOrigin.GetLeftPart(UriPartial.Authority);
 
     private static async Task<int> MaintainAsync(string command, UpdaterProgram.Arguments args, CancellationToken token)
     {

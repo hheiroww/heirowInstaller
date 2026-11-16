@@ -81,6 +81,23 @@ internal sealed partial class AcceptanceSuite
         using (var result = await ApplicationUpdater.RunAsync(profile, null, null, true, options, (_, _) => throw new InvalidOperationException("No update is available.")))
             Equal("current", result.Status);
         Equal(0, browserCalls);
+        var restoredCount = 0;
+        options.SessionSnapshot = null;
+        options.RestoreRememberedSessionAsync = (configuration, _) =>
+        {
+            Equal(feed.ProductId, configuration.ProductId);
+            restoredCount++;
+            return Task.FromResult<ApplicationSessionSnapshot?>(next);
+        };
+        using (var result = await ApplicationUpdater.RunAsync(profile, null, null, true, options, (_, _) => throw new InvalidOperationException("No update is available.")))
+            Equal("current", result.Status);
+        Equal(1, restoredCount);
+        Equal(0, browserCalls);
+        options.SessionSnapshot = new ApplicationSessionSnapshot();
+        options.NoPrompt = true;
+        await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, null, null, true, options, (_, _) => throw new InvalidOperationException("No update is available.")));
+        Equal(1, restoredCount);
+        Equal(0, browserCalls);
         foreach (var path in Directory.EnumerateFiles(area, "*.json", SearchOption.AllDirectories))
         {
             var content = File.ReadAllText(path);
