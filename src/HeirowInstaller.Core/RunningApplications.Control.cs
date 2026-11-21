@@ -53,6 +53,19 @@ public static partial class RunningApplications
         }
     }
 
+    private static bool TryReadProcessImage(int processId, out string image, out long startTicks)
+    {
+        image = "";
+        startTicks = 0;
+        using var handle = OpenProcess(0x1000, false, processId); // Query limited information across integrity levels.
+        if (handle.IsInvalid || !GetProcessTimes(handle, out var creation, out _, out _, out _)) return false;
+        var path = new StringBuilder(32768); var length = path.Capacity;
+        if (!QueryFullProcessImageName(handle, 0, path, ref length)) return false;
+        image = Path.GetFullPath(path.ToString());
+        startTicks = DateTime.FromFileTimeUtc(creation).Ticks;
+        return true;
+    }
+
     private static bool TryForceClose(RunningApplicationTarget target, RunningApplication application, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();

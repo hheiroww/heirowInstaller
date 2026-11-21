@@ -333,14 +333,11 @@ public static partial class RunningApplications
                 using (process)
                 {
                     token.ThrowIfCancellationRequested();
-                    try
-                    {
-                        var image = process.MainModule?.FileName;
-                        if (image is not null && Path.GetFullPath(image).Equals(executable, StringComparison.OrdinalIgnoreCase))
-                            candidates.TryAdd(process.Id, new(process.Id, process.StartTime.ToUniversalTime().Ticks, "", 0));
-                    }
-                    catch (Win32Exception) { candidates.TryAdd(process.Id, new(process.Id, 0, Path.GetFileName(executable), 0)); }
-                    catch (InvalidOperationException) { }
+                    // A matching basename alone does not establish a lock. Restart
+                    // Manager candidates still block when their image cannot be read.
+                    if (TryReadProcessImage(process.Id, out var image, out var started) &&
+                        image.Equals(executable, StringComparison.OrdinalIgnoreCase))
+                        candidates.TryAdd(process.Id, new(process.Id, started, "", 0));
                 }
         var found = new List<RunningApplication>();
         using var currentProcess = Process.GetCurrentProcess();
