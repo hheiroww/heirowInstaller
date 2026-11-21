@@ -1,0 +1,12 @@
+<Project>
+  <Target Name="ExcludeInstallerShaderCompilerTools"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          BeforeTargets="GenerateSingleFileBundle"
+          Condition="'$(PublishSingleFile)' == 'true' and '$(InstallerDesktopPlatform)' == 'Windows' and
+                     ('$(MSBuildProjectName)' == 'HeirowInstaller.App' or '$(MSBuildProjectName)' == 'HeirowUpdater')">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+          Condition="$([System.String]::Copy('%(ResolvedFileToPublish.RelativePath)').Replace('\', '/').StartsWith('ProjectZ.ShaderCompiler/'))" />
+    </ItemGroup>
+  </Target>
+</Project>
