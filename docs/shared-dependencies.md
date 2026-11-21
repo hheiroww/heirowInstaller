@@ -152,7 +152,7 @@ explicit task-owned `-DependencyCacheDirectory`.
 Build the maintenance package first with `Build-SharedToolkit.ps1`, supplying
 `-CliPath`, `-RuntimePackagePath`, `-RuntimePackageUrl`, and the established
 `-SigningKey`. The new recipe defaults `-ProjectZPackageVersion` to exact
-`[2026.11.4.1]`; every publish receives that same override. Its three native
+`[2026.11.20.1]`; every publish receives that same override. Its three native
 apphosts remain framework-dependent and share ordinary maintenance DLLs once.
 It rejects bundled private .NET runtime files. The signed runtime archive stays
 separate. `Build-WebInstaller.ps1` receives the same runtime path/URL and binds

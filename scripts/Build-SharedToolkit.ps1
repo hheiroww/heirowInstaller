@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory)][string]$CliPath,
     [Parameter(Mandatory)][string]$RuntimePackagePath,
     [Parameter(Mandatory)][uri]$RuntimePackageUrl,
-    [ValidatePattern('^\[\d+\.\d+\.\d+\.\d+\]$')][string]$ProjectZPackageVersion = '[2026.11.4.1]',
+    [ValidatePattern('^\[\d+\.\d+\.\d+\.\d+\]$')][string]$ProjectZPackageVersion = '[2026.11.20.1]',
     [string]$RootPackageCache = $(if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget/packages' }),
     [string]$Version,
     [ValidateSet('win-x64','win-arm64')][string]$Runtime = 'win-x64'
@@ -144,7 +144,7 @@ function Copy-ToolkitDependencyNotices([string]$PayloadDirectory, [string]$Packa
     }
     $inventory.ToArray() | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $PayloadDirectory 'ThirdParty/dependencies.json') -Encoding utf8NoBOM
 }
-if (!$Version) { $Version = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version.InnerText }
+if (!$Version) { $Version = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'Directory.Build.props') -Raw)).SelectSingleNode('/Project/PropertyGroup/Version').InnerText }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 if ($RuntimePackageUrl.Scheme -ne 'https' -or $RuntimePackageUrl.UserInfo -or $RuntimePackageUrl.Fragment) { throw 'The canonical runtime URL must use HTTPS.' }
 & $CliPath verify $RuntimePackagePath --require-signature | Out-Null
