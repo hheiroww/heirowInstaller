@@ -140,9 +140,11 @@ public static partial class SharedPackages
             ? MachineStateSecurity.Acquire(root, create: true) : null;
         if (machineRoot is null) Directory.CreateDirectory(root);
         PackageSafety.EnsureNoReparsePoints(root);
-        var revision = machineRoot is null ? null : new SharedPackageRevision(root, "installer", binding.PublisherKeySha256,
-            binding.Packages.Select(dependency => new SharedPackageRevision.Package(dependency.Id, dependency.Version,
-                dependency.TargetRuntime, dependency.Sha256, dependency.Size)));
+        SharedPackageRevision RevisionFor(IEnumerable<SharedPackageReference> packages) =>
+            new(root, "installer", binding.PublisherKeySha256,
+                packages.Select(dependency => new SharedPackageRevision.Package(dependency.Id, dependency.Version,
+                    dependency.TargetRuntime, dependency.Sha256, dependency.Size)));
+        var revision = machineRoot is null ? null : RevisionFor(binding.Packages);
         void ValidateRevisionPackage(string directory)
         {
             if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
@@ -191,7 +193,16 @@ public static partial class SharedPackages
             progress?.Report(new("dependencies", "Verified shared dependency " + definition.Id, binding.Packages.FindIndex(x => x.Id == definition.Id) + 1, binding.Packages.Count));
         }
         if (OperatingSystem.IsWindows() && revision is not null)
+        {
             revision.Record(ValidateRevisionDirectory, ValidateRevisionReceipt, ValidateRevisionPackage, cancellationToken);
+            if (binding.ApplicationLaunch is { } launch)
+            {
+                var launchIds = launch.ProbingPackageIds.Append(launch.RuntimePackageId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var launchPackages = binding.Packages.Where(package => launchIds.Contains(package.Id)).ToArray();
+                if (launchPackages.Length < binding.Packages.Count)
+                    RevisionFor(launchPackages).Record(ValidateRevisionDirectory, ValidateRevisionReceipt, ValidateRevisionPackage, cancellationToken);
+            }
+        }
         return binding;
     }
 

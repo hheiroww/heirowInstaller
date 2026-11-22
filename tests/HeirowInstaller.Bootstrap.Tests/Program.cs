@@ -136,6 +136,10 @@ if (OperatingSystem.IsWindows())
     File.WriteAllText(extra, "undeclared fixture file");
     await Reject(async () => await engine.PrepareAsync(shared, Path.Combine(root, "extra-file"), default),
         "full shared verification rejects an undeclared runtime file after revision invalidation");
+    var archivePath = Path.Combine(engine.PackageRoot(shared, source), "package.hinst");
+    await Reject(async () => await engine.VerifyPackageAsync(archivePath, Path.GetDirectoryName(sharedFile)!, source,
+        extract: false, default, verifyContents: false),
+        "reused installer byte verification still enforces the bootstrap's installed inventory rules");
     File.Move(extra, Path.Combine(root, "retained-unexpected.dll"));
 }
 File.WriteAllText(start.FileName, "modified bytes");
