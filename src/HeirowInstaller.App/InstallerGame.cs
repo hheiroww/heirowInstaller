@@ -88,6 +88,7 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
         manager.AddScene("installer", MainScene);
         manager.ActiveScene = MainScene;
         MainScene.Rebuild();
+        StartCaptureEndpoint();
     }
 
     private async Task StartContentAsync()
@@ -172,6 +173,8 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
     protected override void Draw(GameTime gameTime)
     {
         var started = Performance?.BeginDraw();
+        PrepareCapturePresentation();
+        SavePendingComposedCapture(gameTime);
         GraphicsDevice.Clear(Theme.Background);
         if (navigationCapture is { } capture) DrawNavigationFrame(gameTime, capture);
         else manager.Draw(gameTime);
@@ -186,15 +189,8 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(request.Path)!);
-                var width = GraphicsDevice.PresentationParameters.BackBufferWidth;
-                var height = GraphicsDevice.PresentationParameters.BackBufferHeight;
-                using var target = new RenderTarget2D(GraphicsDevice, width, height, false, SurfaceFormat.Color, DepthFormat.Depth24Stencil8);
-                GraphicsDevice.SetRenderTarget(target);
-                GraphicsDevice.Clear(Theme.Background);
-                manager.Draw(gameTime);
-                GraphicsDevice.SetRenderTarget(null);
                 using var file = File.Create(request.Path);
-                target.SaveAsPng(file, width, height);
+                WriteComposedScene(file, gameTime);
                 request.Completion?.SetResult(true);
                 if (arguments.RenderSmoke) Exit();
             }
@@ -265,6 +261,8 @@ internal sealed partial class InstallerGame : Game, IInstallerDesktopHost
 
     protected override void UnloadContent()
     {
+        capturePipe?.Dispose();
+        capturePipe = null;
         navigationCapture?.Target?.Dispose();
         navigationCapture?.Completion.TrySetCanceled();
         MainScene?.Controller.Dispose();
