@@ -48,6 +48,7 @@ internal sealed partial class AcceptanceSuite
             ,("MSI maintenance honors the recorded directory, preserves original mode and rejects context or source substitutions", MsiArguments)
             ,("injected update transports validate redirects before making another request", TransportRedirects)
             ,("SocketJack updater streams signed updates through validated redirects and keeps credentials on their origin", SocketJackUpdates)
+            ,("SocketJack update origin preserves signed URLs and restricts eligible credentials and fallback", SocketJackDeliveryOrigin)
             ,("an attached signed package never authorizes execution of an untrusted executable prefix", UntrustedBundlePrefix)
             ,("the updater exits and a copied trusted helper replaces its own application safely", TrustedSelfHandoff)
             ,("trusted helper staging keeps its boundary and rejects unsupported launch paths before download", TrustedStagingPaths)

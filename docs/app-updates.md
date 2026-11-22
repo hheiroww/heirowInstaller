@@ -1,5 +1,7 @@
 # Optional application updates
 
+heirowInstaller and heirowUpdater use `https://update.socketjack.com/` for SocketJack release delivery. Built-in SocketJack account approval stays at `https://socketjack.com/`. Older signed feed URLs and the API paths used by legacy updaters remain valid. Custom publisher feed origins are unchanged.
+
 When an interactive update check, download, or installation fails, heirowUpdater opens the application's SocketJack download page once and explains the manual installer recovery in the result window. **Open download page** can reopen the page or retry if the browser could not start. FruityLoopsCollab opens its Downloads tab; other applications use their signed package's SocketJack homepage. Browser recovery never includes updater credentials or URL query values. Cancelled and headless operations do not open a browser. The updater continues to require a signed incremental package matching the installed version for file updates.
 
 Every app installer is standalone. Selecting its optional updates feature creates
