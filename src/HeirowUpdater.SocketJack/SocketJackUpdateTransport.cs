@@ -38,6 +38,23 @@ public sealed class SocketJackUpdateTransport : IFileUpdateTransport
     private async Task<HttpResponseMessage> SendAsync(string method, Uri uri, long maximumResponseBytes, byte[]? body, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
     {
         if (uri.Scheme is not ("https" or "http") || uri.UserInfo.Length > 0) throw new ArgumentException("Unsupported update URL.");
+        var delivery = InstallerUpdateOrigin.DeliveryUri(method, uri);
+        var fallback = InstallerUpdateOrigin.LegacyFallback(method, uri, delivery);
+        if (fallback is null)
+            return await SendOnceAsync(method, uri, delivery, maximumResponseBytes, body, progress, cancellationToken);
+        try
+        {
+            var result = await SendOnceAsync(method, uri, delivery, maximumResponseBytes, body, progress, cancellationToken);
+            if (result.StatusCode is not (HttpStatusCode.NotFound or HttpStatusCode.MisdirectedRequest or HttpStatusCode.BadGateway or
+                HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout)) return result;
+            result.Dispose();
+        }
+        catch (HttpRequestException error) when (error.StatusCode is null && !cancellationToken.IsCancellationRequested) { }
+        return await SendOnceAsync(method, uri, fallback, maximumResponseBytes, body, progress, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendOnceAsync(string method, Uri uri, Uri delivery, long maximumResponseBytes, byte[]? body, IProgress<InstallProgress>? progress, CancellationToken cancellationToken)
+    {
         // Small catalog responses stay in memory. Large downloads retain bounded disk streaming.
         Stream file = maximumResponseBytes <= 64 * 1024 ? new MemoryStream() : new FileStream(
             Path.Combine(Path.GetTempPath(), "heirowUpdater-network-" + Guid.NewGuid().ToString("N") + ".tmp"),
@@ -51,14 +68,14 @@ public sealed class SocketJackUpdateTransport : IFileUpdateTransport
             client.DefaultHeaders["Accept-Encoding"] = "identity";
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (body is not null) headers["Content-Type"] = "application/json";
-            if (credentialOrigin is not null && SameOrigin(uri, credentialOrigin))
+            if (credentialOrigin is not null && InstallerUpdateOrigin.CanSendCredentials(method, uri, delivery, credentialOrigin))
             {
                 var current = session();
                 if (!string.IsNullOrWhiteSpace(current.Cookie)) headers["Cookie"] = current.Cookie;
                 if (!string.IsNullOrWhiteSpace(current.BearerToken)) headers["Authorization"] = "Bearer " + current.BearerToken;
             }
             using var limited = new LimitedDestination(file, Math.Max(maximumResponseBytes, 64 * 1024), progress, leaveOpen: true);
-            var response = await client.SendOnceAsync(method, uri.AbsoluteUri, headers, body, limited, null, cancellationToken)
+            var response = await client.SendOnceAsync(method, delivery.AbsoluteUri, headers, body, limited, null, cancellationToken)
                 .WaitAsync(TimeSpan.FromMinutes(30), cancellationToken);
             if (response is null) throw new HttpRequestException("SocketJack received no HTTP response.");
             var status = response.Context?.StatusCode?.Split(' ', 2)[0];
@@ -67,6 +84,7 @@ public sealed class SocketJackUpdateTransport : IFileUpdateTransport
             await file.FlushAsync(cancellationToken); file.Position = 0;
             var result = new HttpResponseMessage((HttpStatusCode)code)
             {
+                // Keep the caller's logical signed URL for origin and artifact checks.
                 Content = new StreamContent(file), RequestMessage = new(new HttpMethod(method), uri)
             };
             foreach (var header in response.Headers)
@@ -78,9 +96,6 @@ public sealed class SocketJackUpdateTransport : IFileUpdateTransport
         }
         catch { await file.DisposeAsync(); throw; }
     }
-
-    private static bool SameOrigin(Uri a, Uri b) => a.Scheme.Equals(b.Scheme, StringComparison.OrdinalIgnoreCase) &&
-        a.IdnHost.Equals(b.IdnHost, StringComparison.OrdinalIgnoreCase) && a.Port == b.Port;
 
     // The pinned SocketJack version starts/stops global counter threads during client registration.
     // Serialize that short lifetime transition; the asynchronous network transfers remain concurrent.

@@ -45,7 +45,7 @@ internal sealed partial class AppController
         await RestoreAccountAsync(renew: false, token);
         try { return await operation(); }
         catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Unauthorized && autoApprove && !arguments.Isolated && !arguments.Silent &&
-            SelectedProduct?.UpdateUrl is { } url && Uri.TryCreate(url, UriKind.Absolute, out var origin) && origin.Scheme == AccountOrigin.Scheme && origin.Host == AccountOrigin.Host && origin.Port == AccountOrigin.Port)
+            SelectedProduct?.UpdateUrl is { } url && Uri.TryCreate(url, UriKind.Absolute, out var origin) && InstallerUpdateOrigin.UsesAccount(origin, AccountOrigin))
         {
             await ApproveDownloadAccountAsync(token); return await operation();
         }
