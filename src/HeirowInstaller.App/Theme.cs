@@ -5,7 +5,7 @@ namespace HeirowInstaller.App;
 
 internal static class Theme
 {
-    public static readonly Color Background = new(12, 17, 25);
+    public static readonly Color Background = new(12, 17, 25, 255);
     public static readonly Color Rail = new(15, 21, 30);
     public static readonly Color Surface = new(20, 27, 38);
     public static readonly Color SurfaceRaised = new(25, 34, 47);

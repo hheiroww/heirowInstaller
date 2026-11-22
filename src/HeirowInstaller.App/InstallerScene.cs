@@ -53,7 +53,8 @@ internal sealed partial class InstallerScene : Scene
     internal InstallerScene(SceneManager manager, InstallerGame game, AppArguments arguments) : base(manager)
     {
         this.game = game;
-        BackgroundColor = Theme.Background * 0.65f;
+        UseDesktopBackdrop = false;
+        BackgroundColor = Theme.Background;
         EnableDesignTimeControls = false;
         isCursorVisible = false;
         Controller = new AppController(game, arguments);
