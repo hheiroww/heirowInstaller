@@ -99,19 +99,30 @@ internal sealed class BootstrapEngine
         progress.Report(new("Checking shared files", "Checking the required shared versions."));
         var protectedStore = OperatingSystem.IsWindows() &&
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(sharedRoot)).Equals(SharedRoot("machine"), StringComparison.OrdinalIgnoreCase);
+        var packageIdentities = descriptor.Packages.Select(package =>
+            new SharedPackageRevision.Package(package.Id, package.Version, package.TargetRuntime, package.Sha256, package.Size));
         var revision = protectedStore
-            ? new SharedPackageRevision(sharedRoot, "bootstrap", descriptor.PublisherKeySha256, descriptor.Packages.Select(package =>
-                new SharedPackageRevision.Package(package.Id, package.Version, package.TargetRuntime, package.Sha256, package.Size)))
+            ? new SharedPackageRevision(sharedRoot, "bootstrap", descriptor.PublisherKeySha256, packageIdentities)
             : null;
-        var current = OperatingSystem.IsWindows() && revision?.Matches(
+        bool Matches(SharedPackageRevision candidate) => OperatingSystem.IsWindows() && candidate.Matches(
             path => BootstrapMachineStore.ValidateRevisionReceipt(sharedRoot, path),
-            path => ValidateProtectedPackage(sharedRoot, path), token) == true;
+            path => ValidateProtectedPackage(sharedRoot, path), token);
+        var current = revision is not null && Matches(revision);
+        // The installer has already verified the pinned archive and extracted
+        // bytes. A bootstrap can reuse those checks, while still enforcing its
+        // own signed archive metadata rules before accepting the files.
+        var installed = !current && protectedStore &&
+            Matches(new SharedPackageRevision(sharedRoot, "installer", descriptor.PublisherKeySha256, packageIdentities));
         var roots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var package in descriptor.Packages)
         {
             token.ThrowIfCancellationRequested();
             var root = PackageRoot(sharedRoot, package);
-            if (!current) await PreparePackageAsync(package, root, stagingRoot, allowProvision, token);
+            if (installed)
+                await VerifyPackageAsync(Path.Combine(root, "package.hinst"), Path.Combine(root, "files"), package,
+                    extract: false, token, verifyContents: false);
+            else if (!current)
+                await PreparePackageAsync(package, root, stagingRoot, allowProvision, token);
             roots.Add(package.Id, Path.Combine(root, "files"));
         }
         if (OperatingSystem.IsWindows() && revision is not null && !current && BootstrapMachineStore.CanWriteRevision())
@@ -292,7 +303,8 @@ internal sealed class BootstrapEngine
         }
     }
 
-    internal async Task VerifyPackageAsync(string path, string filesRoot, BootstrapPackage expected, bool extract, CancellationToken token)
+    internal async Task VerifyPackageAsync(string path, string filesRoot, BootstrapPackage expected, bool extract, CancellationToken token,
+        bool verifyContents = true)
     {
         NoLinks(path); NoLinks(filesRoot);
         using var archive = ZipFile.OpenRead(path);
@@ -328,6 +340,7 @@ internal sealed class BootstrapEngine
         }
         if (entries.Count != manifest.Payload.Count + 2) throw new InvalidDataException("The runtime archive contains undeclared files.");
         if (!extract) ValidateInstalledInventory(filesRoot, paths);
+        if (!extract && !verifyContents) return;
         if (extract && new DriveInfo(Path.GetPathRoot(Path.GetFullPath(filesRoot))!).AvailableFreeSpace < total + 16 * 1024 * 1024) throw new IOException("There is insufficient disk space to extract this runtime.");
         long completed = 0;
         foreach (var file in manifest.Payload)
