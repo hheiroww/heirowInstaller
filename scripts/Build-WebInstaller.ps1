@@ -7,8 +7,8 @@ param(
     [Parameter(Mandatory)][string]$GenericBootstrapPath,
     [Parameter(Mandatory)][string]$MaintenancePackagePath,
     [Parameter(Mandatory)][uri]$MaintenancePackageUrl,
-    [Parameter(Mandatory)][string]$RuntimePackagePath,
-    [Parameter(Mandatory)][uri]$RuntimePackageUrl,
+    [string]$RuntimePackagePath,
+    [uri]$RuntimePackageUrl,
     [Parameter(Mandatory)][uri]$ApplicationPackageUrl,
     [Parameter(Mandatory)][string]$OutputDirectory,
     [ValidateSet('win-x64','win-arm64')][string]$Runtime = 'win-x64',
@@ -18,9 +18,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot 'Shared-ToolkitRuntime.ps1')
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 if ((Test-Path -LiteralPath $output) -and @(Get-ChildItem -LiteralPath $output -Force).Count) { throw 'Use an empty task-owned web-installer output directory.' }
-foreach ($url in @($MaintenancePackageUrl,$RuntimePackageUrl,$ApplicationPackageUrl)) { if ($url.Scheme -ne 'https' -or $url.UserInfo -or $url.Fragment) { throw 'Release URLs must use HTTPS without user information or fragments.' } }
+foreach ($url in @($MaintenancePackageUrl,$ApplicationPackageUrl)) { if ($url.Scheme -ne 'https' -or $url.UserInfo -or $url.Fragment) { throw 'Release URLs must use HTTPS without user information or fragments.' } }
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $buildRoot = Join-Path $output '.compiler'
 function Invoke-InstallerCli([string[]]$Arguments) {
@@ -37,11 +38,19 @@ $applicationInspection = Invoke-InstallerCli -Arguments @('inspect',$application
 $maintenanceInspection = Invoke-InstallerCli -Arguments @('inspect',$MaintenancePackagePath) | ConvertFrom-Json
 if (!$maintenanceInspection.signed -or $maintenanceInspection.publisherKeySha256 -ine $applicationInspection.publisherKeySha256 -or $maintenanceInspection.manifest.targetRuntime -ne $Runtime) { throw 'Maintenance runtime must have the same verified publisher and target runtime as the application.' }
 Invoke-InstallerCli -Arguments @('verify',$MaintenancePackagePath,'--require-signature','--trust-key',$applicationInspection.publisherKeySha256) | Out-Null
-$runtimeInspection = Invoke-InstallerCli -Arguments @('inspect',$RuntimePackagePath) | ConvertFrom-Json
-if (!$runtimeInspection.signed -or $runtimeInspection.publisherKeySha256 -ine $applicationInspection.publisherKeySha256 -or $runtimeInspection.manifest.id -cne 'socketjack.dotnet.desktop.10' -or $runtimeInspection.manifest.targetRuntime -cne $Runtime) { throw 'The maintenance host requires the same-publisher canonical .NET 10 Desktop archive.' }
-Invoke-InstallerCli -Arguments @('verify',$RuntimePackagePath,'--require-signature','--trust-key',$applicationInspection.publisherKeySha256) | Out-Null
-foreach ($required in @('dotnet.exe',('host/fxr/'+$runtimeInspection.manifest.version+'/hostfxr.dll'),('shared/Microsoft.NETCore.App/'+$runtimeInspection.manifest.version+'/coreclr.dll'),('shared/Microsoft.WindowsDesktop.App/'+$runtimeInspection.manifest.version+'/PresentationFramework.dll'))) {
-    if ($required -cnotin $runtimeInspection.manifest.payload.path) { throw 'The maintenance runtime lacks the standard private .NET Desktop layout.' }
+$runtimeVersion = Get-ToolkitLocalRuntimeVersion $maintenanceInspection.manifest
+$runtimeBinding = $null
+if (!$runtimeVersion) {
+    if (!$RuntimePackagePath -or !$RuntimePackageUrl -or $RuntimePackageUrl.Scheme -ne 'https' -or
+        $RuntimePackageUrl.UserInfo -or $RuntimePackageUrl.Fragment) { throw 'Legacy maintenance requires a signed .NET 10 Desktop archive and its exact HTTPS URL.' }
+    $runtimeInspection = Invoke-InstallerCli -Arguments @('inspect',$RuntimePackagePath) | ConvertFrom-Json
+    if (!$runtimeInspection.signed -or $runtimeInspection.publisherKeySha256 -ine $applicationInspection.publisherKeySha256 -or $runtimeInspection.manifest.id -cne 'socketjack.dotnet.desktop.10' -or $runtimeInspection.manifest.targetRuntime -cne $Runtime) { throw 'The maintenance host requires the same-publisher canonical .NET 10 Desktop archive.' }
+    Invoke-InstallerCli -Arguments @('verify',$RuntimePackagePath,'--require-signature','--trust-key',$applicationInspection.publisherKeySha256) | Out-Null
+    $runtimeVersion = $runtimeInspection.manifest.version
+    foreach ($required in @('dotnet.exe',"host/fxr/$runtimeVersion/hostfxr.dll","shared/Microsoft.NETCore.App/$runtimeVersion/coreclr.dll","shared/Microsoft.WindowsDesktop.App/$runtimeVersion/PresentationFramework.dll")) {
+        if ($required -cnotin $runtimeInspection.manifest.payload.path) { throw 'The maintenance runtime lacks the standard private .NET Desktop layout.' }
+    }
+    $runtimeBinding = [ordered]@{id=$runtimeInspection.manifest.id;version=$runtimeVersion;targetRuntime=$Runtime;url=$RuntimePackageUrl.AbsoluteUri;sha256=(Get-FileHash -LiteralPath $RuntimePackagePath -Algorithm SHA256).Hash;size=(Get-Item -LiteralPath $RuntimePackagePath).Length}
 }
 $maintenanceZip=[IO.Compression.ZipFile]::OpenRead([IO.Path]::GetFullPath($MaintenancePackagePath))
 try {
@@ -51,9 +60,9 @@ try {
         if($entry.Length -gt 64KB){throw 'The maintenance runtime configuration is too large.'}
         $reader=[IO.StreamReader]::new($entry.Open())
         try{$configuration=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()}
-        if($configuration.runtimeOptions.includedFrameworks -or (!$configuration.runtimeOptions.framework -and !$configuration.runtimeOptions.frameworks)){throw 'Self-contained maintenance packages duplicate the canonical runtime; rebuild framework-dependent.'}
+        if($configuration.runtimeOptions.includedFrameworks -or (!$configuration.runtimeOptions.framework -and !$configuration.runtimeOptions.frameworks)){throw 'Each maintenance apphost must be framework-dependent and use the shared toolkit runtime.'}
         foreach($framework in @($configuration.runtimeOptions.framework)+@($configuration.runtimeOptions.frameworks)|Where-Object{$_}){
-            $minimum=[version]$framework.version;$provided=[version]$runtimeInspection.manifest.version
+            $minimum=[version]$framework.version;$provided=[version]$runtimeVersion
             if($framework.name -cnotin @('Microsoft.NETCore.App','Microsoft.WindowsDesktop.App') -or $minimum.Major -ne $provided.Major -or $minimum.Minor -ne $provided.Minor -or $minimum -gt $provided){throw 'The canonical runtime does not satisfy the maintenance host framework pin.'}
         }
     }
@@ -61,10 +70,13 @@ try {
 }finally{$maintenanceZip.Dispose()}
 $manifest = $applicationInspection.manifest
 $maintenanceBinding = [ordered]@{id=$maintenanceInspection.manifest.id;version=$maintenanceInspection.manifest.version;targetRuntime=$Runtime;url=$MaintenancePackageUrl.AbsoluteUri;sha256=(Get-FileHash -LiteralPath $MaintenancePackagePath -Algorithm SHA256).Hash;size=(Get-Item -LiteralPath $MaintenancePackagePath).Length}
-$runtimeBinding = [ordered]@{id=$runtimeInspection.manifest.id;version=$runtimeInspection.manifest.version;targetRuntime=$Runtime;url=$RuntimePackageUrl.AbsoluteUri;sha256=(Get-FileHash -LiteralPath $RuntimePackagePath -Algorithm SHA256).Hash;size=(Get-Item -LiteralPath $RuntimePackagePath).Length}
-if ($maintenanceBinding.id -ieq $runtimeBinding.id) { throw 'Maintenance host and .NET runtime must be distinct signed packages.' }
+$bootstrapBindings = @($maintenanceBinding)
+if ($runtimeBinding) {
+    if ($maintenanceBinding.id -ieq $runtimeBinding.id) { throw 'Maintenance host and .NET runtime must be distinct signed packages.' }
+    $bootstrapBindings += $runtimeBinding
+}
 if($manifest.updateCompanion.sharedPackageId){
-    foreach($binding in @($maintenanceBinding,$runtimeBinding)){
+    foreach($binding in $bootstrapBindings){
         $dependency=@($manifest.sharedPackages|Where-Object id -IEQ $binding.id)
         if($dependency.Count -ne 1 -or $dependency[0].sha256 -ine $binding.sha256 -or $dependency[0].size -ne $binding.size -or $dependency[0].version -cne $binding.version -or
             ($dependency[0].feature -and $dependency[0].feature -cne $manifest.updateCompanion.feature)){throw 'The signed application must provision the exact updater maintenance/runtime closure during setup.'}
@@ -75,12 +87,12 @@ $descriptor = [ordered]@{
     publisherKeySha256=$applicationInspection.publisherKeySha256
     requiresAdministrator=([bool]$RequiresAdministrator -or [bool]$manifest.requiresAdministrator -or [bool]$manifest.applicationLaunch.requiresAdministrator)
     allowedDownloadOrigins=$AllowedDownloadOrigins
-    packages=@($maintenanceBinding,$runtimeBinding)
+    packages=$bootstrapBindings
     hostPackageId=$maintenanceInspection.manifest.id;hostEntryPoint='heirowInstaller.exe';hostArguments=@()
-    dotNetPackageId=$runtimeInspection.manifest.id
     applicationPackage=@{url=$ApplicationPackageUrl.AbsoluteUri;sha256=(Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash;size=(Get-Item -LiteralPath $application).Length}
     applicationPackageRequiresAuthentication=$true
 }
+if ($runtimeBinding) { $descriptor.dotNetPackageId = $runtimeBinding.id }
 $descriptorPath = Join-Path $output 'bootstrap-descriptor.json'
 $descriptor | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $descriptorPath
 $setup = Join-Path $output ($manifest.id + '-Setup.exe')
@@ -90,6 +102,6 @@ if ((Get-Item -LiteralPath $setup).Length -ge 20000000) { throw 'The completed s
 $dependencies = @($manifest.sharedPackages | ForEach-Object { [pscustomobject]@{id=$_.id;version=$_.version;bytes=[long]$_.size;sha256=$_.sha256;feature=$_.feature} })
 $sharedBytes=[long](($dependencies | Measure-Object -Property bytes -Sum).Sum)
 $bootstrapBytes=[long]$maintenanceBinding.size+[long]$runtimeBinding.size
-$uniqueArchives=@{};foreach($dependency in $dependencies){$uniqueArchives[$dependency.sha256.ToLowerInvariant()]=$dependency.bytes};foreach($dependency in @($maintenanceBinding,$runtimeBinding)){$uniqueArchives[$dependency.sha256.ToLowerInvariant()]=[long]$dependency.size}
+$uniqueArchives=@{};foreach($dependency in $dependencies){$uniqueArchives[$dependency.sha256.ToLowerInvariant()]=$dependency.bytes};foreach($dependency in $bootstrapBindings){$uniqueArchives[$dependency.sha256.ToLowerInvariant()]=[long]$dependency.size}
 $entryBytes=[long](Get-Item -LiteralPath $setup).Length+[long](Get-Item -LiteralPath $application).Length
 [ordered]@{productId=$manifest.id;version=$manifest.version;runtime=$Runtime;setupPath=$setup;setupBytes=(Get-Item -LiteralPath $setup).Length;applicationPath=$application;applicationBytes=(Get-Item -LiteralPath $application).Length;sharedDependencies=$dependencies;sharedDependencyBytes=$sharedBytes;maintenanceBytes=$maintenanceBinding.size;maintenanceRuntimeBytes=$runtimeBinding.size;uniqueCleanInstallDownloadBytes=($entryBytes+[long](($uniqueArchives.Values|Measure-Object -Sum).Sum));cleanInstallDownloadBytes=($entryBytes+$bootstrapBytes+$sharedBytes);downloadEstimate='Upper bound for all authored features with separate user-bootstrap and target-scope caches; warm verified cache reuse reduces actual transfers';compilerDirectory=$buildRoot} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $output 'size-report.json')

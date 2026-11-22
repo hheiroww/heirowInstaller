@@ -152,6 +152,7 @@ if ($LASTEXITCODE) { throw 'Canonical runtime verification failed.' }
 $runtimeInspection = & $CliPath inspect $RuntimePackagePath | ConvertFrom-Json
 if ($LASTEXITCODE -or !$runtimeInspection.signed -or $runtimeInspection.manifest.id -cne 'socketjack.dotnet.desktop.10' -or $runtimeInspection.manifest.targetRuntime -cne $Runtime) { throw 'Supply the canonical signed .NET 10 Windows Desktop archive for this architecture.' }
 $runtimeVersion = $runtimeInspection.manifest.version
+$runtimePackageSha256 = (Get-FileHash -LiteralPath $RuntimePackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
 foreach ($required in @('dotnet.exe',"host/fxr/$runtimeVersion/hostfxr.dll","shared/Microsoft.NETCore.App/$runtimeVersion/coreclr.dll","shared/Microsoft.WindowsDesktop.App/$runtimeVersion/PresentationFramework.dll")) {
     if ($required -cnotin $runtimeInspection.manifest.payload.path) { throw 'The canonical runtime archive lacks the standard desktop runtime layout.' }
 }
@@ -161,12 +162,13 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
 $work = Join-Path $output '.build'
 $payload = Join-Path $work 'payload'
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
-# Hosts retain their native apphosts and framework-dependent configuration. The
-# canonical runtime is a separate signed archive reused by every compatible app.
+# The three native hosts share one runtime next to their signed payload files.
+$appRelativeRuntime = 'dotnet'
 foreach ($project in @('HeirowInstaller.App','HeirowUpdater','HeirowInstaller.Cli')) {
     $published = Join-Path $work $project
     & dotnet publish (Join-Path $projectRoot "src/$project/$project.csproj") -c Release -r $Runtime --self-contained false `
         --artifacts-path (Join-Path $work 'compiler') -o $published --nologo '-p:PublishSingleFile=false' "-p:RuntimeFrameworkVersion=$runtimeVersion" '-p:UseAppHost=true' '-p:IncludeAllContentForSelfExtract=false' `
+        "-p:AppHostRelativeDotNet=$appRelativeRuntime" `
         '-p:InstallerSharedRuntimePublish=true' "-p:ProjectZPackageVersion=$ProjectZPackageVersion" "-p:Version=$Version" '-p:CopyOutputSymbolsToPublishDirectory=false' '-p:DebugType=embedded'
     if ($LASTEXITCODE) { throw "Shared toolkit host publish failed: $project" }
     foreach ($file in Get-ChildItem -LiteralPath $published -Recurse -File) {
@@ -189,6 +191,10 @@ foreach ($name in @('heirowInstaller','heirowUpdater','heirowInstaller.Cli')) {
 foreach ($forbidden in @('dotnet.exe','coreclr.dll','hostfxr.dll','hostpolicy.dll','System.Private.CoreLib.dll','PresentationFramework.dll')) {
     if (Test-Path -LiteralPath (Join-Path $payload $forbidden)) { throw "A private .NET runtime was duplicated inside maintenance: $forbidden" }
 }
+$localRuntime = Join-Path $payload $appRelativeRuntime
+if (Test-Path -LiteralPath $localRuntime) { throw 'The application payload already contains a private runtime directory.' }
+& $CliPath extract $RuntimePackagePath --require-signature --trust-key $runtimeInspection.publisherKeySha256 --output $localRuntime
+if ($LASTEXITCODE) { throw 'The verified runtime could not be staged inside the maintenance payload.' }
 foreach ($notice in @('LICENSE','THIRD-PARTY-NOTICES.md')) { Copy-Item -LiteralPath (Join-Path $projectRoot $notice) -Destination (Join-Path $payload $notice) }
 Copy-ToolkitDependencyNotices $payload $RootPackageCache (Join-Path $projectRoot 'third-party-license-assets')
 $legal = (Get-Content -LiteralPath (Join-Path $projectRoot 'legal/heirowinstaller/legal-documents.json') -Raw | ConvertFrom-Json).legalDocuments
@@ -200,4 +206,4 @@ $packagePath = Join-Path $output "socketjack.maintenance-$Version-$Runtime.hinst
 if ($LASTEXITCODE) { throw 'Shared toolkit signing failed.' }
 & $CliPath verify $packagePath --require-signature --trust-key $runtimeInspection.publisherKeySha256
 if ($LASTEXITCODE) { throw 'Shared toolkit verification failed.' }
-[ordered]@{id='socketjack.maintenance';version=$Version;targetRuntime=$Runtime;package=$packagePath;bytes=(Get-Item -LiteralPath $packagePath).Length;sha256=(Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash;publisherKeySha256=$runtimeInspection.publisherKeySha256;projectZPackageVersion=$ProjectZPackageVersion;payloadBytes=(Get-ChildItem -LiteralPath $payload -Recurse -File | Measure-Object -Property Length -Sum).Sum;runtimePackagePath=[IO.Path]::GetFullPath($RuntimePackagePath);runtimePackageUrl=$RuntimePackageUrl.AbsoluteUri;runtimeVersion=$runtimeVersion;runtimePackageSha256=(Get-FileHash -LiteralPath $RuntimePackagePath -Algorithm SHA256).Hash;staging=$work;cleanupRequiresApproval=$true} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'shared-toolkit.json')
+[ordered]@{id='socketjack.maintenance';version=$Version;targetRuntime=$Runtime;package=$packagePath;bytes=(Get-Item -LiteralPath $packagePath).Length;sha256=(Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash;publisherKeySha256=$runtimeInspection.publisherKeySha256;projectZPackageVersion=$ProjectZPackageVersion;payloadBytes=(Get-ChildItem -LiteralPath $payload -Recurse -File | Measure-Object -Property Length -Sum).Sum;runtimePackagePath=[IO.Path]::GetFullPath($RuntimePackagePath);runtimePackageUrl=$RuntimePackageUrl.AbsoluteUri;runtimeVersion=$runtimeVersion;runtimePackageSha256=$runtimePackageSha256;appRelativeRuntime=$appRelativeRuntime;staging=$work;cleanupRequiresApproval=$true} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'shared-toolkit.json')

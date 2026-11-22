@@ -123,6 +123,25 @@ if($taskEight.applicationLaunch.runtimePackageId -cne 'socketjack.dotnet.desktop
     !$taskEightWeb.requiresAdministrator -or $taskEightWeb.dotNetPackageId -cne 'socketjack.dotnet.desktop.10' -or $taskEightLaunch.requiresAdministrator -or $taskEightLaunch.packages.id -contains 'socketjack.dotnet.desktop.10'){
     throw 'App/runtime scope and signed setup-only admin requirements were confused with the updater runtime.'
 }
+Copy-Item -LiteralPath $taskRuntime -Destination (Join-Path $taskMaintenanceSource 'dotnet') -Recurse
+$taskLocalMaintenance=Join-Path $taskRoot 'maintenance-with-runtime.hinst'
+& $CliPath pack $taskMaintenanceManifest --source $taskMaintenanceSource --output $taskLocalMaintenance --sign-key $taskKey|Out-Null
+if($LASTEXITCODE){throw 'Package-local maintenance fixture creation failed.'}
+$taskLocalCommon=$taskCommon.Clone()
+$taskLocalCommon.MaintenancePackagePath=$taskLocalMaintenance
+$taskLocalCommon.MaintenancePackageUrl='https://packages.invalid/shared/maintenance-with-runtime.hinst'
+$taskApp.id='fixture.package-local-maintenance';Save $taskApp $taskManifest
+& (Join-Path $PSScriptRoot 'Build-SharedApplication.ps1') @taskLocalCommon -RuntimePackagePath $taskRuntime8Package -OutputDirectory (Join-Path $taskRoot 'package-local-maintenance')
+$taskLocal=Get-Content -LiteralPath (Join-Path $taskRoot 'package-local-maintenance/installer.json') -Raw|ConvertFrom-Json
+foreach($taskDescriptorPath in @('web-installer/bootstrap-descriptor.json','staging/updater-bootstrap.json')){
+    $taskDescriptor=Get-Content -LiteralPath (Join-Path $taskRoot ('package-local-maintenance/'+$taskDescriptorPath)) -Raw|ConvertFrom-Json
+    if($taskDescriptor.packages.Count -ne 1 -or $taskDescriptor.packages[0].sha256 -ine (Hash $taskLocalMaintenance) -or $taskDescriptor.PSObject.Properties['dotNetPackageId']){
+        throw 'A launcher did not bind the exact package-local maintenance toolkit alone.'
+    }
+}
+if($taskLocal.applicationLaunch.runtimePackageId -cne 'socketjack.dotnet.desktop.8' -or $taskLocal.sharedPackages.id -contains 'socketjack.dotnet.desktop.10'){
+    throw 'A package-local toolkit changed the application runtime or added a redundant Desktop 10 dependency.'
+}
 $taskApp.id='fixture.elevated-application';$taskApp.requiresAdministrator=$false;$taskApp.applicationLaunch=@{requiresAdministrator=$true};Save $taskApp $taskManifest
 & (Join-Path $PSScriptRoot 'Build-SharedApplication.ps1') @taskCommon -RuntimePackagePath $taskRuntime8Package -MaintenanceRuntimePackagePath $taskRuntimeArchive -MaintenanceRuntimePackageUrl $taskRuntime10Url -OutputDirectory (Join-Path $taskRoot 'elevated-application')
 $taskElevatedWeb=Get-Content -LiteralPath (Join-Path $taskRoot 'elevated-application/web-installer/bootstrap-descriptor.json') -Raw|ConvertFrom-Json
@@ -133,4 +152,4 @@ $taskOptionalBlocked=$false
 try{& (Join-Path $PSScriptRoot 'Build-SharedApplication.ps1') @taskCommon -RuntimePackagePath $taskRuntime8Package -MaintenanceRuntimePackagePath $taskRuntimeArchive -MaintenanceRuntimePackageUrl $taskRuntime10Url -OutputDirectory (Join-Path $taskRoot 'blocked-optional-local')}catch{if($_.Exception.Message -like '*Feature-optional app-root files*'){$taskOptionalBlocked=$true}else{throw}}
 if(!$taskOptionalBlocked -or (Test-Path -LiteralPath (Join-Path $taskRoot 'blocked-optional-local/web-installer/application.hinst'))){throw 'An optional local file produced a launcher that cannot open when its feature is off.'}
 Save @{ownedRoot=$taskRoot;purpose='Synthetic authoring acceptance, no payload execution';retain='All outputs until explicit cleanup approval';syntheticPrivateKey=(Join-Path $taskRoot 'fixture.private.pem');sourceInputs=@($CliPath,$GenericBootstrapPath,$AppHostPath)} (Join-Path $taskRoot 'storage-manifest.json')
-Write-Output ('PASS shared authoring: cross-product runtime reuse, complete offline updater/setup closure, exact sealed SecurityLoader policy preservation/block, NuGet relocation, protected aliases/private files; outputs '+$taskRoot)
+Write-Output ('PASS shared authoring: cross-product runtime reuse, package-local and legacy updater/setup closures, exact sealed SecurityLoader policy preservation/block, NuGet relocation, protected aliases/private files; outputs '+$taskRoot)

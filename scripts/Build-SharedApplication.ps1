@@ -34,6 +34,7 @@ param(
 $ErrorActionPreference='Stop'
 $scriptRoot=$PSScriptRoot
 . (Join-Path $scriptRoot 'Shared-NuGetValidation.ps1')
+. (Join-Path $scriptRoot 'Shared-ToolkitRuntime.ps1')
 function Plain([string]$Path){
     $full=[IO.Path]::GetFullPath($Path)
     for($node=$full;$node;$node=[IO.Path]::GetDirectoryName($node)){
@@ -172,17 +173,26 @@ if($RuntimePackagePath){
     $runtimeAssets=@{};foreach($file in $runtimeInputs){$runtimeAssets[[IO.Path]::GetRelativePath($runtimeRoot,$file).Replace('\','/')]=$file}
     Pack $runtimeId $DotNetRuntimeVersion $runtimeAssets
 }
-if(!$MaintenanceRuntimePackagePath){
-    if($runtimeId -cne 'socketjack.dotnet.desktop.10'){throw 'Supply the separate canonical .NET 10 MaintenanceRuntimePackagePath/Url when the application uses a different runtime family.'}
-    $mainRuntime=@($publication|Where-Object id -CEQ $runtimeId)[0]
-    $MaintenanceRuntimePackagePath=$mainRuntime.path
-    $MaintenanceRuntimePackageUrl=[uri]$mainRuntime.url
+$maintenanceDependencies=@(
+    [ordered]@{id=$maintenance.manifest.id;version=$maintenance.manifest.version;path=$MaintenancePackagePath;url=$MaintenancePackageUrl.AbsoluteUri}
+)
+$webRuntimeArguments=@{}
+if(!(Get-ToolkitLocalRuntimeVersion $maintenance.manifest)){
+    if(!$MaintenanceRuntimePackagePath){
+        if($runtimeId -cne 'socketjack.dotnet.desktop.10'){throw 'Supply the separate canonical .NET 10 MaintenanceRuntimePackagePath/Url when the application uses a different runtime family.'}
+        $mainRuntime=@($publication|Where-Object id -CEQ $runtimeId)[0]
+        $MaintenanceRuntimePackagePath=$mainRuntime.path
+        $MaintenanceRuntimePackageUrl=[uri]$mainRuntime.url
+    }
+    if(!$MaintenanceRuntimePackageUrl){throw 'Supply the exact HTTPS MaintenanceRuntimePackageUrl.'}
+    $maintenanceRuntime=Invoke-SharedCli @('inspect',$MaintenanceRuntimePackagePath)|ConvertFrom-Json -AsHashtable
+    if(!$maintenanceRuntime.signed -or $maintenanceRuntime.publisherKeySha256 -ine $pin -or $maintenanceRuntime.manifest.id -cne 'socketjack.dotnet.desktop.10' -or $maintenanceRuntime.manifest.targetRuntime -cne $Runtime){throw 'Maintenance requires the canonical same-publisher .NET 10 Desktop archive.'}
+    Invoke-SharedCli @('verify',$MaintenanceRuntimePackagePath,'--require-signature','--trust-key',$pin)|Out-Null
+    $maintenanceDependencies += [ordered]@{id=$maintenanceRuntime.manifest.id;version=$maintenanceRuntime.manifest.version;path=$MaintenanceRuntimePackagePath;url=$MaintenanceRuntimePackageUrl.AbsoluteUri}
+    $webRuntimeArguments=@{RuntimePackagePath=$MaintenanceRuntimePackagePath;RuntimePackageUrl=$MaintenanceRuntimePackageUrl}
 }
-if(!$MaintenanceRuntimePackageUrl){throw 'Supply the exact HTTPS MaintenanceRuntimePackageUrl.'}
-$maintenanceRuntime=Invoke-SharedCli @('inspect',$MaintenanceRuntimePackagePath)|ConvertFrom-Json -AsHashtable
-if(!$maintenanceRuntime.signed -or $maintenanceRuntime.publisherKeySha256 -ine $pin -or $maintenanceRuntime.manifest.id -cne 'socketjack.dotnet.desktop.10' -or $maintenanceRuntime.manifest.targetRuntime -cne $Runtime){throw 'Maintenance requires the canonical same-publisher .NET 10 Desktop archive.'}
-Invoke-SharedCli @('verify',$MaintenanceRuntimePackagePath,'--require-signature','--trust-key',$pin)|Out-Null
-foreach($url in @($MaintenancePackageUrl,$MaintenanceRuntimePackageUrl)){
+foreach($dependency in $maintenanceDependencies){
+    $url=[uri]$dependency.url
     if($url.Scheme -ne 'https' -or $url.UserInfo -or $url.Fragment -or $url.GetLeftPart([UriPartial]::Authority) -ne $origin.GetLeftPart([UriPartial]::Authority)){throw 'Maintenance dependencies must have immutable HTTPS URLs on the signed application update origin.'}
 }
 $deps=Get-Content -LiteralPath (Join-Path $source $depsPath) -Raw|ConvertFrom-Json -AsHashtable
@@ -269,10 +279,7 @@ if($ResourcePartitionsPath){
     }
 }
 if($manifest.updateCompanion){
-    foreach($hostDependency in @(
-        [ordered]@{id=$maintenance.manifest.id;version=$maintenance.manifest.version;path=$MaintenancePackagePath;url=$MaintenancePackageUrl.AbsoluteUri;inspection=$maintenance},
-        [ordered]@{id=$maintenanceRuntime.manifest.id;version=$maintenanceRuntime.manifest.version;path=$MaintenanceRuntimePackagePath;url=$MaintenanceRuntimePackageUrl.AbsoluteUri;inspection=$maintenanceRuntime}
-    )){
+    foreach($hostDependency in $maintenanceDependencies){
         $dependency=[ordered]@{id=$hostDependency.id;version=$hostDependency.version;targetRuntime=$Runtime;downloadUrl=$hostDependency.url;sha256=Hash $hostDependency.path;size=(Get-Item -LiteralPath $hostDependency.path).Length;publisherKeySha256=$pin;feature=$manifest.updateCompanion.feature}
         $existing=@($definitions|Where-Object id -IEQ $dependency.id)
         if($existing.Count){
@@ -284,10 +291,11 @@ if($manifest.updateCompanion){
         }
     }
     $updaterDescriptor=[ordered]@{formatVersion=1;productId='heirowUpdater';name='heirowUpdater';version=$maintenance.manifest.version;scope='user';hostKind='updater';publisherKeySha256=$pin;allowedDownloadOrigins=$AllowedDownloadOrigins;
-        offlineOnly=$true;packages=@(
-            [ordered]@{id=$maintenance.manifest.id;version=$maintenance.manifest.version;targetRuntime=$Runtime;url=$MaintenancePackageUrl.AbsoluteUri;sha256=Hash $MaintenancePackagePath;size=(Get-Item -LiteralPath $MaintenancePackagePath).Length},
-            [ordered]@{id=$maintenanceRuntime.manifest.id;version=$maintenanceRuntime.manifest.version;targetRuntime=$Runtime;url=$MaintenanceRuntimePackageUrl.AbsoluteUri;sha256=Hash $MaintenanceRuntimePackagePath;size=(Get-Item -LiteralPath $MaintenanceRuntimePackagePath).Length});
-        hostPackageId=$maintenance.manifest.id;hostEntryPoint='heirowUpdater.exe';dotNetPackageId=$maintenanceRuntime.manifest.id;hostArguments=@()}
+        offlineOnly=$true;packages=@($maintenanceDependencies|ForEach-Object{
+            [ordered]@{id=$_.id;version=$_.version;targetRuntime=$Runtime;url=$_.url;sha256=Hash $_.path;size=(Get-Item -LiteralPath $_.path).Length}
+        });
+        hostPackageId=$maintenance.manifest.id;hostEntryPoint='heirowUpdater.exe';hostArguments=@()}
+    if($webRuntimeArguments.Count){$updaterDescriptor.dotNetPackageId=$maintenanceRuntime.manifest.id}
     $updaterBytes=[Text.Encoding]::UTF8.GetBytes(($pin+(Hash $GenericBootstrapPath)+($updaterDescriptor|ConvertTo-Json -Depth 50 -Compress)))
     $updaterKey=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($updaterBytes)).ToLowerInvariant()
     $updater=Join-Path $cache ($updaterKey+'.exe')
@@ -358,5 +366,5 @@ foreach($shortcut in @($manifest.shortcuts)){if($shortcut.icon -eq $entry){$shor
 $prepared=Join-Path $output 'installer.json';SaveJson $manifest $prepared
 SaveJson $publication.ToArray() (Join-Path $output 'shared-publication-plan.json')
 SaveJson ([ordered]@{ownedOutput=$output;staging=$work;dependencyCache=$cache;dependencyCacheIsShared=$true;inputSource=$source;inputBytes=$inputBytes;runtimeInputBytes=$runtimeBytes;peakBudgetBytes=$need;retain=@('installer.json','shared-publication-plan.json','web-installer','verified referenced dependency archives');cleanupRequiresApproval=$true}) (Join-Path $output 'storage-manifest.json')
-& (Join-Path $scriptRoot 'Build-WebInstaller.ps1') -ManifestPath $prepared -SourceDirectory $payload -SigningKey $SigningKey -GenericBootstrapPath $GenericBootstrapPath -MaintenancePackagePath $MaintenancePackagePath -MaintenancePackageUrl $MaintenancePackageUrl -RuntimePackagePath $MaintenanceRuntimePackagePath -RuntimePackageUrl $MaintenanceRuntimePackageUrl -ApplicationPackageUrl $ApplicationPackageUrl -OutputDirectory (Join-Path $output 'web-installer') -Runtime $Runtime -CliPath $CliPath -AllowedDownloadOrigins $AllowedDownloadOrigins
+& (Join-Path $scriptRoot 'Build-WebInstaller.ps1') -ManifestPath $prepared -SourceDirectory $payload -SigningKey $SigningKey -GenericBootstrapPath $GenericBootstrapPath -MaintenancePackagePath $MaintenancePackagePath -MaintenancePackageUrl $MaintenancePackageUrl @webRuntimeArguments -ApplicationPackageUrl $ApplicationPackageUrl -OutputDirectory (Join-Path $output 'web-installer') -Runtime $Runtime -CliPath $CliPath -AllowedDownloadOrigins $AllowedDownloadOrigins
 if($LASTEXITCODE){throw 'Shared application web installer assembly failed.'}

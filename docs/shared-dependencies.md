@@ -161,9 +161,13 @@ Build the maintenance package first with `Build-SharedToolkit.ps1`, supplying
 `-SigningKey`. The new recipe defaults `-ProjectZPackageVersion` to exact
 `[2026.11.20.1]`; every publish receives that same override. Its three native
 apphosts remain framework-dependent and share ordinary maintenance DLLs once.
-It rejects bundled private .NET runtime files. The signed runtime archive stays
-separate. `Build-WebInstaller.ps1` receives the same runtime path/URL and binds
-both packages before opening the GUI with process-local `DOTNET_ROOT`.
+The builder verifies the canonical signed .NET archive and extracts its runtime
+once under `dotnet/` in the signed maintenance package. The cached installer,
+updater, and CLI resolve that directory relative to their executable. Verify the
+installer and updater with `scripts/Test-SharedToolkitRuntime.ps1`, which launches
+both apphosts in an isolated cache with the `DOTNET_ROOT` variables unset.
+`Build-WebInstaller.ps1` and the updater launcher bind the maintenance package
+directly. Older maintenance packages still use a separate runtime archive.
 
 A native-only launcher patch can reuse those exact signed maintenance and runtime
 archives. Pass an explicit native `-Version` to `Build-Bootstrap.ps1`; this does
@@ -183,12 +187,12 @@ identity, hash and download URL. Native-only releases use a dedicated tag such a
 The source offer must distinguish the new native source revision/build version
 from the reused maintenance revision and include their matching public notices.
 
-For a .NET 10 app, the common recipe reuses its exact main runtime archive for
-maintenance. For an app on another runtime family, supply the separate
-`-MaintenanceRuntimePackagePath` and `-MaintenanceRuntimePackageUrl`; its own
-`-RuntimePackagePath` still selects its application runtime. Compatible roles
-collapse only when their archive ID, version and hash agree. Maintenance URLs
-included in the signed app dependency list must use its signed update origin.
+An application's `-RuntimePackagePath` still selects its application runtime
+independently of the maintenance toolkit. With an older maintenance package,
+the common recipe can reuse the application's main .NET 10 runtime archive.
+For older maintenance paired with another runtime family, supply the separate
+`-MaintenanceRuntimePackagePath` and `-MaintenanceRuntimePackageUrl`. Maintenance
+URLs in the signed app dependency list must use its signed update origin.
 
 `scripts/Build-DotNetPackage.ps1` prepares a canonical runtime archive. It invokes
 `Prepare-DotNetRuntime.ps1`, reads the exact patch from Microsoft's official
