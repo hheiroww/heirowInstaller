@@ -15,8 +15,7 @@ internal static class BootstrapMachineStore
 
     internal static void Prepare(string root)
     {
-        using var identity = WindowsIdentity.GetCurrent();
-        if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) || !Equals(identity.Owner, Administrators) && !Equals(identity.Owner, SystemAccount))
+        if (!CanWriteRevision())
             throw new UnauthorizedAccessException("A protected administrator token is required to provision the shared host.");
         BootstrapEngine.NoLinks(root);
         foreach (var directory in new[] { Path.GetDirectoryName(root)!, root })
@@ -43,6 +42,18 @@ internal static class BootstrapMachineStore
                 Validate(directory, directory: true, protectedDacl: true);
             }
         }
+    }
+    internal static bool CanWriteRevision()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator) &&
+            (Equals(identity.Owner, Administrators) || Equals(identity.Owner, SystemAccount));
+    }
+    internal static void ValidateRevisionReceipt(string root, string path)
+    {
+        ValidateNamespace(root, Path.GetDirectoryName(path)!);
+        BootstrapEngine.NoLinks(path);
+        Validate(path, directory: false, protectedDacl: false);
     }
     internal static void GrantParentReadAccess(DirectorySecurity security) =>
         security.AddAccessRule(new(Users, FileSystemRights.ReadAndExecute,

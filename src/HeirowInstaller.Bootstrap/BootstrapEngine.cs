@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HeirowInstaller.BootstrapContract;
 
 namespace HeirowInstaller.Bootstrap;
 
@@ -89,45 +90,28 @@ internal sealed class BootstrapEngine
         NoLinks(sharedRoot); NoLinks(stagingRoot);
         allowProvision = allowProvision && descriptor.HostKind == "installer" && !descriptor.OfflineOnly;
         if (allowProvision) Directory.CreateDirectory(stagingRoot);
+        progress.Report(new("Checking shared files", "Checking the required shared versions."));
+        var protectedStore = OperatingSystem.IsWindows() &&
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(sharedRoot)).Equals(SharedRoot("machine"), StringComparison.OrdinalIgnoreCase);
+        var revision = protectedStore
+            ? new SharedPackageRevision(sharedRoot, "bootstrap", descriptor.PublisherKeySha256, descriptor.Packages.Select(package =>
+                new SharedPackageRevision.Package(package.Id, package.Version, package.TargetRuntime, package.Sha256, package.Size)))
+            : null;
+        var current = OperatingSystem.IsWindows() && revision?.Matches(
+            path => BootstrapMachineStore.ValidateRevisionReceipt(sharedRoot, path),
+            path => ValidateProtectedPackage(sharedRoot, path), token) == true;
         var roots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var package in descriptor.Packages)
         {
             token.ThrowIfCancellationRequested();
             var root = PackageRoot(sharedRoot, package);
-            var archivePath = Path.Combine(root, "package.hinst");
-            var complete = Path.Combine(root, "complete.json");
-            if (File.Exists(complete) && File.Exists(archivePath) && await FileMatchesAsync(archivePath, package.Size, package.Sha256, token))
-            {
-                progress.Report(new("Checking shared files", package.Id));
-                await VerifyPackageAsync(archivePath, Path.Combine(root, "files"), package, extract: false, token);
-            }
-            else
-            {
-                if (!allowProvision) throw new InvalidDataException("Shared application or maintenance files are missing or changed. Run setup to repair the installation before opening it.");
-                NoLinks(root); Directory.CreateDirectory(root);
-                using var lease = await AcquirePackageAsync(Path.Combine(root, "provision.lock"), token);
-                if (File.Exists(archivePath))
-                {
-                    if (!await FileMatchesAsync(archivePath, package.Size, package.Sha256, token)) throw new CryptographicException("An immutable shared runtime archive changed; it was preserved for repair.");
-                    await VerifyPackageAsync(archivePath, Path.Combine(root, "files"), package, extract: false, token);
-                }
-                else
-                {
-                    if (File.Exists(complete) || Directory.Exists(Path.Combine(root, "files"))) throw new InvalidDataException("A shared runtime directory is incomplete. Run repair before reusing it.");
-                    var work = UnderRoot(stagingRoot, package.Id.ToLowerInvariant());
-                    Directory.CreateDirectory(work);
-                    var download = Path.Combine(work, "package.hinst");
-                    await DownloadAsync(package, download, token);
-                    var files = Path.Combine(work, "files");
-                    await VerifyPackageAsync(download, files, package, extract: true, token);
-                    // Publish verified files under the per-package lease. Active versions are never overwritten.
-                    Directory.Move(files, Path.Combine(root, "files"));
-                    File.Move(download, archivePath);
-                }
-                if (!File.Exists(complete)) await File.WriteAllTextAsync(complete, "{\"formatVersion\":1}", token);
-            }
+            if (!current) await PreparePackageAsync(package, root, stagingRoot, allowProvision, token);
             roots.Add(package.Id, Path.Combine(root, "files"));
         }
+        if (OperatingSystem.IsWindows() && revision is not null && !current && BootstrapMachineStore.CanWriteRevision())
+            revision.Record(path => BootstrapMachineStore.ValidateNamespace(sharedRoot, path),
+                path => BootstrapMachineStore.ValidateRevisionReceipt(sharedRoot, path),
+                path => ValidateProtectedPackage(sharedRoot, path), token);
         string? application = null;
         if (descriptor.ApplicationPackage is { } payload && !descriptor.ApplicationPackageRequiresAuthentication)
         {
@@ -175,9 +159,55 @@ internal sealed class BootstrapEngine
         return start;
     }
 
-    // Scope is a cache-location hint, never authority to select other bytes. Each
-    // candidate still verifies every signed archive/payload and the application's
-    // generated probing paths before any process can start. No launch-time downloads.
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void ValidateProtectedPackage(string root, string path)
+    {
+        BootstrapMachineStore.ValidateNamespace(root, path);
+        BootstrapMachineStore.ValidateTree(path, requireProtectedDacl: false);
+    }
+
+    private async Task PreparePackageAsync(BootstrapPackage package, string root, string stagingRoot, bool allowProvision, CancellationToken token)
+    {
+        progress.Report(new("Checking shared files", package.Id));
+        var archivePath = Path.Combine(root, "package.hinst");
+        var complete = Path.Combine(root, "complete.json");
+        var filesRoot = Path.Combine(root, "files");
+        if (File.Exists(complete) && File.Exists(archivePath) && await FileMatchesAsync(archivePath, package.Size, package.Sha256, token))
+        {
+            await VerifyPackageAsync(archivePath, filesRoot, package, extract: false, token);
+            return;
+        }
+        if (!allowProvision) throw new InvalidDataException("Shared application or maintenance files are missing or changed. Run setup to repair the installation before opening it.");
+        NoLinks(root);
+        Directory.CreateDirectory(root);
+        using var lease = await AcquirePackageAsync(Path.Combine(root, "provision.lock"), token);
+        if (File.Exists(archivePath))
+        {
+            progress.Report(new("Checking shared files", package.Id));
+            if (!await FileMatchesAsync(archivePath, package.Size, package.Sha256, token))
+                throw new CryptographicException("An immutable shared runtime archive changed; it was preserved for repair.");
+            await VerifyPackageAsync(archivePath, filesRoot, package, extract: false, token);
+        }
+        else
+        {
+            if (File.Exists(complete) || Directory.Exists(filesRoot))
+                throw new InvalidDataException("A shared runtime directory is incomplete. Run repair before reusing it.");
+            var work = UnderRoot(stagingRoot, package.Id.ToLowerInvariant());
+            Directory.CreateDirectory(work);
+            var download = Path.Combine(work, "package.hinst");
+            await DownloadAsync(package, download, token);
+            var files = Path.Combine(work, "files");
+            await VerifyPackageAsync(download, files, package, extract: true, token);
+            // Publish verified files under the per-package lease. Active versions are never overwritten.
+            Directory.Move(files, filesRoot);
+            File.Move(download, archivePath);
+        }
+        if (!File.Exists(complete)) await File.WriteAllTextAsync(complete, "{\"formatVersion\":1}", token);
+    }
+
+    // Scope selects a cache location. Only a matching administrator-owned revision
+    // can reuse earlier byte checks. Each launch still validates the app's own
+    // files and probing paths, and offline launches cannot fetch missing packages.
     internal async Task<ProcessStartInfo> PrepareOfflineAsync(IEnumerable<string> sharedRoots, string stagingRoot,
         CancellationToken token, string? applicationDirectory = null)
     {
@@ -289,6 +319,7 @@ internal sealed class BootstrapEngine
             total += file.Size;
         }
         if (entries.Count != manifest.Payload.Count + 2) throw new InvalidDataException("The runtime archive contains undeclared files.");
+        if (!extract) ValidateInstalledInventory(filesRoot, paths);
         if (extract && new DriveInfo(Path.GetPathRoot(Path.GetFullPath(filesRoot))!).AvailableFreeSpace < total + 16 * 1024 * 1024) throw new IOException("There is insufficient disk space to extract this runtime.");
         long completed = 0;
         foreach (var file in manifest.Payload)
@@ -312,6 +343,22 @@ internal sealed class BootstrapEngine
                 if (written != file.Size || !Convert.ToHexString(hash.GetHashAndReset()).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase)) throw new CryptographicException("Runtime file verification failed.");
             }
             completed += file.Size; progress.Report(new(extract ? "Preparing shared files" : "Checking shared files", file.Path, completed, total));
+        }
+    }
+
+    private static void ValidateInstalledInventory(string root, HashSet<string> expected)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out var directory))
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                NoLinks(entry);
+                if (Directory.Exists(entry)) pending.Push(entry);
+                else if (!expected.Contains(Path.GetRelativePath(root, entry).Replace(Path.DirectorySeparatorChar, '/')))
+                    throw new CryptographicException("An installed shared runtime contains an undeclared file; repair is required.");
+            }
         }
     }
 

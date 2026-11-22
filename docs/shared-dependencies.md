@@ -47,6 +47,13 @@ identities are still checked. The shorter content path avoids repeating long
 package names in Windows extraction paths. Dependency provisioning is serialized
 per archive. Downloads and extraction check free space and report progress.
 
+The Windows bootstrap checks shared files in the background. An administrator
+can save a revision for a verified machine-scope dependency set. Later runs
+compare the signed package identities, protected ownership and filesystem
+metadata before reusing that verification. Missing revisions, changed files
+and new dependency versions trigger full signature and content checks. User-scope
+and isolated stores continue to verify the package contents.
+
 Installed applications receive a generated `.socketjack-shared.json` containing
 their signed manifest digest and exact dependency locations. The scope-wide
 reference has the same bytes. Both activate in the application's file transaction
@@ -89,7 +96,7 @@ NativeAOT bootstrap provisions the maintenance host and its separate canonical
 .NET runtime. The parent application's signed dependency list also declares that
 exact closure under the updater feature, so selecting updates provisions every
 required archive during setup. Installed updater bootstraps are signed
-`offlineOnly: true`: they verify already installed host/runtime bytes and fail
+`offlineOnly: true`. They verify the installed host and runtime and fail
 with a repair instruction if anything is missing. General managed dependencies need `.deps.json`-
 compatible probing layouts and a private .NET host configured before managed
 `Main`; changing the global `PATH` or scanning arbitrary DLL folders is not a

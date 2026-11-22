@@ -103,6 +103,41 @@ Check(updaterStartupInfo.ArgumentList.SequenceEqual(["--scope", "machine"]), "in
 var calls = handler.Calls;
 await engine.PrepareAsync(shared, Path.Combine(root, "cached"), default);
 Check(handler.Calls == calls, "second setup reuses verified shared bytes without a network download");
+if (OperatingSystem.IsWindows())
+{
+    var source = descriptor.Packages.Single();
+    var version = new SharedPackageRevision.Package(source.Id, source.Version, source.TargetRuntime, source.Sha256, source.Size);
+    var revision = new SharedPackageRevision(shared, "bootstrap", pin, [version]);
+    // These isolated callbacks stand in for the production protected-store ACL
+    // checks. The real bootstrap must ignore a receipt under this writable root.
+    static void FixturePath(string _) { }
+    bool Matches(SharedPackageRevision candidate) => candidate.Matches(FixturePath, FixturePath, default);
+    revision.Record(FixturePath, FixturePath, FixturePath, default);
+    Check(Directory.EnumerateFiles(Path.Combine(shared, "verified-revisions")).Count() == 1 &&
+        Matches(revision), "a warm shared package set reuses one persisted revision");
+    Check(!Matches(new(shared, "bootstrap", pin, [version with { Version = "2.0.0" }])) &&
+        !Matches(new(shared, "installer", pin, [version])), "changed signed versions and different verifier policies invalidate the revision");
+    Check(!revision.Matches(_ => throw new UnauthorizedAccessException(), FixturePath, default),
+        "a revision with untrusted ownership is ignored");
+    var sharedFile = start.FileName;
+    var originalBytes = File.ReadAllBytes(sharedFile);
+    var originalWrite = File.GetLastWriteTimeUtc(sharedFile);
+    var changedBytes = originalBytes.ToArray();
+    changedBytes[0] ^= 1;
+    File.WriteAllBytes(sharedFile, changedBytes);
+    File.SetLastWriteTimeUtc(sharedFile, originalWrite);
+    Check(!Matches(revision), "an equal-length edit with a restored write timestamp invalidates the revision");
+    revision.Record(FixturePath, FixturePath, FixturePath, default);
+    Check(Matches(revision), "the writable fixture can forge a revision for changed bytes");
+    await Reject(async () => await engine.PrepareAsync(shared, Path.Combine(root, "untrusted-revision"), default),
+        "the bootstrap ignores a forged revision in a user-writable store");
+    File.WriteAllBytes(sharedFile, originalBytes);
+    var extra = Path.Combine(Path.GetDirectoryName(sharedFile)!, "unexpected.dll");
+    File.WriteAllText(extra, "undeclared fixture file");
+    await Reject(async () => await engine.PrepareAsync(shared, Path.Combine(root, "extra-file"), default),
+        "full shared verification rejects an undeclared runtime file after revision invalidation");
+    File.Move(extra, Path.Combine(root, "retained-unexpected.dll"));
+}
 File.WriteAllText(start.FileName, "modified bytes");
 await Reject(async () => await engine.PrepareAsync(shared, Path.Combine(root, "tampered-cache"), default), "a changed immutable runtime is rejected and preserved");
 Check(File.ReadAllText(start.FileName) == "modified bytes", "failed cache verification does not overwrite existing files");

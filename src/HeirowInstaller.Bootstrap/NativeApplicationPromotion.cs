@@ -94,9 +94,8 @@ internal static class NativeApplicationPromotion
             if (File.Exists(archive) || Directory.Exists(files) || File.Exists(Path.Combine(destination, "complete.json")))
             {
                 BootstrapMachineStore.ValidateTree(destination, requireProtectedDacl: false);
-                if (!File.Exists(Path.Combine(destination, "complete.json")) || !await BootstrapEngine.FileMatchesAsync(archive, package.Size, package.Sha256, token))
+                if (!File.Exists(Path.Combine(destination, "complete.json")) || !File.Exists(archive) || !Directory.Exists(files))
                     throw new CryptographicException("A protected application runtime is incomplete or changed. Repair is required.");
-                await engine.VerifyPackageAsync(archive, files, package, extract: false, token);
             }
             else
             {
@@ -139,8 +138,8 @@ internal static class NativeApplicationPromotion
         }
         BootstrapMachineStore.ValidateTree(application, requireProtectedDacl: false);
         ApplicationPromotionPayloads.ValidateInventory(descriptor, application);
-        // PrepareAsync performs a second verification of all protected packages,
-        // local files and the regenerated probing configuration. It cannot fetch.
+        // PrepareAsync verifies the protected revision or its signed bytes, plus
+        // the local files and regenerated probing configuration. It cannot fetch.
         var start = await engine.PrepareAsync(machine, staging, token, application);
         string temporary = Path.Combine(staging, "temp"); Directory.CreateDirectory(temporary);
         ApplicationPromotionPayloads.ConfigureEnvironment(start, temporary, original.Profile, original.Roaming, original.Local, original.ApplicationRoot);

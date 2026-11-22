@@ -14,12 +14,13 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
     private Task<int>? operation;
     private Exception? failure;
     private long lastProgressTick;
+    private bool visible;
     internal BootstrapWindow(string title) => this.title = title;
     public void Report(BootstrapProgress value)
     {
-        Volatile.Write(ref latest, value);
+        var previous = Interlocked.Exchange(ref latest, value);
         var tick = Environment.TickCount64;
-        if (tick - Interlocked.Read(ref lastProgressTick) >= 50 || value.Completed == value.Total)
+        if (previous.Phase != value.Phase || tick - Interlocked.Read(ref lastProgressTick) >= 50 || value.Completed == value.Total)
         { Interlocked.Exchange(ref lastProgressTick, tick); if (window != 0) PostMessageW(window, 0x8001, 0, 0); }
     }
     internal int Run(Func<CancellationToken, Task<int>> action)
@@ -58,8 +59,7 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
             cancel = CreateWindowExW(0, "BUTTON", "Cancel", 0x50010000, client.Right - margin - buttonWidth, buttonY, buttonWidth, buttonHeight, window, 100, instance, 0);
             font = CreateFontW(-D(16), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
             foreach (var control in new[] { heading, detail, cancel }) SendMessageW(control, 0x30, (nuint)(font != 0 ? font : GetStockObject(17)), 1);
-            ShowWindow(window, 5); UpdateWindow(window);
-            // Start after native controls have painted, so DNS, disk and extraction never delay the first frame.
+            // Start verification with the window hidden. Actionable provisioning or approval can reveal it.
             operation = Task.Run(() => RunOperation(action));
             while (GetMessageW(out var message, 0, 0, 0) > 0) { TranslateMessage(ref message); DispatchMessageW(ref message); }
         }
@@ -68,6 +68,14 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
         return operation?.GetAwaiter().GetResult() ?? 1;
     }
     internal void Hide() { if (window != 0) PostMessageW(window, 0x8003, 0, 0); }
+
+    private void SetVisible(bool show)
+    {
+        if (visible == show) return;
+        visible = show;
+        ShowWindow(window, show ? 5 : 0);
+        if (show) UpdateWindow(window);
+    }
     private static string ProgressText(BootstrapProgress value) => value.Total > 0
         ? $"{value.Phase}\n{value.Detail}\n{value.Completed:N0} / {value.Total:N0} bytes"
         : $"{value.Phase}\n{value.Detail}";
@@ -89,12 +97,19 @@ internal sealed unsafe class BootstrapWindow : IProgress<BootstrapProgress>, IDi
             if (message == 0x8001)
             {
                 var value = Volatile.Read(ref self.latest);
+                if (value.Phase == "Checking shared files")
+                {
+                    self.SetVisible(false);
+                    return 0;
+                }
                 SetWindowTextW(self.detail, ProgressText(value));
                 SendMessageW(self.bar, 0x402, (nuint)(value.Total > 0 ? Math.Clamp((int)(100d * value.Completed / value.Total), 0, 100) : 0), 0);
+                if (value.Phase is "Downloading" or "Preparing shared files" or "Preparing administrator application" or "Requesting administrator access")
+                    self.SetVisible(true);
                 return 0;
             }
             if (message == 0x8002) { DestroyWindow(hwnd); return 0; }
-            if (message == 0x8003) { ShowWindow(hwnd, 0); return 0; }
+            if (message == 0x8003) { self.SetVisible(false); return 0; }
             if (message == 2) { PostQuitMessage(0); return 0; }
         }
         return DefWindowProcW(hwnd, message, wparam, lparam);

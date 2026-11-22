@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HeirowInstaller.BootstrapContract;
 
 namespace HeirowInstaller.Core;
 
@@ -128,6 +129,10 @@ public static partial class SharedPackages
         var binding = Describe(signed, Hash(package.ReadManifestBytes()), package.PublisherKeySha256!, plan.InstallDirectory,
             plan.Scope, stateRoot, options.Isolated, plan.Features);
         if (binding is null) return null;
+        var selected = plan.Features.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var definitions = signed.SharedPackages!.Where(definition => definition.Feature is null || selected.Contains(definition.Feature)).ToArray();
+        if (definitions.Any(definition => !PackageSafety.HashEquals(definition.PublisherKeySha256, package.PublisherKeySha256!)))
+            throw new CryptographicException("A shared dependency must be signed by the application's pinned publisher.");
         var root = Root(plan.Scope, stateRoot, options.Isolated);
         using var machineParent = OperatingSystem.IsWindows() && plan.Scope == "machine" && !options.Isolated
             ? MachineStateSecurity.Acquire(Path.GetDirectoryName(root)!, create: true) : null;
@@ -135,13 +140,20 @@ public static partial class SharedPackages
             ? MachineStateSecurity.Acquire(root, create: true) : null;
         if (machineRoot is null) Directory.CreateDirectory(root);
         PackageSafety.EnsureNoReparsePoints(root);
+        var revision = machineRoot is null ? null : new SharedPackageRevision(root, "installer", binding.PublisherKeySha256,
+            binding.Packages.Select(dependency => new SharedPackageRevision.Package(dependency.Id, dependency.Version,
+                dependency.TargetRuntime, dependency.Sha256, dependency.Size)));
+        void ValidateRevisionPackage(string directory)
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+            MachineStateSecurity.ValidateProtectedTreeUnderRoot(root, directory);
+        }
+        if (OperatingSystem.IsWindows() && revision?.Matches(ValidateRevisionReceipt, ValidateRevisionPackage, cancellationToken) == true)
+            return binding;
         using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }) { Timeout = Timeout.InfiniteTimeSpan };
-        var selected = plan.Features.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var definition in signed.SharedPackages!.Where(x => x.Feature is null || selected.Contains(x.Feature)))
+        foreach (var definition in definitions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!PackageSafety.HashEquals(definition.PublisherKeySha256, package.PublisherKeySha256!))
-                throw new CryptographicException("A shared dependency must be signed by the application's pinned publisher.");
             var directory = PackageRoot(root, definition);
             Directory.CreateDirectory(directory);
             using var lease = await AcquireAsync(PackageSafety.UnderRoot(directory, "provision.lock"), cancellationToken);
@@ -178,7 +190,25 @@ public static partial class SharedPackages
                     targetRuntime = definition.TargetRuntime, sha256 = definition.Sha256, publisherKeySha256 = definition.PublisherKeySha256 }, InstallerJson.Options), cancellationToken);
             progress?.Report(new("dependencies", "Verified shared dependency " + definition.Id, binding.Packages.FindIndex(x => x.Id == definition.Id) + 1, binding.Packages.Count));
         }
+        if (OperatingSystem.IsWindows() && revision is not null)
+            revision.Record(ValidateRevisionDirectory, ValidateRevisionReceipt, ValidateRevisionPackage, cancellationToken);
         return binding;
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void ValidateRevisionDirectory(string directory)
+    {
+        PackageSafety.EnsureNoReparsePoints(directory);
+        if (File.Exists(directory) || Directory.Exists(directory) && !MachineStateSecurity.IsStateObjectProtected(directory))
+            throw new UnauthorizedAccessException("The shared revision directory is outside protected installer storage.");
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void ValidateRevisionReceipt(string path)
+    {
+        ValidateRevisionDirectory(Path.GetDirectoryName(path)!);
+        if (!MachineStateSecurity.IsStateObjectProtected(path))
+            throw new UnauthorizedAccessException("The shared revision receipt is outside protected installer storage.");
     }
 
     internal static void Activate(SharedPackageBinding? binding, InstalledProduct product, InstalledProduct? previous,

@@ -4,6 +4,7 @@
     <ProjectReference Include="../../src/HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
     <Compile Remove="../Shared/LegalFixture.cs" />
     <Compile Include="../../src/Shared/WebBootstrapBinding.cs" Link="Production/WebBootstrapBinding.cs" />
+    <Compile Include="../../src/Shared/SharedPackageRevision.cs" Link="Production/SharedPackageRevision.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapModels.cs" Link="Production/BootstrapModels.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapEngine.cs" Link="Production/BootstrapEngine.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapMachineStore.cs" Link="Production/BootstrapMachineStore.cs" />

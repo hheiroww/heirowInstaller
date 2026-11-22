@@ -13,5 +13,8 @@
     <StripSymbols>true</StripSymbols>
     <DebugType>none</DebugType>
   </PropertyGroup>
-  <ItemGroup><Compile Include="../Shared/WebBootstrapBinding.cs" Link="WebBootstrapBinding.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/WebBootstrapBinding.cs" Link="WebBootstrapBinding.cs" />
+    <Compile Include="../Shared/SharedPackageRevision.cs" Link="SharedPackageRevision.cs" />
+  </ItemGroup>
 </Project>
