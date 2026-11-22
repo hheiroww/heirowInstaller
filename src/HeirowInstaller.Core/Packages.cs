@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HeirowInstaller.BootstrapContract;
 
 namespace HeirowInstaller.Core;
 
@@ -161,7 +162,7 @@ public sealed class PackageReader : IDisposable
         stream = BundleBuilder.OpenPackageStream(PackagePath);
         try
         {
-            archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
+            archive = OpenArchive(stream, PackagePath);
             entries = new(StringComparer.OrdinalIgnoreCase);
             foreach (var entry in archive.Entries)
             {
@@ -201,6 +202,23 @@ public sealed class PackageReader : IDisposable
     /// <summary>Opens a signed manifest-only archive for planning and online file repair; it cannot supply absent payload bytes.</summary>
     public static PackageReader OpenMetadata(string path) => new(path, metadataOnly: true);
     public static bool HasEmbeddedPackage(string path) => BundleBuilder.HasEmbeddedPackage(path);
+
+    private static ZipArchive OpenArchive(Stream input, string path)
+    {
+        try { return new ZipArchive(input, ZipArchiveMode.Read, leaveOpen: true); }
+        catch (InvalidDataException error) when (HasSignedWebSetupBinding(path))
+        {
+            throw new InvalidDataException("Run the Web Setup .exe from File Explorer. To open a package here, select the full setup or .hinst file from the publisher.", error);
+        }
+    }
+
+    // Invalid bindings leave the original archive error intact through the exception filter.
+    private static bool HasSignedWebSetupBinding(string path)
+    {
+        var binding = WebBootstrapBindings.Read(path);
+        using var descriptor = JsonDocument.Parse(binding.DescriptorBytes);
+        return descriptor.RootElement.TryGetProperty("hostKind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.GetString() == "installer";
+    }
 
     /// <summary>Hashes the exact package archive, independently of a containing Setup executable or its Windows signature.</summary>
     public string ComputePackageSha256()

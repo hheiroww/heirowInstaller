@@ -409,6 +409,25 @@ try
     using (var document = JsonDocument.Parse(WebBootstrapBindings.Read(webCarrier, pin).DescriptorBytes))
         Check(WebBootstrapBindings.ReadFileUpdate(document.RootElement) == webSetup.ApplicationFileUpdate,
             "the verified carrier returns the exact signed file-selection endpoints and digest");
+    var renamedCarrier = Path.ChangeExtension(webCarrier, ".hinst");
+    File.Copy(webCarrier, renamedCarrier);
+    foreach (var path in new[] { webCarrier, renamedCarrier, generic })
+    {
+        try
+        {
+            using var unexpected = HeirowInstaller.Core.PackageReader.Open(path);
+            throw new InvalidOperationException("A bare PE unexpectedly opened as a package.");
+        }
+        catch (InvalidDataException error)
+        {
+            Check(error.Message.Contains("File Explorer", StringComparison.Ordinal) == (path != generic),
+                "package opening gives the expected guidance for " + Path.GetFileName(path));
+        }
+    }
+    var fullSetup = Path.Combine(updateArea, "full-setup.exe");
+    HeirowInstaller.Core.BundleBuilder.Build(generic, requestedPackage, fullSetup);
+    using (var bundled = HeirowInstaller.Core.PackageReader.Open(fullSetup))
+        Check(bundled.ComputePackageSha256() == signedTarget.ComputePackageSha256(), "package opening still accepts a full setup with its embedded package");
     Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, webCarrier);
     Check(HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedMetadata, updateManifest.Id, "0.5.0", pin, "machine", "apply-files"),
         "the promoted worker accepts the website's exact signed selection metadata");
