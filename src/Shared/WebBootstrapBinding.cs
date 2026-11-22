@@ -48,6 +48,7 @@ public static class WebBootstrapBindings
         if (descriptor.RootElement.GetProperty("formatVersion").GetInt32() != 1 ||
             !pin.Equals(descriptor.RootElement.GetProperty("publisherKeySha256").GetString(), StringComparison.OrdinalIgnoreCase))
             throw new CryptographicException("The native installer descriptor has a different publisher binding.");
+        _ = ReadFileUpdate(descriptor.RootElement);
         return new(bytes, pin, prefixLength);
     }
 
@@ -58,6 +59,7 @@ public static class WebBootstrapBindings
         var pin = Convert.ToHexString(SHA256.HashData(signingKey.ExportSubjectPublicKeyInfo()));
         if (descriptor.RootElement.GetProperty("formatVersion").GetInt32() != 1 || !pin.Equals(descriptor.RootElement.GetProperty("publisherKeySha256").GetString(), StringComparison.OrdinalIgnoreCase))
             throw new CryptographicException("The descriptor publisher differs from the supplied signing key.");
+        _ = ReadFileUpdate(descriptor.RootElement);
         using var envelope = new MemoryStream();
         using (var writer = new Utf8JsonWriter(envelope))
         {
@@ -118,6 +120,47 @@ public static class WebBootstrapBindings
             throw new InvalidDataException("Invalid Windows certificate extent.");
         return (offset == 0 ? input.Length : offset, pe + 24L + 64, certificate);
     }
+    internal static BootstrapFileUpdate? ReadFileUpdate(JsonElement descriptor)
+    {
+        if (!descriptor.TryGetProperty("applicationFileUpdate", out var update) || update.ValueKind == JsonValueKind.Null)
+            return null;
+        if (!descriptor.TryGetProperty("hostKind", out var role) || role.ValueKind != JsonValueKind.String || role.GetString() != "installer" ||
+            descriptor.TryGetProperty("offlineOnly", out var offline) && offline.ValueKind != JsonValueKind.False ||
+            !descriptor.TryGetProperty("applicationPackage", out var package) || package.ValueKind != JsonValueKind.Object ||
+            !package.TryGetProperty("url", out var url) || url.ValueKind != JsonValueKind.String ||
+            !package.TryGetProperty("size", out var size) || size.ValueKind != JsonValueKind.Number || !size.TryGetInt64(out var bytes) || bytes <= 0 ||
+            !ReadString(package, "sha256", out var digest) || !BootstrapFileUpdate.IsHash(digest) ||
+            update.ValueKind != JsonValueKind.Object || update.EnumerateObject().Count() != 3 ||
+            !ReadString(update, "manifestUrl", out var manifestUrl) || !ReadString(update, "filesUrl", out var filesUrl) ||
+            !ReadString(update, "manifestSha256", out var manifestSha256))
+            throw new InvalidDataException("A selected-file update requires a signed online application package and exact target binding.");
+
+        var allowed = new List<string>();
+        if (descriptor.TryGetProperty("allowedDownloadOrigins", out var origins))
+        {
+            if (origins.ValueKind != JsonValueKind.Array || origins.GetArrayLength() > 16)
+                throw new InvalidDataException("Invalid selected-file download origins.");
+            foreach (var origin in origins.EnumerateArray())
+            {
+                if (origin.ValueKind != JsonValueKind.String || origin.GetString() is not { } text)
+                    throw new InvalidDataException("Invalid selected-file download origin.");
+                allowed.Add(text);
+            }
+        }
+        var value = new BootstrapFileUpdate(manifestUrl, filesUrl, manifestSha256);
+        value.Validate(url.GetString(), allowed);
+        return value;
+    }
+
+    private static bool ReadString(JsonElement element, string name, out string result)
+    {
+        result = "";
+        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String || value.GetString() is not { } text)
+            return false;
+        result = text;
+        return true;
+    }
+
     private static void UniqueProperties(JsonElement value)
     {
         if (value.ValueKind == JsonValueKind.Object)
@@ -127,4 +170,36 @@ public static class WebBootstrapBindings
         }
         else if (value.ValueKind == JsonValueKind.Array) foreach (var item in value.EnumerateArray()) UniqueProperties(item);
     }
+}
+
+internal sealed record BootstrapFileUpdate(string ManifestUrl, string FilesUrl, string ManifestSha256)
+{
+    internal static bool IsHash(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
+
+    internal void Validate(string? applicationUrl, IReadOnlyList<string> allowedOrigins)
+    {
+        if (!IsHash(ManifestSha256) || !TryEndpoint(applicationUrl, out var application) ||
+            !TryEndpoint(ManifestUrl, out var manifest) || !TryEndpoint(FilesUrl, out var files))
+            throw new InvalidDataException("Selected-file endpoints require HTTPS and the signed target manifest digest.");
+
+        var applicationOrigin = application!.GetLeftPart(UriPartial.Authority);
+        foreach (var origin in allowedOrigins)
+            if (!TryEndpoint(origin, out var uri) ||
+                !origin.Equals(uri!.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Selected-file download origins must be explicit HTTPS origins.");
+
+        bool Allowed(Uri uri)
+        {
+            var authority = uri.GetLeftPart(UriPartial.Authority);
+            return authority.Equals(applicationOrigin, StringComparison.OrdinalIgnoreCase) ||
+                allowedOrigins.Contains(authority, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (!Allowed(manifest!) || !Allowed(files!))
+            throw new InvalidDataException("Selected-file endpoints are outside the signed application download origins.");
+    }
+
+    private static bool TryEndpoint(string? text, out Uri? uri) =>
+        Uri.TryCreate(text, UriKind.Absolute, out uri) && uri.Scheme == Uri.UriSchemeHttps &&
+        uri.UserInfo.Length == 0 && uri.Fragment.Length == 0 && uri.Host.Length > 0;
 }

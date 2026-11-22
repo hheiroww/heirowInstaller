@@ -48,12 +48,41 @@ await using (var fixture = await Fixture.Create(Path.Combine(root, "skip-and-rep
     File.WriteAllText(Path.Combine(fixture.App, "main.bin"), "locally modified owned bytes");
     File.Delete(Path.Combine(fixture.App, "missing.bin"));
     File.WriteAllText(Path.Combine(fixture.App, "personal.txt"), "user data outside package ownership");
+    var baseProduct = fixture.Installed;
+    Check(InstallerEngine.FindBoundWebSetupInstallation(baseProduct.Id, baseProduct.PublisherKeySha256!, fixture.State, isolated: true) is { } detected &&
+        detected.ReceiptPath == baseProduct.ReceiptPath && detected.InstallDirectory == baseProduct.InstallDirectory,
+        "Website setup did not find the exact signed installation without relying on mount state.");
+    var cleanState = Path.Combine(fixture.Root, "empty-state");
+    Check(InstallerEngine.FindBoundWebSetupInstallation(baseProduct.Id, baseProduct.PublisherKeySha256!, cleanState, isolated: true) is null &&
+        !Directory.Exists(cleanState), "A first-run lookup must neither succeed nor create installer state.");
+    await Reject<CryptographicException>(() => Task.Run(() => InstallerEngine.FindBoundWebSetupInstallation(
+        baseProduct.Id, new string('0', 64), fixture.State, isolated: true)), "Website setup accepted the installed receipt with a different publisher.");
+    var invalidRoot = Path.Combine(fixture.Root, "invalid-state");
+    var invalidReceipt = Path.Combine(invalidRoot, baseProduct.Id, "receipt.json");
+    Directory.CreateDirectory(Path.GetDirectoryName(invalidReceipt)!);
+    File.WriteAllText(invalidReceipt, "{}");
+    await Reject<Exception>(() => Task.Run(() => InstallerEngine.FindBoundWebSetupInstallation(
+        baseProduct.Id, baseProduct.PublisherKeySha256!, invalidRoot, isolated: true)), "Website setup treated a corrupt receipt as a fresh install.");
     using var client = new FileUpdateClient(transport: fixture.Transport);
     var progress = new List<string>();
     using var stage = await client.PrepareAsync(fixture.Feed, fixture.Installed, Path.Combine(fixture.Root, "stages"), fixture.Options(), new InlineProgress(value => progress.Add(value.Phase)));
     Check(File.ReadAllText(Path.Combine(fixture.App, "main.bin")) == "locally modified owned bytes", "Preparation changed the running application.");
     Check(stage.RequestedPaths.Order().SequenceEqual(new[] { "added.bin", "main.bin", "missing.bin" }.Order()), "The diff included unchanged bytes or missed corrupt/missing files.");
     Check(fixture.Transport.BytesDownloaded < 8192, "The selected ZIP downloaded the large unchanged file.");
+    using (var targetMetadata = PackageReader.OpenMetadata(stage.MetadataPath))
+    {
+        var updatePlan = new InstallerEngine().Plan(targetMetadata, fixture.Options());
+        var main = await stage.ReadVerifiedPayloadAsync("main.bin", updatePlan, 1024);
+        Check(System.Text.Encoding.UTF8.GetString(main) == "new application bytes", "ReadVerifiedPayloadAsync selected the installed base instead of the staged target.");
+        var unchanged = await stage.ReadVerifiedPayloadAsync("keep.bin", updatePlan, 8 * 1024 * 1024);
+        Check(unchanged.LongLength == new FileInfo(kept).Length, "ReadVerifiedPayloadAsync did not read a preserved verified source.");
+        await Reject<InvalidDataException>(() => stage.ReadVerifiedPayloadAsync("main.bin", updatePlan, 1), "ReadVerifiedPayloadAsync ignored the size limit.");
+        await Reject<InvalidDataException>(() => stage.ReadVerifiedPayloadAsync("personal.txt", updatePlan, 1024), "ReadVerifiedPayloadAsync accepted an unplanned local file.");
+        var stagedMain = Path.Combine(stage.Root, "payload", "main.bin");
+        File.WriteAllBytes(stagedMain, main.Select(item => (byte)(item ^ 1)).ToArray());
+        await Reject<CryptographicException>(() => stage.ReadVerifiedPayloadAsync("main.bin", updatePlan, 1024), "A same-size alteration passed staged payload verification.");
+        File.WriteAllBytes(stagedMain, main);
+    }
     var result = await new InstallerEngine().ApplyPreparedFileUpdateAsync(stage, fixture.Options());
     Check(result.Version == "3.0.0", "An update could not skip an uninstalled intermediate version.");
     Check(File.ReadAllText(Path.Combine(fixture.App, "main.bin")) == "new application bytes", "Changed bytes were not installed.");

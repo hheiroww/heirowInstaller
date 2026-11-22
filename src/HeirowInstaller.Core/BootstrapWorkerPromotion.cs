@@ -178,6 +178,10 @@ public static class BootstrapWorkerPromotion
             if (operation == "install" && (descriptor.GetProperty("version").GetString() != version || package.IsMetadataOnly ||
                 new FileInfo(packagePath).Length != application.GetProperty("size").GetInt64() || !PackageSafety.HashEquals(PackageSafety.HashFile(packagePath), application.GetProperty("sha256").GetString()!)))
                 throw new CryptographicException("Initial setup bytes differ from the signed native product binding.");
+            if (operation == "apply-files" && WebBootstrapBindings.ReadFileUpdate(descriptor) is { } files &&
+                (descriptor.GetProperty("version").GetString() != version || !package.IsMetadataOnly ||
+                 !PackageSafety.HashEquals(package.ReadSignedManifestSha256(), files.ManifestSha256)))
+                throw new CryptographicException("Selected files differ from the signed website setup target.");
             // Repair, removal and later file updates also validate their signed installed
             // receipts, current scope and owned roots in the engine before mutation.
         }

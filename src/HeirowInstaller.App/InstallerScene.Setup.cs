@@ -6,6 +6,11 @@ internal sealed partial class InstallerScene
 {
     private void BuildInstall()
     {
+        if (Controller.CurrentWebSetupVersion is { } installedVersion)
+        {
+            BuildWebSetupCurrent(installedVersion);
+            return;
+        }
         if (Controller.Manifest is null || Controller.Plan is null) { if (Controller.IsWizard || Controller.Busy) BuildWizardPreparing(); else BuildWelcome(); return; }
         var stage = Controller.Stage;
         var stages = new[] { "Package", "Features", "Location", "Review" };
@@ -32,14 +37,23 @@ internal sealed partial class InstallerScene
         {
             if (Controller.IsWizard) Action("wizard.cancel", "Cancel", Left, BodyBottom - 48, 112, game.Exit, enabled: !Controller.Busy);
             else Action("setup.open", "Change package", Left, BodyBottom - 48, 152, BrowsePackage, enabled: !Controller.Busy);
-            if (stage != SetupStage.Package && (!Controller.IsPreparedUpdate || Controller.LicenseText is not null))
+            if (stage != SetupStage.Package && !Controller.IsWebSetupFileUpdate && (!Controller.IsPreparedUpdate || Controller.LicenseText is not null))
                 Action("setup.back", "Back", Width - 300, BodyBottom - 48, 100, Controller.PreviousStage, enabled: !Controller.Busy);
-            Action("setup.next", stage == SetupStage.Review ? "Install application  →" : "Continue  →", Width - 186, BodyBottom - 48, 152, () =>
+            var next = stage != SetupStage.Review ? "Continue  →" : Controller.IsWebSetupFileUpdate ? "Install update  →" : "Install application  →";
+            Action("setup.next", next, Width - 186, BodyBottom - 48, 152, () =>
             {
                 if (Controller.LicenseText is not null && !Controller.LicenseAccepted) { showLicense = true; Controller.Notify(); }
                 else Controller.NextStage();
             }, true, !Controller.Busy);
         }
+    }
+
+    private void BuildWebSetupCurrent(string installedVersion)
+    {
+        Box(Left, 158, BodyWidth, 220, Theme.Surface, 14);
+        Text("Already up to date", Left + 28, 195, BodyWidth - 56, 46, 24, bold: true);
+        Text($"{Controller.SetupProductName} {installedVersion} is already installed.", Left + 29, 266, BodyWidth - 58, 65, 12, Theme.Muted, wrap: true);
+        Action("wizard.cancel", "Close", Width - 186, BodyBottom - 48, 152, game.Exit, true);
     }
 
     private void BuildWelcome()
@@ -182,26 +196,32 @@ internal sealed partial class InstallerScene
 
     private void BuildReview(float y)
     {
-        Text("Ready to make it yours.", Left, y, BodyWidth, 40, 21, bold: true);
-        Text("Review the installation. Changes begin when you choose Install application.", Left, y + 50, BodyWidth, 29, 10.5f, Theme.Muted);
+        bool update = Controller.IsWebSetupFileUpdate;
+        Text(update ? "Ready to update" : "Ready to make it yours.", Left, y, BodyWidth, 40, 21, bold: true);
+        var failed = update && Controller.Failed;
+        Text(failed ? Controller.StatusDetail : update ? "Setup uses your existing installation and feature choices." : "Review the installation. Changes begin when you choose Install application.",
+            Left, y + 50, BodyWidth, 43, 10.5f, failed ? Theme.Orange : Theme.Muted, wrap: failed);
         Box(Left, y + 100, BodyWidth, 135, Theme.Surface, 12);
         Text(Controller.SetupProductName + "  " + Controller.Manifest!.Version, Left + 24, y + 117, BodyWidth - 48, 35, 16, bold: true);
         Text(Controller.DisplayInstallDirectory, Left + 24, y + 164, BodyWidth - 48, 26, 10.5f, Theme.Muted);
         Text(Controller.Scope == "machine" ? "All users · Administrator access required" : "Current user", Left + 24, y + 201, BodyWidth - 48, 24, 9, Theme.Orange);
+        if (update && Controller.LicenseText is not null)
+            Action("setup.license", "Review license", Width - 206, y + 185, 147, () => { showLicense = true; Controller.Notify(); });
         var operations = Field("setup.operations", string.Join(Environment.NewLine, Controller.Plan!.Operations.Select(operation => "✓  " + operation)), Left, y + 258, BodyWidth, _ => { }, true, Math.Max(80, BodyBottom - 63 - y - 258));
         ReadOnlyField(operations);
     }
 
     private void BuildProgress(float y)
     {
+        bool update = Controller.IsWebSetupFileUpdate;
         Logo(Left + BodyWidth / 2 - 48, y + 14, 96);
-        Text(Controller.Failed ? "Setup needs attention" : Controller.MaintenanceOperation == "uninstall" ? "Removing the application." : Controller.MaintenanceOperation == "repair" ? "Getting you ready again." : "Making everything ready.", Left + 24, y + 132, BodyWidth - 48, 48, 25, bold: true);
+        Text(Controller.Failed ? "Setup needs attention" : update ? "Installing the update" : Controller.MaintenanceOperation == "uninstall" ? "Removing the application." : Controller.MaintenanceOperation == "repair" ? "Getting you ready again." : "Making everything ready.", Left + 24, y + 132, BodyWidth - 48, 48, 25, bold: true);
         Text(Controller.SetupProductName!, Left + 24, y + 195, BodyWidth - 48, 31, 13, Theme.Muted);
         Box(Left + 24, y + 262, BodyWidth - 48, 8, Theme.SurfaceRaised, 4, Color.Transparent);
         progressBar = Box(Left + 24, y + 262, Math.Max(8, (BodyWidth - 48) * (float)Controller.Progress), 8, Controller.Failed ? Theme.Danger : Theme.Lime, 4, Color.Transparent);
         progressPercent = Text($"{Controller.Progress:P0}", Left + 24, y + 294, BodyWidth - 48, 30, 14, Theme.Lime, true);
         progressDetail = Text(Controller.StatusDetail, Left + 24, y + 335, BodyWidth - 48, Math.Clamp(BodyBottom - 58 - y - 335, 40, 65), 11, Theme.Muted, wrap: true);
-        var cancelLabel = Controller.MaintenanceOperation == "uninstall" ? "Cancel uninstall" : Controller.MaintenanceOperation == "repair" ? "Cancel repair" : "Cancel installation";
+        var cancelLabel = update ? "Cancel update" : Controller.MaintenanceOperation == "uninstall" ? "Cancel uninstall" : Controller.MaintenanceOperation == "repair" ? "Cancel repair" : "Cancel installation";
         Action("setup.cancel", Controller.Busy ? cancelLabel : "Back to review", Left + 24, BodyBottom - 48, 184, () => { if (Controller.Busy) Controller.Cancel(); else { Controller.Stage = SetupStage.Review; Controller.Notify(); } });
         Action("setup.logs", Controller.IsWizard ? "Details" : "View activity", Width - 181, BodyBottom - 48, 147, () => { if (Controller.IsWizard) { showWizardDetails = true; Controller.Notify(); } else Controller.Navigate(DesktopPage.Activity); });
     }

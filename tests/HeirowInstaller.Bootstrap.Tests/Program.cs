@@ -81,6 +81,37 @@ var start = await engine.PrepareAsync(shared, Path.Combine(root, "first"), defau
 Check(File.ReadAllText(start.FileName) == "owned runtime bytes for fixture.host", "signed runtime is verified and extracted before launch");
 Check(start.ArgumentList.SequenceEqual(new[] { "--scope", "user" }), "per-user scope reaches the installer without requiring an administrator launcher");
 Check(reports.Any(x => x.Phase == "Downloading") && reports.Any(x => x.Phase == "Preparing shared files"), "download and extraction report bounded byte progress");
+var selected = Descriptor(payload);
+selected.ApplicationPackage = new() { Url = "https://fixture.example.test/app.hinst", Size = payload.Length, Sha256 = pin };
+selected.ApplicationFileUpdate = new("https://fixture.example.test/1/manifest.json", "https://delivery.example.test/1/files.zip", pin);
+selected.AllowedDownloadOrigins = ["https://delivery.example.test"];
+var selectedCalls = handler.Calls;
+foreach (var authenticated in new[] { false, true })
+{
+    selected.ApplicationPackageRequiresAuthentication = authenticated;
+    selected.HostArguments = authenticated ? ["--website-file-selection"] : [];
+    var selectedEngine = new BootstrapEngine(selected, client, new ImmediateProgress([]));
+    var selectedStart = await selectedEngine.PrepareAsync(shared, Path.Combine(root, $"selected-{authenticated}"), default);
+    Check(selectedStart.ArgumentList.Count(argument => argument == "--website-file-selection") == 1 && selectedStart.ArgumentList.Contains("--remote-package") &&
+        selectedStart.ArgumentList.Contains(selected.ApplicationPackage.Url) && handler.Calls == selectedCalls,
+        "the native bootstrap delegates its signed file selection and exact full fallback without an eager application download");
+}
+var goodSelection = selected.ApplicationFileUpdate;
+foreach (var invalid in new[] {
+    goodSelection with { FilesUrl = "http://fixture.example.test/files.zip" },
+    goodSelection with { FilesUrl = "https://foreign.example.test/files.zip" },
+    goodSelection with { FilesUrl = "https://user:password@fixture.example.test/files.zip" },
+    goodSelection with { ManifestUrl = "https://fixture.example.test/manifest.json#fragment" },
+    goodSelection with { ManifestSha256 = "not-a-digest" }
+})
+{
+    selected.ApplicationFileUpdate = invalid;
+    await Reject(() => { BootstrapEngine.Validate(selected); return Task.CompletedTask; }, "malformed or foreign signed selected-file endpoint is rejected");
+}
+selected.ApplicationFileUpdate = goodSelection;
+selected.ApplicationPackage = null;
+await Reject(() => { BootstrapEngine.Validate(selected); return Task.CompletedTask; },
+    "the sparse binding cannot omit the signed full package for fresh installation");
 foreach (var scope in new[] { "user", "machine" })
 foreach (bool required in new[] { false, true })
 foreach (var chosenScope in new string?[] { null, "user", "machine" })
@@ -359,6 +390,36 @@ try
         "file updates still reject a substituted target version");
     await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "0.5.0", pin, "other", "apply-files"); return Task.CompletedTask; },
         "file updates still reject an unknown installation scope");
+
+    using var signedTarget = HeirowInstaller.Core.PackageReader.Open(requestedPackage);
+    var webSetup = Descriptor(payload);
+    webSetup.ProductId = updateManifest.Id;
+    webSetup.Version = "0.5.0";
+    webSetup.ApplicationPackageRequiresAuthentication = true;
+    webSetup.ApplicationPackage = new() { Url = "https://fixture.example.test/application.hinst",
+        Size = new FileInfo(requestedPackage).Length, Sha256 = signedTarget.ComputePackageSha256() };
+    webSetup.ApplicationFileUpdate = new("https://fixture.example.test/0.5.0/manifest.json", "https://fixture.example.test/0.5.0/files.zip",
+        signedTarget.ReadSignedManifestSha256());
+    var webCarrier = Path.Combine(updateArea, "web-sparse.exe");
+    await WebBootstrapBindings.WriteAsync(generic, JsonSerializer.SerializeToUtf8Bytes(webSetup, BootstrapJson.Default.BootstrapDescriptor), webCarrier, key);
+    using (var document = JsonDocument.Parse(WebBootstrapBindings.Read(webCarrier, pin).DescriptorBytes))
+        Check(WebBootstrapBindings.ReadFileUpdate(document.RootElement) == webSetup.ApplicationFileUpdate,
+            "the verified carrier returns the exact signed file-selection endpoints and digest");
+    Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, webCarrier);
+    Check(HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedMetadata, updateManifest.Id, "0.5.0", pin, "machine", "apply-files"),
+        "the promoted worker accepts the website's exact signed selection metadata");
+    await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedPackage, updateManifest.Id, "0.5.0", pin, "machine", "apply-files"); return Task.CompletedTask; },
+        "a website sparse request cannot substitute the full application package");
+    foreach (bool wrongDigest in new[] { false, true })
+    {
+        webSetup.Version = wrongDigest ? "0.5.0" : "0.6.0";
+        webSetup.ApplicationFileUpdate = webSetup.ApplicationFileUpdate with { ManifestSha256 = wrongDigest ? new string('0', 64) : signedTarget.ReadSignedManifestSha256() };
+        var otherCarrier = Path.Combine(updateArea, "web-sparse-wrong-" + (wrongDigest ? "digest" : "version") + ".exe");
+        await WebBootstrapBindings.WriteAsync(generic, JsonSerializer.SerializeToUtf8Bytes(webSetup, BootstrapJson.Default.BootstrapDescriptor), otherCarrier, key);
+        Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, otherCarrier);
+        await Reject(() => { HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedMetadata, updateManifest.Id, "0.5.0", pin, "machine", "apply-files"); return Task.CompletedTask; },
+            "the promoted worker rejects a website carrier signed for another " + (wrongDigest ? "manifest digest" : "version"));
+    }
 }
 finally
 {

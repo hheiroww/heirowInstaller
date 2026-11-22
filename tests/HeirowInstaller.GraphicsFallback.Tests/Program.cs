@@ -49,6 +49,7 @@ internal static partial class Program
             Policy();
             RemoteDownloadProgress();
             StreamingRemoteSetup();
+            SparseWebSetupWizard();
             PreparedSetupChecks();
             NativeMaintenanceArguments();
             SelfUpdateProductIdentity();

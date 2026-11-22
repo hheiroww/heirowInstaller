@@ -16,12 +16,17 @@ internal sealed partial class AppController
             await OpenPackageAsync(prepared);
             return;
         }
-        Begin("Downloading application setup", SetupProductName is { } name
-            ? $"Preparing {name} setup. Shared dependencies are downloaded during installation."
-            : "Preparing the application files. Shared dependencies are downloaded during installation.");
+        Begin("Checking this PC", "Looking for an existing installation before downloading application files.");
         try
         {
             var token = Cancellation!.Token;
+            if (arguments.VerifiedWebSetupFileUpdate is { } fileUpdate && await TryOpenWebSetupUpdateAsync(fileUpdate, token)) return;
+            await game.OnUiAsync(() =>
+            {
+                Status = "Downloading application setup";
+                StatusDetail = "Preparing the complete application files.";
+                Notify();
+            });
             await RestoreAccountAsync(renew: false, token);
             var feed = new UpdateFeed
             {
@@ -72,7 +77,7 @@ internal sealed partial class AppController
             await game.OnUiAsync(() => End("Application files ready", "Opening the verified installation options."));
             await OpenPackageAsync(path);
         }
-        catch (Exception error) { await ErrorAsync("Could not download application setup", error); }
+        catch (Exception error) { await ErrorAsync("Could not prepare application setup", error); }
     }
 
     private void ReportSetupDownload(InstallProgress value, CancellationToken token) => game.Enqueue(() =>

@@ -185,6 +185,34 @@ public sealed class PreparedFileUpdate : IDisposable
         }
     }
 
+    /// <summary>Reads a selected target payload or its matching installed source, enforcing its signed identity on the returned bytes.</summary>
+    public async Task<byte[]> ReadVerifiedPayloadAsync(string relativePath, InstallPlan plan, int maximumBytes, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (!IsReady || maximumBytes < 0)
+            throw new InvalidOperationException("A ready file update and a valid payload size limit are required.");
+        relativePath = PackageSafety.NormalizeRelativePath(relativePath);
+        var manifest = Metadata.Manifest;
+        if (plan.Manifest.Id != manifest.Id || plan.Manifest.Version != manifest.Version ||
+            plan.Scope != Installed.Scope || !plan.InstallDirectory.Equals(Installed.InstallDirectory, InstallerPlatform.PathComparison))
+            throw new InvalidDataException("The payload was requested for a different installation plan.");
+        var file = manifest.Payload.SingleOrDefault(item => item.Path.Equals(relativePath, StringComparison.OrdinalIgnoreCase));
+        if (file is null || !plan.Files.Any(item => item.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase)) ||
+            file.Size < 0 || file.Size > maximumBytes)
+            throw new InvalidDataException("The requested payload is outside the selected plan or exceeds its size limit.");
+
+        var path = Source(file, plan);
+        PackageSafety.EnsureNoReparsePoints(path);
+        await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (input.Length != file.Size)
+            throw new CryptographicException("The selected payload has a different signed size.");
+        var bytes = new byte[(int)file.Size];
+        await input.ReadExactlyAsync(bytes, token);
+        if (input.ReadByte() != -1 || !PackageSafety.HashEquals(Convert.ToHexString(SHA256.HashData(bytes)), file.Sha256))
+            throw new CryptographicException("The selected payload differs from the signed target.");
+        return bytes;
+    }
+
     internal async Task VerifySourcesAsync(InstallPlan plan, IProgress<InstallProgress>? progress, CancellationToken token)
     {
         for (var index = 0; index < plan.Files.Count; index++)

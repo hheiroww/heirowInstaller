@@ -232,7 +232,7 @@ internal sealed partial class AppController : IDisposable
         if (Manifest is null || Busy) return;
         if (Stage == SetupStage.Review) { await InstallAsync(); return; }
         if (Stage >= SetupStage.Review) return;
-        if (IsPreparedUpdate)
+        if (IsPreparedUpdate || IsWebSetupFileUpdate)
         {
             if (LicenseText is not null && !LicenseAccepted) return;
             Stage = SetupStage.Review;
@@ -284,7 +284,7 @@ internal sealed partial class AppController : IDisposable
 
     internal void PreviousStage()
     {
-        if (IsPreparedUpdate)
+        if (IsPreparedUpdate || IsWebSetupFileUpdate)
         {
             if (Stage == SetupStage.Review && LicenseText is not null) { Stage = SetupStage.Package; Notify(); }
             return;
@@ -315,6 +315,11 @@ internal sealed partial class AppController : IDisposable
     {
         if (Manifest is null || Busy) return;
         if (LicenseText is not null && !LicenseAccepted) { Stage = SetupStage.Package; Notify(); return; }
+        if (webSetupUpdate is { } update)
+        {
+            await InstallWebSetupUpdateAsync(update);
+            return;
+        }
         Begin("Checking installation choices", "Checking the selected features and installation location.");
         try { await ReplanAsync(); }
         catch (Exception error) { await ErrorAsync("Installation needs attention", error); return; }

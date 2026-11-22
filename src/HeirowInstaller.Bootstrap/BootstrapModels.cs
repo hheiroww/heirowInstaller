@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using HeirowInstaller.BootstrapContract;
 
 namespace HeirowInstaller.Bootstrap;
 
@@ -22,6 +23,7 @@ internal sealed class BootstrapDescriptor
     public List<string> HostArguments { get; set; } = [];
     public BootstrapDownload? ApplicationPackage { get; set; }
     public bool ApplicationPackageRequiresAuthentication { get; set; }
+    public BootstrapFileUpdate? ApplicationFileUpdate { get; set; }
     public string? RuntimeConfigPath { get; set; }
     public List<string> ProbingPackageIds { get; set; } = [];
     public List<BootstrapPayload> ApplicationFiles { get; set; } = [];

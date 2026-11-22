@@ -9,8 +9,15 @@ public static class BootstrapProcessTrust
     public const string ParentIdVariable = "SOCKETJACK_BOOTSTRAP_PID";
     public const string ParentStartVariable = "SOCKETJACK_BOOTSTRAP_START";
 
+    public sealed record BoundSetup(string Name, string Scope, WebSetupFileUpdate? FileUpdate);
+
     /// <summary>Reads the presentation name from the signed, live setup coordinator for these exact package arguments.</summary>
     public static string? ReadBoundSetupName(string productId, string version, string packageSha256, string publisherPin,
+        string? remoteUrl, long remoteSize, int? primaryDesktopPid = null)
+        => ReadBoundSetup(productId, version, packageSha256, publisherPin, remoteUrl, remoteSize, primaryDesktopPid)?.Name;
+
+    /// <summary>Verifies the native parent and returns only assertions from its signed descriptor.</summary>
+    public static BoundSetup? ReadBoundSetup(string productId, string version, string packageSha256, string publisherPin,
         string? remoteUrl, long remoteSize, int? primaryDesktopPid = null)
     {
         if (!OperatingSystem.IsWindows() ||
@@ -43,7 +50,11 @@ public static class BootstrapProcessTrust
                 remoteUrl is not null && (package.GetProperty("url").GetString() != remoteUrl || package.GetProperty("size").GetInt64() != remoteSize))
                 return null;
             var name = descriptor.GetProperty("name").GetString();
-            return string.IsNullOrWhiteSpace(name) || name.Length > 160 || name.Any(char.IsControl) ? null : name;
+            var scope = descriptor.TryGetProperty("scope", out var authoredScope) ? authoredScope.GetString() : "user";
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 160 || name.Any(char.IsControl) || scope is not ("user" or "machine"))
+                return null;
+            var fileUpdate = remoteUrl is not null ? WebBootstrapBindings.ReadFileUpdate(descriptor) : null;
+            return new(name, scope, fileUpdate is null ? null : new(fileUpdate.ManifestUrl, fileUpdate.FilesUrl, fileUpdate.ManifestSha256));
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or
             System.Security.Cryptography.CryptographicException or InvalidDataException or JsonException or KeyNotFoundException or FormatException)

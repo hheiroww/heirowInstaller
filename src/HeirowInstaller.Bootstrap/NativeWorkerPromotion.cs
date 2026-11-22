@@ -25,6 +25,7 @@ internal static class NativeWorkerPromotion
             // The original medium-integrity window owns application downloads and account credentials.
             // This process provisions only descriptor-authorized public host/runtime packages.
             descriptor.ApplicationPackage = null;
+            descriptor.ApplicationFileUpdate = null;
             var engine = new BootstrapEngine(descriptor, http, window);
             var start = await engine.PrepareAsync(root, staging, token);
             foreach (var package in descriptor.Packages) BootstrapMachineStore.ValidateTree(engine.PackageRoot(root, package), requireProtectedDacl: false);

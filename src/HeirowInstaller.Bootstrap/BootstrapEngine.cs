@@ -58,6 +58,12 @@ internal sealed class BootstrapEngine
             if (value.HostKind != "installer" || value.OfflineOnly) throw new InvalidDataException("Only an online setup launcher may download an application package.");
             ValidateDownload(app);
         }
+        if (value.ApplicationFileUpdate is { } files)
+        {
+            if (value.ApplicationPackage is null)
+                throw new InvalidDataException("Selected-file setup requires an exact signed full application package for new installs.");
+            files.Validate(value.ApplicationPackage.Url, value.AllowedDownloadOrigins);
+        }
         if (value.HostKind == "application")
         {
             if (value.DotNetPackageId is null || value.ApplicationPackage is not null || value.RuntimeConfigPath is null ||
@@ -113,7 +119,7 @@ internal sealed class BootstrapEngine
                 path => BootstrapMachineStore.ValidateRevisionReceipt(sharedRoot, path),
                 path => ValidateProtectedPackage(sharedRoot, path), token);
         string? application = null;
-        if (descriptor.ApplicationPackage is { } payload && !descriptor.ApplicationPackageRequiresAuthentication)
+        if (descriptor.ApplicationPackage is { } payload && !descriptor.ApplicationPackageRequiresAuthentication && descriptor.ApplicationFileUpdate is null)
         {
             application = Path.Combine(stagingRoot, "application.hinst");
             await DownloadAsync(payload, application, token);
@@ -148,6 +154,8 @@ internal sealed class BootstrapEngine
             {
                 start.ArgumentList.Add("--remote-package"); start.ArgumentList.Add(app.Url);
                 start.ArgumentList.Add("--remote-package-size"); start.ArgumentList.Add(app.Size.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (descriptor.ApplicationFileUpdate is not null && !start.ArgumentList.Contains("--website-file-selection"))
+                    start.ArgumentList.Add("--website-file-selection");
             }
             start.ArgumentList.Add("--require-signature");
             start.ArgumentList.Add("--trust-key"); start.ArgumentList.Add(descriptor.PublisherKeySha256);

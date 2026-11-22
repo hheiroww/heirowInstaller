@@ -8,7 +8,7 @@ internal sealed partial class AppController
     internal bool AdministratorPreparationCanceled { get; private set; }
     private async Task PrepareAdministratorOnOpenAsync()
     {
-        if (!arguments.RequestAdministratorOnOpen || arguments.Isolated || !OperatingSystem.IsWindows() || InstallerEngine.IsElevated) return;
+        if (!arguments.RequestAdministratorOnOpen || arguments.VerifiedWebSetupFileUpdate is not null || arguments.Isolated || !OperatingSystem.IsWindows() || InstallerEngine.IsElevated) return;
         Begin("Preparing administrator access", "Windows will request approval for the installation worker. Sign-in and setup stay in your account.");
         try
         {

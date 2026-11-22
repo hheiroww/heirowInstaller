@@ -6,6 +6,10 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/HeirowInstaller.Core/HeirowInstaller.Core.csproj" />
+    <Compile Include="../../src/Shared/WebBootstrapBinding.cs" Link="Production/WebBootstrapBinding.cs" />
+    <Compile Include="../../src/Shared/SharedPackageRevision.cs" Link="Production/SharedPackageRevision.cs" />
+    <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapMachineStore.cs" Link="Production/BootstrapMachineStore.cs" />
+    <Compile Include="../../src/HeirowInstaller.Bootstrap/NativeProcessIdentity.cs" Link="Production/NativeProcessIdentity.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapModels.cs" Link="Production/BootstrapModels.cs" />
     <Compile Include="../../src/HeirowInstaller.Bootstrap/BootstrapEngine.cs" Link="Production/BootstrapEngine.cs" />
   </ItemGroup>

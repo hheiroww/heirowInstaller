@@ -11,10 +11,18 @@ internal sealed partial class InstallerScene
         Logo(27, 28, 56);
         var applicationName = Controller.SetupProductName ?? "Application setup";
         Text(applicationName, 27, 105, RailWidth - 54, 57, applicationName.Length > 14 ? 17 : 19, bold: true, wrap: true);
-        Text(Controller.SetupProductVersion is { } version ? "Version " + version : "Preparing your installation", 28, 174, RailWidth - 56, 26, 9.5f, Theme.Muted);
-        var labels = Controller.IsMaintenanceWizard ? new[] { "Review", Controller.MaintenanceOperation == "repair" ? "Repairing" : "Uninstalling", "Finish" }
+        var version = Controller.CurrentWebSetupVersion ?? Controller.SetupProductVersion;
+        Text(version is not null ? "Version " + version : "Preparing your installation", 28, 174, RailWidth - 56, 26, 9.5f, Theme.Muted);
+        string[] labels = Controller.IsMaintenanceWizard ? new[] { "Review", Controller.MaintenanceOperation == "repair" ? "Repairing" : "Uninstalling", "Finish" }
             : new[] { "Welcome", "Features", "Location", "Ready to install", "Installing", "Finish" };
         var selectedStage = Controller.IsMaintenanceWizard ? Controller.Stage == SetupStage.Complete ? 2 : Controller.Stage == SetupStage.Progress ? 1 : 0 : (int)Controller.Stage;
+        if (Controller.IsWebSetupFileUpdate)
+        {
+            bool hasLicense = Controller.LicenseText is not null;
+            labels = hasLicense ? ["License", "Review", "Updating", "Finish"] : ["Review", "Updating", "Finish"];
+            selectedStage = Math.Max(0, (int)Controller.Stage - (int)SetupStage.Review + (hasLicense ? 1 : 0));
+        }
+        if (Controller.CurrentWebSetupVersion is not null) labels = [];
         for (var i = 0; i < labels.Length; i++)
         {
             var active = Controller.Manifest is not null && selectedStage == i;
@@ -38,6 +46,8 @@ internal sealed partial class InstallerScene
         if (Controller.IsMaintenanceWizard && name is not null)
             title = Controller.Stage == SetupStage.Complete && Controller.MaintenanceOperation == "uninstall" ? name + " was removed" :
                 Controller.Stage == SetupStage.Complete ? name + " is ready" : (Controller.MaintenanceOperation == "repair" ? "Repair " : "Uninstall ") + name;
+        if (Controller.IsWebSetupFileUpdate && name is not null)
+            title = Controller.Stage == SetupStage.Complete ? name + " was updated" : "Update " + name;
         Text(title, Left, 30, BodyWidth, 43, 24, bold: true);
         var subtitle = Controller.Stage switch
         {
@@ -50,6 +60,15 @@ internal sealed partial class InstallerScene
         };
         if (Controller.IsMaintenanceWizard) subtitle = Controller.Stage == SetupStage.Complete ? "Choose Finish to close setup." :
             Controller.Stage == SetupStage.Progress ? "Keep this window open while setup finishes." : "Only this application's installation will be changed.";
+        if (Controller.IsWebSetupFileUpdate)
+            subtitle = Controller.Stage switch
+            {
+                SetupStage.Package => "Review the publisher's license to continue.",
+                SetupStage.Review => "Confirm the update before applying it.",
+                SetupStage.Progress => "Keep this window open while the update finishes.",
+                _ => "Choose Finish to close setup."
+            };
+        if (Controller.CurrentWebSetupVersion is not null) subtitle = "";
         Text(subtitle, Left + 1, 83, BodyWidth - (Controller.Manifest?.LegalDocuments is null ? 2 : 195), 27, 10.5f, Theme.Muted);
         if (Controller.Manifest?.LegalDocuments is not null)
             Action("wizard.legal", "Privacy & terms", Width - 213, 75, 179, () =>
@@ -65,21 +84,24 @@ internal sealed partial class InstallerScene
         var detail = Text(Controller.Failed || Controller.Busy ? Controller.StatusDetail : "Checking the application and its installation files.",
             Left + 29, 267, BodyWidth - 58, 95, 12, Theme.Muted, wrap: true);
         if (Controller.Busy) { preparingTitle = title; progressDetail = detail; }
+        if (Controller.CanRetryWebSetup && !Controller.Busy)
+            Action("wizard.retry", "Retry", Left, BodyBottom - 48, 152, () => _ = Controller.OpenRemotePackageAsync(), true);
         Action("wizard.cancel", "Close", Width - 186, BodyBottom - 48, 152, game.Exit);
     }
 
     private void BuildWizardWelcome(float y)
     {
         var app = Controller.Manifest!;
+        bool update = Controller.IsWebSetupFileUpdate;
         Box(Left, y, BodyWidth, 250, Theme.Surface, 14);
         Logo(Left + 28, y + 29, 82);
-        Text("Welcome to " + Controller.SetupProductName, Left + 134, y + 34, BodyWidth - 162, 78, 24, bold: true, wrap: true);
+        Text((update ? "Update " : "Welcome to ") + Controller.SetupProductName, Left + 134, y + 34, BodyWidth - 162, 78, 24, bold: true, wrap: true);
         Text("Version " + app.Version + "  ·  " + app.Publisher, Left + 29, y + 137, BodyWidth - 58, 30, 11, Theme.Muted);
-        Text(string.IsNullOrWhiteSpace(app.Description) ? "Setup will guide you through installing " + Controller.SetupProductName + "." : app.Description,
+        Text(string.IsNullOrWhiteSpace(app.Description) ? (update ? "Setup will guide you through this update." : "Setup will guide you through installing " + Controller.SetupProductName + ".") : app.Description,
             Left + 29, y + 183, BodyWidth - 58, 51, 11.5f, Theme.Muted, wrap: true);
         var bottom = y + 278;
-        Text("Make it yours", Left + 2, bottom, BodyWidth - 4, 36, 17, bold: true);
-        Text("Choose features and a location, then review your choices. Your application files will stay unchanged until you choose Install application.",
+        Text(update ? "Review the license" : "Make it yours", Left + 2, bottom, BodyWidth - 4, 36, 17, bold: true);
+        Text(update ? "Accept the publisher's license before reviewing this update." : "Choose features and a location, then review your choices. Your application files will stay unchanged until you choose Install application.",
             Left + 3, bottom + 51, BodyWidth - 6, 75, 11, Theme.Muted, wrap: true);
         if (Controller.LicenseText is not null)
         {
@@ -93,11 +115,12 @@ internal sealed partial class InstallerScene
         var app = Controller.Manifest!;
         var removed = Controller.MaintenanceOperation == "uninstall";
         var repaired = Controller.MaintenanceOperation == "repair";
+        bool updated = Controller.IsWebSetupFileUpdate;
         Box(Left, y, BodyWidth, 335, Theme.Surface, 14);
         Logo(Left + 29, y + 29, 76);
-        Pill(removed ? "✓  REMOVED" : repaired ? "✓  REPAIRED" : "✓  INSTALLED", Left + 129, y + 35, 149);
-        Text(removed ? "Uninstall complete." : repaired ? "Ready again." : "You're all set.", Left + 29, y + 131, BodyWidth - 58, 57, 31, bold: true);
-        Text(Controller.SetupProductName + " " + app.Version + (removed ? " has been removed." : repaired ? " has been repaired." : " has been installed."), Left + 31, y + 204, BodyWidth - 62, 55, 13, Theme.Muted, wrap: true);
+        Pill(removed ? "✓  REMOVED" : repaired ? "✓  REPAIRED" : updated ? "✓  UPDATED" : "✓  INSTALLED", Left + 129, y + 35, 149);
+        Text(removed ? "Uninstall complete." : repaired ? "Ready again." : updated ? "Update complete" : "You're all set.", Left + 29, y + 131, BodyWidth - 58, 57, 31, bold: true);
+        Text(Controller.SetupProductName + " " + app.Version + (removed ? " has been removed." : repaired ? " has been repaired." : updated ? " has been updated." : " has been installed."), Left + 31, y + 204, BodyWidth - 62, 55, 13, Theme.Muted, wrap: true);
         Text(Controller.LastInstallation?.RebootRequired == true ? "Restart Windows to finish applying all changes." : "Choose Finish to close setup.", Left + 31, y + 281, BodyWidth - 62, 31, 10.5f, Theme.Muted);
         if (Controller.CanOpenInstalledApplication)
         {
@@ -116,7 +139,7 @@ internal sealed partial class InstallerScene
         var width = Math.Min(740, Width - 80); var height = Math.Min(540, Height - 120);
         var x = (Width - width) / 2; var y = (Height - height) / 2;
         Box(x, y, width, height, Theme.Surface, 14);
-        Text("Installation details", x + 25, y + 24, width - 50, 41, 21, bold: true);
+        Text(Controller.IsWebSetupFileUpdate ? "Update details" : "Installation details", x + 25, y + 24, width - 50, 41, 21, bold: true);
         Text(Controller.SetupProductName ?? "Setup", x + 27, y + 79, width - 54, 28, 11, Theme.Muted);
         var details = Field("wizard.details", string.Join(Environment.NewLine, Controller.Activity.Select(entry => $"{entry.Time:HH:mm:ss}  {entry.Title}: {entry.Detail}")),
             x + 25, y + 127, width - 50, _ => { }, true, height - 217);

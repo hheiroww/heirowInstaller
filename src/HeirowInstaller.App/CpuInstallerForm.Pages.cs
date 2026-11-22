@@ -19,12 +19,15 @@ internal sealed partial class CpuInstallerForm
             ClearOwnedControls(footer);
             controls.Clear();
             var manifest = Controller.Manifest;
-            heading.Text = Controller.SetupProductName is { } name ? name + " Setup" : arguments.InitialSetupTitle ?? "heirowInstaller";
+            heading.Text = Controller.SetupProductName is { } name
+                ? Controller.IsWebSetupFileUpdate ? "Update " + name : name + " Setup"
+                : arguments.InitialSetupTitle ?? "heirowInstaller";
             subtitle.Text = "Windows compatibility interface · CPU rendering";
-            if (Controller.SetupProductVersion is { } version) subtitle.Text += " · " + version;
+            if ((Controller.CurrentWebSetupVersion ?? Controller.SetupProductVersion) is { } version) subtitle.Text += " · " + version;
             if (manifest is not null) subtitle.Text += " · " + manifest.Publisher;
             var page = NewPage();
             if (Controller.RunningApplicationsDialog is not null) BuildRunningApplications(page);
+            else if (Controller.CurrentWebSetupVersion is { } installedVersion) BuildWebSetupCurrent(page, installedVersion);
             else if (manifest is null) BuildPreparingOrHub(page);
             else if (Controller.Stage == SetupStage.Progress) BuildProgressPage(page);
             else if (Controller.Stage == SetupStage.Complete) BuildCompletePage(page);
@@ -52,30 +55,44 @@ internal sealed partial class CpuInstallerForm
         if (Controller.Busy) { Remember("setup.progress.status", title); Remember("setup.progress.detail", detail); }
         AddRow(page, title);
         AddRow(page, detail);
-        if (!Controller.Busy && !Controller.IsMaintenanceWizard)
+        if (Controller.CanRetryWebSetup && !Controller.Busy)
+            ActionButton("wizard.retry", "Retry", () => _ = RunCommandAsync(Controller.OpenRemotePackageAsync), primary: true);
+        else if (!Controller.Busy && !Controller.IsMaintenanceWizard)
             ActionButton("setup.open", "Open installer…", BrowsePackage, primary: true);
         ActionButton("wizard.cancel", Controller.Busy ? "Cancel setup" : "Close", RequestClose);
+    }
+
+    private void BuildWebSetupCurrent(Forms.TableLayoutPanel page, string installedVersion)
+    {
+        AddRow(page, Paragraph("Already up to date", true));
+        AddRow(page, Paragraph($"{Controller.SetupProductName} {installedVersion} is already installed."));
+        ActionButton("wizard.cancel", "Close", RequestClose, primary: true);
     }
 
     private void BuildPackagePage(Forms.TableLayoutPanel page)
     {
         var app = Controller.Manifest!;
-        AddRow(page, Paragraph("Welcome to " + Controller.SetupProductName, true));
+        bool update = Controller.IsWebSetupFileUpdate;
+        AddRow(page, Paragraph((update ? "Update " : "Welcome to ") + Controller.SetupProductName, true));
         if (!string.IsNullOrWhiteSpace(app.Description)) AddRow(page, Paragraph(app.Description));
-        AddRow(page, Paragraph("Choose the features and installation location, then review the planned changes. Installation begins when you choose Install application."));
+        AddRow(page, Paragraph(update ? "Accept the publisher's license before reviewing this update."
+            : "Choose the features and installation location, then review the planned changes. Installation begins when you choose Install application."));
         if (Controller.Plan is { } plan)
             AddRow(page, Paragraph($"{plan.Files.Count:N0} selected files · {plan.TotalBytes:N0} bytes"));
-        if (Controller.LicenseText is not null)
-        {
-            AddRow(page, InlineButton("setup.license", "Read license agreement", () => ShowDocument(CreateLicenseDialogForTests())));
-            var accepted = Remember("setup.license.accept", new Forms.CheckBox
-            {
-                AutoSize = true, Text = "I accept the publisher's license agreement", Checked = Controller.LicenseAccepted, Enabled = !Controller.Busy
-            });
-            accepted.CheckedChanged += (_, _) => { Controller.LicenseAccepted = accepted.Checked; ScheduleRefresh(); };
-            AddRow(page, accepted);
-        }
+        if (Controller.LicenseText is not null) AddLicense(page, accept: true);
         AddLegalButtons(page);
+    }
+
+    private void AddLicense(Forms.TableLayoutPanel page, bool accept)
+    {
+        AddRow(page, InlineButton("setup.license", "Read license agreement", () => ShowDocument(CreateLicenseDialogForTests())));
+        if (!accept) return;
+        var accepted = Remember("setup.license.accept", new Forms.CheckBox
+        {
+            AutoSize = true, Text = "I accept the publisher's license agreement", Checked = Controller.LicenseAccepted, Enabled = !Controller.Busy
+        });
+        accepted.CheckedChanged += (_, _) => { Controller.LicenseAccepted = accepted.Checked; ScheduleRefresh(); };
+        AddRow(page, accepted);
     }
 
     private void BuildFeaturesPage(Forms.TableLayoutPanel page)
@@ -152,8 +169,15 @@ internal sealed partial class CpuInstallerForm
 
     private void BuildReviewPage(Forms.TableLayoutPanel page)
     {
-        AddRow(page, Paragraph("Ready to install " + Controller.SetupProductName, true));
-        AddRow(page, Paragraph("Changes begin only when you choose Install application."));
+        bool update = Controller.IsWebSetupFileUpdate;
+        AddRow(page, Paragraph((update ? "Ready to update " : "Ready to install ") + Controller.SetupProductName, true));
+        AddRow(page, Paragraph(update ? "Setup uses your existing installation and feature choices." : "Changes begin only when you choose Install application."));
+        if (update && Controller.Failed)
+        {
+            var error = Remember("setup.review.error", Paragraph(Controller.StatusDetail));
+            error.ForeColor = Drawing.Color.Firebrick;
+            AddRow(page, error);
+        }
         AddRow(page, Paragraph("Location: " + Controller.DisplayInstallDirectory));
         AddRow(page, Paragraph(Controller.Scope == "machine" ? "Scope: everyone on this computer" : "Scope: current user"));
         if (Controller.Plan is { } plan)
@@ -162,7 +186,7 @@ internal sealed partial class CpuInstallerForm
             AddRow(page, ReadOnlyText("setup.operations", string.Join(Environment.NewLine, plan.Operations)), 185);
         }
         AddLegalButtons(page);
-        if (Controller.LicenseText is not null) AddRow(page, InlineButton("setup.license", "Read license agreement", () => ShowDocument(CreateLicenseDialogForTests())));
+        if (Controller.LicenseText is not null) AddLicense(page, accept: update);
     }
 
     private void BuildNavigation()
@@ -170,10 +194,11 @@ internal sealed partial class CpuInstallerForm
         var stage = Controller.Stage;
         var licensed = Controller.LicenseText is null || Controller.LicenseAccepted;
         if (stage == SetupStage.Review)
-            ActionButton("setup.next", "Install application", () => _ = RunCommandAsync(Controller.InstallAsync), !Controller.Busy && licensed && Controller.Plan is not null, primary: true);
+            ActionButton("setup.next", Controller.IsWebSetupFileUpdate ? "Install update" : "Install application",
+                () => _ = RunCommandAsync(Controller.InstallAsync), !Controller.Busy && licensed && Controller.Plan is not null, primary: true);
         else
             ActionButton("setup.next", "Continue", () => _ = RunCommandAsync(Controller.NextStageAsync), !Controller.Busy && licensed, primary: true);
-        if (stage > SetupStage.Package && (!Controller.IsPreparedUpdate || Controller.LicenseText is not null))
+        if (stage > SetupStage.Package && !Controller.IsWebSetupFileUpdate && (!Controller.IsPreparedUpdate || Controller.LicenseText is not null))
             ActionButton("setup.back", "Back", Controller.PreviousStage, !Controller.Busy);
         ActionButton("wizard.cancel", "Cancel", RequestClose);
     }
@@ -207,7 +232,7 @@ internal sealed partial class CpuInstallerForm
     private void BuildCompletePage(Forms.TableLayoutPanel page)
     {
         var removed = Controller.MaintenanceOperation == "uninstall";
-        AddRow(page, Paragraph(Controller.SetupProductName + (removed ? " was removed." : " is ready."), true));
+        AddRow(page, Paragraph(Controller.SetupProductName + (removed ? " was removed." : Controller.IsWebSetupFileUpdate ? " was updated." : " is ready."), true));
         AddRow(page, Paragraph(Controller.LastInstallation?.RebootRequired == true ? "Restart Windows to finish applying all changes." : "Choose Finish to close setup."));
         if (Controller.CanOpenInstalledApplication)
         {
