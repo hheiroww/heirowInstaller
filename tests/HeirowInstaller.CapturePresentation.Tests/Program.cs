@@ -14,11 +14,13 @@ using (var initial = state.BeginOpaque())
     Check(!initial.Presented.IsCompleted, "An older presentation cannot acknowledge a new lease");
     state.AcknowledgeOpaque(generation);
     await initial.Presented;
+    Check(state.RenderState.PendingGeneration == 0, "An acknowledged generation needs no further native wait");
 }
 Check(!state.RenderState.Opaque, "Releasing the last lease restores local blur");
 state.SetTeamViewerSharing(true);
 using (state.BeginOpaque()) { }
 Check(state.RenderState.Opaque, "A screenshot ending does not cancel ongoing screen sharing");
+Check(state.RenderState.PendingGeneration == 0, "Screen sharing alone needs no screenshot presentation wait");
 state.SetTeamViewerSharing(false);
 Check(!state.RenderState.Opaque, "Ending sharing clears its opaque override");
 Check(DesktopCapturePipe.IsTeamViewerClient("TeamViewerQS", 4, 4), "QuickSupport is recognized in the interactive session");

@@ -12,6 +12,7 @@ internal sealed partial class InstallerGame
     private DesktopCapturePipe? capturePipe;
     private long opaqueDrawnGeneration;
     private Color originalBackground;
+    private bool originalBackdropEnabled;
     private bool renderingOpaque;
 
     private void StartCaptureEndpoint()
@@ -25,11 +26,16 @@ internal sealed partial class InstallerGame
         opaqueDrawnGeneration = 0;
         if (capturePipe is null) return;
         var (opaque, generation) = capturePresentation.RenderState;
-        manager.DesktopBackdrop.Settings.Enabled = !opaque;
         if (renderingOpaque != opaque)
         {
-            if (opaque) originalBackground = MainScene.BackgroundColor;
+            var backdrop = manager.DesktopBackdrop.Settings;
+            if (opaque)
+            {
+                originalBackground = MainScene.BackgroundColor;
+                originalBackdropEnabled = backdrop.Enabled;
+            }
             MainScene.BackgroundColor = opaque ? Theme.Background : originalBackground;
+            backdrop.Enabled = !opaque && originalBackdropEnabled;
             renderingOpaque = opaque;
         }
         if (opaque) opaqueDrawnGeneration = generation;
