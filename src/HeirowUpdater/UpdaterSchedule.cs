@@ -69,7 +69,10 @@ internal static class UpdaterSchedule
         configurationPath = Path.GetFullPath(configurationPath ?? ConfigurationPath);
         var (queryCode, existing) = await RunAsync(["/Query", "/TN", name, "/XML"], token);
         if (queryCode == 0 && !IsOwned(existing)) throw new InvalidOperationException("Another application owns the configured Task Scheduler name.");
-        var executable = configuration.Executable ?? FindExecutable();
+        // The saved path records the last registration. An explicit enable from a
+        // newer updater must not schedule the old version again.
+        var executable = FindExecutable();
+        PackageSafety.EnsureNoReparsePoints(executable);
         if (!File.Exists(executable)) throw new FileNotFoundException("The heirowUpdater executable is missing.");
         configuration.Executable = Path.GetFullPath(executable);
         var sid = WindowsIdentity.GetCurrent().User!.Value;

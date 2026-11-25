@@ -47,13 +47,15 @@ internal sealed partial class AcceptanceSuite
 
         var area = Area("session-snapshots");
         var received = new List<(bool CurrentCookie, bool OldBearer)>();
+        var rejectedStatus = 401;
         var feed = new UpdateFeed { ProductId = "test.native-session", Name = "Native session fixture", Version = "1", Size = 1, Sha256 = new string('a', 64) };
         await using var server = new LoopbackServer((NetworkRequest request) =>
         {
+            if (request.Path == "/setup.hinst") return new(401, []);
             var native = request.Headers.TryGetValue("Cookie", out var cookie) && cookie == next.Cookie;
             var browser = request.Headers.TryGetValue("Authorization", out var authorization);
             lock (received) received.Add((native, browser));
-            return native ? new(200, JsonSerializer.SerializeToUtf8Bytes(feed, InstallerJson.Options)) : new(401, Encoding.UTF8.GetBytes("fixture authentication required"));
+            return native ? new(200, JsonSerializer.SerializeToUtf8Bytes(feed, InstallerJson.Options)) : new(Volatile.Read(ref rejectedStatus), Encoding.UTF8.GetBytes("fixture response details"));
         });
         feed.InstallerUrl = server.Origin + "setup.hinst";
         var transportStore = new ApplicationSessionStore(first);
@@ -98,6 +100,43 @@ internal sealed partial class AcceptanceSuite
         await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, null, null, true, options, (_, _) => throw new InvalidOperationException("No update is available.")));
         Equal(1, restoredCount);
         Equal(0, browserCalls);
+        Task<ApplicationUpdateChoice> UnexpectedUpdate(ApplicationUpdatePrompt _, CancellationToken __) => throw new InvalidOperationException("No update is available.");
+        options.NoPrompt = false;
+        // An already-exited host can initiate an unattended check; no real app is needed.
+        using (var background = await ApplicationUpdater.RunAsync(profile, int.MaxValue, 1, false, options, UnexpectedUpdate))
+        {
+            Equal("sign-in-required", background.Status);
+            True(!background.ManualCheck);
+        }
+        Equal(0, browserCalls);
+        Volatile.Write(ref rejectedStatus, 503);
+        await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, int.MaxValue, 1, false, options, UnexpectedUpdate));
+        var statusPath = Path.Combine(ApplicationUpdater.StateDirectory(ApplicationUpdater.ReadConfiguration(profile, true)), "status.json");
+        var failureStatus = File.ReadAllText(statusPath);
+        using (var status = JsonDocument.Parse(failureStatus))
+        {
+            Equal("error", status.RootElement.GetProperty("status").GetString());
+            True(!status.RootElement.GetProperty("manualCheck").GetBoolean());
+        }
+        True(!failureStatus.Contains("fixture response details", StringComparison.Ordinal));
+        Equal(0, browserCalls);
+        Volatile.Write(ref rejectedStatus, 401);
+        options.AuthenticateAsync = (_, _) => { browserCalls++; return Task.FromResult<string?>("fixture-browser-after-consent"); };
+        await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, null, null, true, options, UnexpectedUpdate));
+        Equal(1, browserCalls);
+        options.SessionSnapshot = next;
+        feed.Version = "2";
+        var approved = false;
+        var interactive = false;
+        options.InteractiveStateChanged = value => interactive = value;
+        await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, int.MaxValue, 1, false, options, (update, _) =>
+        {
+            True(update.Update.Available && !interactive);
+            approved = true;
+            return Task.FromResult(ApplicationUpdateChoice.UpdateNow);
+        }));
+        True(approved && interactive);
+        Equal(2, browserCalls);
         foreach (var path in Directory.EnumerateFiles(area, "*.json", SearchOption.AllDirectories))
         {
             var content = File.ReadAllText(path);

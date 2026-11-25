@@ -63,9 +63,12 @@ internal static class ApplicationCommands
         long? ticks = args.Get("application-start") is { } ticksText ? long.Parse(ticksText, System.Globalization.CultureInfo.InvariantCulture) : null;
         await using var manualFeedback = new NativeManualUpdateFeedback(configuration, configurationPath);
         var account = OperatingSystem.IsWindows() && UsesInstallerAccount(configuration) ? new RememberedPublisherAccount(AccountOrigin) : null;
+        var manual = command == "check-for-updates";
+        var showFailure = manual;
         var options = new ApplicationLifecycleOptions { AllowLoopback = args.Has("allow-loopback"), NoPrompt = args.Has("no-prompt"),
             ApplicationHost = args.Get("application-host"), StatusPath = Acceptance("status-file", "HEIROWUPDATER_TEST_STATUS_FILE"), DownloadDirectory = args.Get("download-directory"),
             StatusChanged = manualFeedback.ObserveStatus, ManualStatusChangedAsync = manualFeedback.StatusChangedAsync,
+            InteractiveStateChanged = interactive => showFailure = interactive,
             RestoreRememberedSessionAsync = account is null ? null : async (profile, cancellation) =>
             {
                 if (!UsesInstallerAccount(profile)) return null;
@@ -93,7 +96,7 @@ internal static class ApplicationCommands
             } };
         try
         {
-            using var result = await ApplicationUpdater.RunAsync(configurationPath, pid, ticks, command == "check-for-updates", options,
+            using var result = await ApplicationUpdater.RunAsync(configurationPath, pid, ticks, manual, options,
                 (context, cancellation) => NativeUpdatePrompt.ShowAsync(context, PromptChoice(), capture, promptReport, cancellation, configurationPath), token);
             if (result.Status == "manual-requested") NativeManualUpdateFeedback.TryActivateExisting(configuration, result.ManualRequestId);
             if (result.Handoff is not null)
@@ -124,6 +127,11 @@ internal static class ApplicationCommands
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!showFailure)
+            {
+                Console.Error.WriteLine("The background update check could not finish.");
+                return 1;
+            }
             if (options.StatusPath is { } statusPath)
                 await UpdaterSchedule.WriteJsonAsync(statusPath, new { status = "error", productId = configuration.ProductId, error = error.Message }, CancellationToken.None);
             if (!options.NoPrompt && !manualFeedback.HasShownError)

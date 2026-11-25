@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +21,8 @@ public sealed class ApplicationLifecycleOptions
     [System.Text.Json.Serialization.JsonIgnore]
     public ApplicationSessionSnapshot? SessionSnapshot { get; set; }
     public Action<ApplicationLifecycleResult>? StatusChanged { get; set; }
+    // Native failure feedback follows a relayed manual request or an approved installation.
+    internal Action<bool>? InteractiveStateChanged { get; set; }
     /// <summary>Visible feedback for an explicit check, including a check relayed to an existing watcher. Checking feedback must return promptly.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<ApplicationLifecycleResult, CancellationToken, Task>? ManualStatusChangedAsync { get; set; }
@@ -214,7 +217,7 @@ public static class ApplicationUpdater
             LatestVersion = update?.Feed.Version, Available = update?.Available ?? false, DeferredUntilExit = AppRunning(),
             PostponeUntil = state.PostponeUntil, LifecycleStatePath = statePath,
             ManualCheck = manual, ManualRequestId = manual ? manualRequestId : null,
-            Message = status == "error" ? "The update check could not finish. Check your connection and try again." : null
+            Message = status == "error" ? "The update could not finish." : null
         };
         async Task<ApplicationLifecycleResult> Status(string status, UpdateCheckResult? update = null, bool showManualFeedback = true)
         {
@@ -251,7 +254,7 @@ public static class ApplicationUpdater
         if (installedHost)
             foreach (var name in SessionEnvironmentNames.Concat(new[] { configuration.CookieEnvironmentVariable, configuration.TokenEnvironmentVariable }).OfType<string>().Distinct())
                 System.Environment.SetEnvironmentVariable(name, null); // Native UI children never inherit the application's credentials.
-        Task<T> Authorized<T>(Func<SocketJackUpdater, Task<T>> operation) => ApplicationAuthorization.RunAsync(sessions, async () =>
+        Task<T> Authorized<T>(Func<SocketJackUpdater, Task<T>> operation, bool allowSignInPrompt) => ApplicationAuthorization.RunAsync(sessions, async () =>
         {
             var remembered = !supplied && sessions.Read().Revision == 0 && options.RestoreRememberedSessionAsync is { } restore
                 ? await restore(configuration, cancellationToken) : null;
@@ -262,7 +265,7 @@ public static class ApplicationUpdater
             },
                 requireIncrementalUpdates: configuration.UpdateMode == "files", fileSelectionUpdates: configuration.UpdateProtocol == "hfiles1");
             return await operation(client);
-        }, options.NoPrompt || options.AuthenticateAsync is null || configuration.AuthApplication is null ? null : token => options.AuthenticateAsync(configuration, token),
+        }, !allowSignInPrompt || options.NoPrompt || options.AuthenticateAsync is null || configuration.AuthApplication is null ? null : token => options.AuthenticateAsync(configuration, token),
             async status => { await Status(status); }, async () =>
             {
                 state.PostponeUntil = DateTimeOffset.UtcNow.AddHours(24); await WriteJsonAsync(statePath, state, cancellationToken);
@@ -274,7 +277,7 @@ public static class ApplicationUpdater
         if (options.NoPrompt)
         {
             if (!StillInstalled()) return await Status("application-removed");
-            var check = await Authorized(client => client.CheckAsync(target, cancellationToken));
+            var check = await Authorized(client => client.CheckAsync(target, cancellationToken), allowSignInPrompt: false);
             return await Status(check.Available ? "available" : "current", check);
         }
         FileStream? ownership;
@@ -326,12 +329,16 @@ public static class ApplicationUpdater
         {
             if (File.Exists(activePath)) { PackageSafety.EnsureNoReparsePoints(activePath); File.Delete(activePath); }
             manual = false; manualRequestId = null;
+            options.InteractiveStateChanged?.Invoke(false);
         }
         bool TakeManualRequest()
         {
             var request = ReadManualRequest(requestPath);
             if (request is null || request.Nonce == state.LastManualRequestId) return false;
-            manualRequestId = request.Nonce; manual = true; return true;
+            manualRequestId = request.Nonce;
+            manual = true;
+            options.InteractiveStateChanged?.Invoke(true);
+            return true;
         }
         async Task AcknowledgeQueuedManualRequest()
         {
@@ -343,8 +350,7 @@ public static class ApplicationUpdater
         try
         {
             state = ReadState(statePath);
-            if (ReadManualRequest(requestPath) is { } queued && queued.Nonce != state.LastManualRequestId)
-            { manualRequestId = queued.Nonce; manual = true; }
+            TakeManualRequest();
             if (PendingIsAlive(state))
             {
                 if (manual) await BeginManualFeedback();
@@ -401,7 +407,13 @@ public static class ApplicationUpdater
                         // Acknowledge only after the host has opened feedback. Active metadata coalesces clicks during initialization.
                         await AcknowledgeQueuedManualRequest();
                     }
-                    check = await Authorized(client => client.CheckAsync(target, cancellationToken));
+                    check = await Authorized(client => client.CheckAsync(target, cancellationToken), allowSignInPrompt: manual);
+                }
+                catch (Exception error) when (!manual && error is not OperationCanceledException)
+                {
+                    if (TakeManualRequest()) continue;
+                    if (error is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized }) return await Status("sign-in-required");
+                    throw;
                 }
                 catch (Exception error) when (error is not OperationCanceledException && manual)
                 {
@@ -431,12 +443,13 @@ public static class ApplicationUpdater
                     if (!manual && TakeManualRequest()) continue;
                     return postponed;
                 }
+                options.InteractiveStateChanged?.Invoke(true);
                 if (!StillInstalled()) return await Status("application-removed");
                 await Status("downloading", check);
                 var policy = new UpdaterPolicy { Isolated = configuration.Isolated, TrustedPublisherKeySha256 = configuration.PublisherKeySha256,
                     DownloadDirectory = options.DownloadDirectory ?? Path.Combine(directory, "downloads"), StageForElevation = true };
                 using var current = Process.GetCurrentProcess();
-                var handoff = await Authorized(client => client.PrepareInstallerHandoffAsync(target, check, current.Id, current.StartTime.ToUniversalTime().Ticks, policy, cancellationToken: cancellationToken));
+                var handoff = await Authorized(client => client.PrepareInstallerHandoffAsync(target, check, current.Id, current.StartTime.ToUniversalTime().Ticks, policy, cancellationToken: cancellationToken), allowSignInPrompt: true);
                 if (AppRunning()) await Status("waiting-for-applications", check);
                 var runningTarget = RunningApplicationTarget.FromConfiguration(configuration).WithWaitOnlyExecutables(
                     ApplicationHostRegistry.Paths(configuration).Concat(options.ApplicationHost is { } host ? [host] : []));
@@ -468,7 +481,7 @@ public static class ApplicationUpdater
             cancellationToken = originalCancellation;
             return await Status("stopped");
         }
-        catch (Exception error) when (error is not OperationCanceledException && manual && !manualErrorReported)
+        catch (Exception error) when (error is not OperationCanceledException && !manualErrorReported)
         {
             try { await Status("error"); } catch { } // Preserve the underlying failure if the feedback host also fails.
             throw;

@@ -39,6 +39,8 @@ opaque MSI/executable adapters retain their legacy delivery protocol until
 migrated. Machine updates request UAC after the user chooses to update. Legacy
 scheduler `enable --apply` remains an explicit separate opt-in. See
 [incremental updates](incremental-updates.md) for format and crash recovery.
+Re-enabling a schedule with `enable --config <schedule.json>` keeps the saved
+settings and registers the updater running that command.
 
 Repair, uninstall, and updates-feature removal signal a root-specific maintenance
 event. The companion closes its prompt or cancels its wait without terminating
@@ -80,10 +82,11 @@ Profiles name the corresponding environment variables and exact credential
 origin. The transport sends credentials only to that origin.
 
 For profiles with an `authApplication` registered by SocketJack, an expired
-session (HTTP 401) offers a native **Sign in** action and browser approval. The
-companion obtains a fresh PKCE-bound session in memory and retries the request.
-HTTP 403 remains an access or entitlement error; signing in does not grant
-administrator status or bypass a publisher's access rules.
+session (HTTP 401) during a manual check or approved installation offers a
+native **Sign in** action and browser approval. The companion obtains a fresh
+PKCE-bound session in memory and retries the request. Unattended checks record
+sign-in requirements and errors in their local status without opening a
+dialog. HTTP 403 remains an access or entitlement error.
 
 Plugins pass their known installation root through `appRoot`. The exact supplied
 host PID and creation time remain bound, and the updater also waits for all
