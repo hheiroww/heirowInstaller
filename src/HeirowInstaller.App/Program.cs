@@ -17,17 +17,21 @@ internal static class Program
             var maintenance = args.Length >= 2 && args[0] is "uninstall" or "repair";
             options = maintenance ? AppArguments.Parse(args.Skip(2).ToArray(), maintenanceInvocation: true) with { MaintenanceProductId = args[1], MaintenanceOperation = args[0] } : AppArguments.Parse(args);
             using var graphicsContext = DirectX11Fallback.EnterChildContext(options);
-            if (!options.Silent && options.RequireSignature && options.TrustedPublisherKeySha256 is { } publisher &&
+            if ((!options.Silent || options.WebsiteLocalPackage) && options.RequireSignature && options.TrustedPublisherKeySha256 is { } publisher &&
                 options.ExpectedProductId is { } expectedProduct && options.ExpectedVersion is { } version && options.ExpectedSha256 is { } hash)
             {
-                var setup = BootstrapProcessTrust.ReadBoundSetup(expectedProduct, version, hash, publisher,
-                    options.RemotePackageUrl, options.RemotePackageSize, DirectX11Fallback.CurrentPrimaryProcessId);
+                var setup = options.WebsiteLocalPackage
+                    ? BootstrapProcessTrust.ReadBoundLocalSetup(expectedProduct, version, hash, publisher, options.PackagePath!, DirectX11Fallback.CurrentPrimaryProcessId)
+                    : BootstrapProcessTrust.ReadBoundSetup(expectedProduct, version, hash, publisher,
+                        options.RemotePackageUrl, options.RemotePackageSize, DirectX11Fallback.CurrentPrimaryProcessId);
                 options = options with
                 {
                     VerifiedBootstrapProductName = setup?.Name,
                     VerifiedWebSetupFileUpdate = setup?.FileUpdate
                 };
             }
+            if (options.WebsiteLocalPackage && options.VerifiedBootstrapProductName is null)
+                throw new InvalidDataException("Open the bundled application files from their signed setup launcher.");
             if (options.RequiresWebsiteFileSelection && options.VerifiedWebSetupFileUpdate is null)
                 throw new InvalidDataException("The signed website update binding could not be verified. Reopen setup from its original launcher.");
             if (options.PreparedPackagePath is not null && options.VerifiedBootstrapProductName is null)
@@ -52,6 +56,8 @@ internal static class Program
                 options.ValidatePackageIdentity(package);
                 var engine = new InstallerEngine();
                 var install = new InstallOptions { TargetDirectory = options.TargetDirectory, StateRoot = options.StateRoot, Scope = options.Scope, Features = options.Features, Silent = true, InstallerPath = DirectX11Fallback.CurrentPrimaryHostPath, Isolated = options.Isolated, RegisterProduct = !options.Isolated && !options.NoRegister, Launch = options.Launch, TrustedPublisherKeySha256 = options.TrustedPublisherKeySha256, RequireSignature = options.RequireSignature, LegacyArguments = options.LegacyArguments, LogPath = options.LogPath };
+                if (options.WebsiteLocalPackage)
+                    install.SharedPackageTransport = new AppController.PreparedDependencyTransport(package.Manifest, package.PackagePath);
                 var plan = engine.Plan(package, install);
                 if (plan.RequiresElevation && !InstallerEngine.IsElevated && !options.Isolated)
                 {
@@ -129,7 +135,7 @@ internal static class Program
             }
             if (option is "--require-signature" or "--request-admin-on-open")
             { retained.Add(option); index++; continue; }
-            if (option is not ("--scope" or "--trust-key" or "--remote-package" or "--remote-package-size" or
+            if (option is not ("--scope" or "--trust-key" or "--remote-package" or "--remote-package-size" or "--website-local-package" or
                 "--expected-product-id" or "--expected-version" or "--expected-sha256") || index + 1 >= args.Length) return args;
             var value = args[index + 1];
             if (option == "--expected-product-id") product = value;
@@ -231,6 +237,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
     internal string? VerifiedBootstrapProductName { get; init; }
     internal WebSetupFileUpdate? VerifiedWebSetupFileUpdate { get; init; }
     internal bool RequiresWebsiteFileSelection { get; init; }
+    internal bool WebsiteLocalPackage { get; init; }
     internal bool IsWizardInvocation => PackagePath is not null || RemotePackageUrl is not null || MaintenanceProductId is not null;
     internal string? InitialSetupTitle => VerifiedBootstrapProductName is { } name ? name + " Setup" : IsWizardInvocation ? "Application setup" : null;
     internal void ValidatePackageIdentity(PackageReader package)
@@ -239,8 +246,13 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             throw new InvalidDataException("The installer package belongs to a different product than the requested update.");
         if (ExpectedVersion is not null && !package.Manifest.Version.Equals(ExpectedVersion, StringComparison.Ordinal))
             throw new InvalidDataException("The installer package version does not match the requested update.");
+        if (WebsiteLocalPackage)
+        {
+            if (package.IsMetadataOnly) throw new InvalidDataException("Bundled setup requires a complete signed application package.");
+            PackageSafety.EnsureNoReparsePoints(package.PackagePath);
+        }
         if (ExpectedSha256 is not null && !PackageSafety.HashEquals(PackageSafety.HashFile(package.PackagePath), ExpectedSha256))
-            throw new System.Security.Cryptography.CryptographicException("The installer package changed after the update was downloaded.");
+            throw new System.Security.Cryptography.CryptographicException("The installer package differs from the expected download.");
     }
 
     public static AppArguments Parse(string[] args, bool maintenanceInvocation = false)
@@ -253,7 +265,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         string? expectedProduct = null, expectedVersion = null, expectedSha256 = null; var noRegister = false;
         var renderSmoke = false; var closeOnComplete = false; var maintenanceConfirmed = false; var softwareRendering = false; string? wizardSmoke = null, performanceSmoke = null;
         bool directX11Child = false; string? primaryHost = null, primaryHash = null, graphicsPackageHash = null, handoffSmoke = null; int? graphicsParent = null; long? graphicsStart = null;
-        string? remotePackage = null, preparedPackage = null; long remotePackageSize = 0; var requestAdmin = false; var websiteFileSelection = false;
+        string? remotePackage = null, preparedPackage = null; long remotePackageSize = 0; var requestAdmin = false; var websiteFileSelection = false; var websiteLocalPackage = false;
         for (var i = 0; i < args.Length; i++)
         {
             string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} requires a value.");
@@ -277,6 +289,7 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
                 case "--state-root": state = Path.GetFullPath(Value()); break;
                 case "--remote-package": remotePackage = Value(); break;
                 case "--website-file-selection": websiteFileSelection = true; break;
+                case "--website-local-package": websiteLocalPackage = true; package = Path.GetFullPath(Value()); break;
                 case "--remote-package-size": remotePackageSize = long.Parse(Value(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--prepared-package": preparedPackage = Path.GetFullPath(Value()); break;
                 case "--install": install = true; package = Path.GetFullPath(Value()); break;
@@ -346,6 +359,10 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
             !Uri.TryCreate(remotePackage, UriKind.Absolute, out var remoteUri) || remoteUri.UserInfo.Length != 0 || remoteUri.Fragment.Length != 0 ||
             remoteUri.Scheme != "https" && !(isolated && remoteUri.Scheme == "http" && remoteUri.IsLoopback)))
             throw new ArgumentException("Remote setup requires one HTTPS package with an exact publisher, product, version, size and SHA-256 binding, and an interactive wizard.");
+        if (websiteLocalPackage && (package is null || maintenanceInvocation || !requireSignature || trustedKey is null ||
+            expectedProduct is null || expectedVersion is null || expectedSha256 is null || preparedPackage is not null ||
+            !Path.GetExtension(package).Equals(".hinst", StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException("Bundled setup requires one local application package with an exact publisher, product, version and SHA-256 binding.");
         if (websiteFileSelection && (remotePackage is null || preparedPackage is not null))
             throw new ArgumentException("Website file selection requires an online signed setup.");
         if (preparedPackage is not null && (remotePackage is null || scope is null || target is null))
@@ -357,6 +374,6 @@ internal sealed record AppArguments(string? PackagePath, string? CapturePath, st
         { RenderSmoke = renderSmoke, CloseOnComplete = closeOnComplete, MaintenanceConfirmed = maintenanceConfirmed, WizardSmokeDirectory = wizardSmoke, PerformanceSmokeDirectory = performanceSmoke, SoftwareRendering = softwareRendering,
           DirectX11Child = directX11Child, GraphicsPrimaryHost = primaryHost, GraphicsPrimarySha256 = primaryHash, GraphicsParentPid = graphicsParent, GraphicsParentStart = graphicsStart, GraphicsPackageSha256 = graphicsPackageHash, GraphicsHandoffSmokeRoot = handoffSmoke,
           RemotePackageUrl = remotePackage, RemotePackageSize = remotePackageSize, PreparedPackagePath = preparedPackage,
-          RequestAdministratorOnOpen = requestAdmin && preparedPackage is null, RequiresWebsiteFileSelection = websiteFileSelection };
+          RequestAdministratorOnOpen = requestAdmin && preparedPackage is null, RequiresWebsiteFileSelection = websiteFileSelection, WebsiteLocalPackage = websiteLocalPackage };
     }
 }

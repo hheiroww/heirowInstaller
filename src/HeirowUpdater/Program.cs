@@ -34,8 +34,8 @@ Checks do not install updates. Enable schedules per-user checks at sign-in and e
 --apply opts into background installation and requires a pinned publisher key by default.
 --allow-unsigned explicitly permits hash-verified packages without a publisher signature.
 Credentials come from environment variables or the protected current-user installer account and stay origin-bound.
-Signed SocketJack targets reuse remembered sign-in; checks never renew or extend its lifetime.
---interactive allows browser approval for a registered installed application's protected feed.
+Protected updates use an existing session when available. Checks do not extend its lifetime.
+--interactive remains accepted for compatibility.
 Background, watch, silent and --no-prompt operations never request browser approval.
 """;
     public static async Task<int> RunAsync(string[] args)
@@ -88,8 +88,7 @@ Background, watch, silent and --no-prompt operations never request browser appro
             {
                 progress.Report(new("check", "Reading installed application update information", 0, 0));
                 var targets = Targets(parsed, configuration);
-                using var sessions = await TargetUpdateSessions.CreateAsync(targets, configuration, parsed.Has("allow-loopback"),
-                    parsed.Has("interactive") && (command is "check" or "update") && !parsed.Has("background") && !parsed.Has("silent") && !parsed.Has("no-prompt"), progress, cancellation.Token);
+                using var sessions = await TargetUpdateSessions.CreateAsync(targets, configuration, parsed.Has("allow-loopback"), cancellation.Token);
                 if (command == "check")
                 {
                     var checks = await updater.CheckTargetsAsync(targets,
@@ -98,7 +97,7 @@ Background, watch, silent and --no-prompt operations never request browser appro
                         currentVersion = check.CurrentVersion, latestVersion = check.LatestVersion, available = check.Available,
                         requiresUserAction = check.RequiresSignIn || check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated,
                         status = check.RequiresSignIn ? "sign-in-required" : check.Error is not null ? "error" : check.Available && targets[index].Scope == "machine" && !InstallerEngine.IsElevated ? "requires-elevation" : check.Available ? "update-available" : "current",
-                        error = check.RequiresSignIn ? "Sign in to SocketJack to check this application's updates. Use Check all applications in heirowInstaller or check --interactive." : check.Error }).ToArray();
+                        error = check.RequiresSignIn ? "This update feed requires an active session. Open the application and check for updates from there." : check.Error }).ToArray();
                     await UpdaterSchedule.WriteJsonAsync(parsed.Get("status-file") ?? UpdaterSchedule.LastCheckPath,
                         new { checkedAt = DateTimeOffset.UtcNow, transport = "SocketJack", products = checkedProducts }, cancellation.Token);
                     if (!parsed.Has("background")) Print(checkedProducts);
@@ -150,7 +149,7 @@ Background, watch, silent and --no-prompt operations never request browser appro
                         var signInRequired = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized };
                         failed = true; results.Add(new { productId = target.ProductId, name = target.Name, currentVersion = target.CurrentVersion, available = false,
                             status = signInRequired ? "sign-in-required" : "error", requiresUserAction = signInRequired,
-                            error = signInRequired ? "Sign in to SocketJack to update this application. Use Install available updates in heirowInstaller or update --interactive." : ex.Message });
+                            error = signInRequired ? "This update requires an active session. Open the application and try the update from there." : ex.Message });
                     }
                 }
                 var status = JsonSerializer.Serialize(results, InstallerJson.Options);

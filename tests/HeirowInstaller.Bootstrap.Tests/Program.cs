@@ -96,6 +96,51 @@ foreach (var authenticated in new[] { false, true })
         selectedStart.ArgumentList.Contains(selected.ApplicationPackage.Url) && handler.Calls == selectedCalls,
         "the native bootstrap delegates its signed file selection and exact full fallback without an eager application download");
 }
+var bundleLauncher = Path.Combine(root, "website-bundle", "setup.exe");
+var offlineDirectory = Path.Combine(Path.GetDirectoryName(bundleLauncher)!, "offline");
+var offlinePackage = Path.Combine(offlineDirectory, "application.hinst");
+var bundled = Descriptor(payload);
+bundled.ApplicationPackage = new() { Url = selected.ApplicationPackage.Url, Size = payload.Length, Sha256 = Convert.ToHexString(SHA256.HashData(payload)) };
+bundled.ApplicationPackageRequiresAuthentication = true;
+bundled.ApplicationFileUpdate = selected.ApplicationFileUpdate;
+bundled.AllowedDownloadOrigins = selected.AllowedDownloadOrigins;
+bundled.HostArguments = ["--website-file-selection"];
+var onlineEngine = new BootstrapEngine(bundled, client, new ImmediateProgress([]));
+var bundleCalls = handler.Calls;
+var withoutCompanion = await onlineEngine.PrepareAsync(shared, Path.Combine(root, "website-no-bundle"), default, installerLauncherPath: bundleLauncher);
+Check(withoutCompanion.ArgumentList.Contains("--remote-package") && !withoutCompanion.ArgumentList.Contains("--website-local-package"),
+    "an online website setup still selects its remote package");
+bundled.OfflineApplicationBundle = true;
+bundled.ApplicationFileUpdate = null;
+bundled.HostArguments = [];
+var bundledEngine = new BootstrapEngine(bundled, client, new ImmediateProgress([]));
+Directory.CreateDirectory(offlineDirectory);
+await Reject(() => bundledEngine.PrepareAsync(Path.Combine(root, "unused-web-runtime"), Path.Combine(root, "missing-bundle"), default, installerLauncherPath: bundleLauncher),
+    "an incomplete website bundle fails before requesting shared runtime or remote application bytes");
+var changedBundle = payload.ToArray();
+changedBundle[^1] ^= 1;
+File.WriteAllBytes(offlinePackage, changedBundle);
+await Reject(() => bundledEngine.PrepareAsync(Path.Combine(root, "unused-web-runtime"), Path.Combine(root, "changed-bundle"), default, installerLauncherPath: bundleLauncher),
+    "website bundle with a same-length modified application is rejected before network");
+File.WriteAllBytes(offlinePackage, payload);
+var bundleStart = await bundledEngine.PrepareAsync(shared, Path.Combine(root, "website-valid-bundle"), default, installerLauncherPath: bundleLauncher);
+Check(bundleStart.ArgumentList.Contains("--website-local-package") && bundleStart.ArgumentList.Contains(offlinePackage) &&
+    bundleStart.ArgumentList.Contains(bundled.ApplicationPackage.Sha256) &&
+    !bundleStart.ArgumentList.Contains("--remote-package") && !bundleStart.ArgumentList.Contains("--website-file-selection") &&
+    !bundleStart.ArgumentList.Contains(bundled.ApplicationPackage.Url) && handler.Calls == bundleCalls,
+    "an exact website bundle bypasses protected and sparse application routes while retaining the signed application hash");
+var localRuntime = Path.Combine(offlineDirectory, "bootstrap");
+Directory.CreateDirectory(localRuntime);
+var localRuntimeArchive = Path.Combine(localRuntime, bundled.Packages.Single().Sha256.ToLowerInvariant() + ".hinst");
+await Reject(() => bundledEngine.PrepareAsync(Path.Combine(root, "website-missing-runtime"), Path.Combine(root, "missing-local-runtime"), default, installerLauncherPath: bundleLauncher),
+    "bundled runtime selection rejects a missing archive without using the network");
+File.WriteAllBytes(localRuntimeArchive, changedBundle);
+await Reject(() => bundledEngine.PrepareAsync(Path.Combine(root, "website-changed-runtime"), Path.Combine(root, "changed-local-runtime"), default, installerLauncherPath: bundleLauncher),
+    "bundled runtime selection rejects a same-length modified archive");
+File.WriteAllBytes(localRuntimeArchive, payload);
+var offlineStart = await bundledEngine.PrepareAsync(Path.Combine(root, "cold-website-runtime"), Path.Combine(root, "offline-runtime"), default, installerLauncherPath: bundleLauncher);
+Check(File.ReadAllText(offlineStart.FileName) == "owned runtime bytes for fixture.host" && handler.Calls == bundleCalls,
+    "fresh setup provisions its pinned runtime and resolves the application without network access");
 var goodSelection = selected.ApplicationFileUpdate;
 foreach (var invalid in new[] {
     goodSelection with { FilesUrl = "http://fixture.example.test/files.zip" },
@@ -426,8 +471,8 @@ try
     }
     var fullSetup = Path.Combine(updateArea, "full-setup.exe");
     HeirowInstaller.Core.BundleBuilder.Build(generic, requestedPackage, fullSetup);
-    using (var bundled = HeirowInstaller.Core.PackageReader.Open(fullSetup))
-        Check(bundled.ComputePackageSha256() == signedTarget.ComputePackageSha256(), "package opening still accepts a full setup with its embedded package");
+    using (var sealedSetup = HeirowInstaller.Core.PackageReader.Open(fullSetup))
+        Check(sealedSetup.ComputePackageSha256() == signedTarget.ComputePackageSha256(), "package opening still accepts a full setup with its embedded package");
     Environment.SetEnvironmentVariable(HeirowInstaller.Core.BootstrapWorkerPromotion.LauncherVariable, webCarrier);
     Check(HeirowInstaller.Core.BootstrapWorkerPromotion.ValidatePromotedPackage(requestedMetadata, updateManifest.Id, "0.5.0", pin, "machine", "apply-files"),
         "the promoted worker accepts the website's exact signed selection metadata");

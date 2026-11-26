@@ -1,7 +1,5 @@
-using System.Diagnostics;
 using System.Net;
 using HeirowInstaller.Core;
-using HeirowInstaller.Publishing;
 using HeirowUpdater.SocketJack;
 
 namespace HeirowInstaller.App;
@@ -20,6 +18,7 @@ internal sealed partial class AppController
         try
         {
             var token = Cancellation!.Token;
+            await RestoreAccountAsync(renew: false, token);
             if (arguments.VerifiedWebSetupFileUpdate is { } fileUpdate && await TryOpenWebSetupUpdateAsync(fileUpdate, token)) return;
             await game.OnUiAsync(() =>
             {
@@ -27,7 +26,6 @@ internal sealed partial class AppController
                 StatusDetail = "Preparing the complete application files.";
                 Notify();
             });
-            await RestoreAccountAsync(renew: false, token);
             var feed = new UpdateFeed
             {
                 ProductId = arguments.ExpectedProductId!, Version = arguments.ExpectedVersion!,
@@ -52,30 +50,14 @@ internal sealed partial class AppController
                 return await client.DownloadStreamingApplicationAsync(feed, directory, TimeSpan.FromMinutes(1),
                     new SetupDownloadProgress(value => ReportSetupDownload(value, token)), token);
             }
-            string path;
-            try { path = await Download(); }
-            catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Unauthorized &&
-                new Uri(arguments.RemotePackageUrl).GetLeftPart(UriPartial.Authority).Equals(AccountOrigin.AbsoluteUri.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
-            {
-                await game.OnUiAsync(() => { SigningIn = true; Status = "Sign in to download setup"; StatusDetail = "Approve the SocketJack sign-in in your browser."; Notify(); });
-                PublisherSession? pending = null;
-                try
-                {
-                    var revision = OperatingSystem.IsWindows() ? await Account.GetRevisionAsync(token) : null;
-                    using var approval = await PublisherSignInClient.BeginAsync(AccountOrigin, token);
-                    Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
-                    pending = await approval.CompleteAsync(token);
-                    if (OperatingSystem.IsWindows() && !await Account.RememberAsync(pending, revision, token))
-                        throw new InvalidOperationException("The sign-in changed on this device. Reopen setup to use the current account.");
-                    var accepted = pending;
-                    await game.OnUiAsync(() => { publisherSession?.Dispose(); publisherSession = accepted; SigningIn = false; Notify(); });
-                    pending = null;
-                    path = await Download();
-                }
-                finally { pending?.Dispose(); await game.OnUiAsync(() => { SigningIn = false; Notify(); }); }
-            }
+            var path = await Download();
             await game.OnUiAsync(() => End("Application files ready", "Opening the verified installation options."));
             await OpenPackageAsync(path);
+        }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            await ErrorAsync("Could not prepare application setup", new InvalidOperationException(
+                "This download could not be authorized. Use the application’s updater or download the full setup from its website.", error));
         }
         catch (Exception error) { await ErrorAsync("Could not prepare application setup", error); }
     }

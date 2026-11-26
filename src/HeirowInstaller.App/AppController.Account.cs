@@ -18,7 +18,8 @@ internal sealed partial class AppController
         try { restored = await Account.RestoreAsync(renew, cancellationToken); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
         {
-            await game.OnUiAsync(() => AddActivity("Sign-in unavailable", "Your saved SocketJack sign-in could not be opened. Sign in again to continue."));
+            if (!IsWizard)
+                await game.OnUiAsync(() => AddActivity("Saved SocketJack account unavailable", "The saved account could not be opened."));
             return;
         }
         await game.OnUiAsync(() => { publisherSession?.Dispose(); publisherSession = restored; Notify(); });

@@ -103,6 +103,20 @@ internal static partial class Program
         try { AppArguments.Parse(["--prepared-package", archive, "--scope", "user", "--target", destination]); throw new Exception("Unbound stage accepted"); }
         catch (ArgumentException) { Check(true, "a prepared file cannot start an unbound setup"); }
 
+        var bundledPackage = Path.Combine(root, "website", "offline", "application.hinst");
+        var bundledArgs = new[] { "--website-local-package", bundledPackage, "--require-signature", "--trust-key", signingPin,
+            "--expected-product-id", "fixture", "--expected-version", "2.0.0", "--expected-sha256", new string('a', 64), "--scope", "user", "--silent" };
+        var bundled = AppArguments.Parse(bundledArgs);
+        Check(bundled.WebsiteLocalPackage && bundled.IsWizardInvocation && bundled.Silent && bundled.PackagePath == bundledPackage &&
+            bundled.RemotePackageUrl is null && bundled.PreparedPackagePath is null,
+            "bundled website setup retains the local package identity for the silent or interactive entry point");
+        try { AppArguments.Parse(["--website-local-package", bundledPackage]); throw new Exception("Unbound bundled package accepted"); }
+        catch (ArgumentException) { Check(true, "website-local setup refuses a package without its signed identity requirements"); }
+        try { AppArguments.Parse([..bundledArgs, "--website-file-selection"]); throw new Exception("Bundled setup requested remote file selection"); }
+        catch (ArgumentException) { Check(true, "bundled setup excludes sparse remote branching"); }
+        Check(BootstrapProcessTrust.ReadBoundLocalSetup("fixture", "2.0.0", new string('a', 64), signingPin,
+            bundledPackage) is null, "a local package argument cannot establish a signed native parent");
+
         var uri = new Uri("https://example.invalid/shared/fixture.hinst");
         byte[] bytes = [2, 4, 6];
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

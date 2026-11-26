@@ -202,6 +202,8 @@ internal sealed partial class AcceptanceSuite
         var beforeNoPrompt = received.Count;
         await CheckCli("explicit-no-prompt", ["--all", "--state-root", install.StateRoot!], valid: false, flags: ["--interactive", "--no-prompt"]);
         Equal(beforeNoPrompt + 1, received.Count); True(received.Last().Path.StartsWith("/feed.json", StringComparison.Ordinal)); Equal(0, spoofRequests);
+        await CheckCli("legacy-interactive", ["--all", "--state-root", install.StateRoot!], valid: false, flags: ["--interactive"]);
+        Equal(beforeNoPrompt + 2, received.Count); True(received.Last().Path.StartsWith("/feed.json", StringComparison.Ordinal)); Equal(0, spoofRequests);
 
         profile.ProductId = "test.central-uninstalled-profile"; profile.Name = "Untrusted profile fixture";
         profile.StateRoot = Path.Combine(area, "empty-state"); profile.FeedUrl = spoof.Origin + "feed.json";

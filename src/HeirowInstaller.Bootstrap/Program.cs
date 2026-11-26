@@ -57,7 +57,7 @@ internal static class Program
                 }
                 else if (descriptor.HostKind is "updater" or "application" || descriptor.OfflineOnly)
                     start = await engine.PrepareOfflineAsync([BootstrapEngine.SharedRoot(hostScope), BootstrapEngine.SharedRoot(hostScope == "user" ? "machine" : "user")], staging, token);
-                else start = await engine.PrepareAsync(BootstrapEngine.SharedRoot(hostScope), staging, token);
+                else start = await engine.PrepareAsync(BootstrapEngine.SharedRoot(hostScope), staging, token, installerLauncherPath: NativeProcessIdentity.Current().Image);
                 start.CreateNoWindow = true;
                 if (descriptor.HostKind is "updater" or "installer")
                 {

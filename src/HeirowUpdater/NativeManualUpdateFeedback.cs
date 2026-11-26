@@ -49,7 +49,9 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             HasShownError = false;
         }
         state.Status = result.Status;
-        state.Message = SafeMessage(result.Status);
+        var sessionMessage = NativeUpdatePrompt.SessionFailureMessage(result.FailureHttpStatus);
+        state.Message = sessionMessage ?? SafeMessage(result.Status);
+        state.SuppressDownloadRecovery = sessionMessage is not null;
         if (WindowFailed) throw new InvalidOperationException("The update result window could not be opened.");
         await OpenOrUpdateAsync(token);
         if (result.Status is "current" or "error" or "update-staged")
@@ -59,7 +61,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         }
     }
 
-    internal async Task SuspendAsync()
+    private async Task SuspendAsync()
     {
         if (child is null) return;
         if (!child.HasExited && statePath is not null && state is not null)
@@ -74,12 +76,6 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
             }
         }
         await FinishChildAsync();
-    }
-
-    internal async Task ResumeCheckingAsync(CancellationToken token)
-    {
-        if (state is null || state.Status != "checking") return;
-        await OpenOrUpdateAsync(token);
     }
 
     private async Task OpenOrUpdateAsync(CancellationToken token)
@@ -270,6 +266,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         public string Status { get; set; } = "checking";
         public string Message { get; set; } = "";
         public bool StartupFailure { get; set; }
+        public bool SuppressDownloadRecovery { get; set; }
         public int FeedbackProcessId { get; set; }
         public long FeedbackStartTicks { get; set; }
     }
@@ -357,9 +354,9 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         internal int RenderedFrames => statusFrames;
         internal string VisibleTitle => scene.Title.Text;
         internal string CloseButtonText => scene.CloseButton.Text;
-        internal string VisibleMessage => state.Message + (state.Status == "error" && recovery?.Page is not null
-            ? "\n" + (recovery.Notice.Length == 0 ? "Opening this app's SocketJack download page…" : recovery.Notice) + "\n" + recovery.Page.AbsoluteUri : "");
-        internal string? DownloadPage => recovery?.Page?.AbsoluteUri;
+        internal string VisibleMessage => state.Message + (state.Status == "error" && DownloadPage is not null
+            ? "\n" + (recovery!.Notice.Length == 0 ? "Opening this app's SocketJack download page…" : recovery.Notice) + "\n" + DownloadPage : "");
+        internal string? DownloadPage => state.SuppressDownloadRecovery ? null : recovery?.Page?.AbsoluteUri;
         internal bool DownloadPageOpened => recovery?.Opened == true;
         internal bool Injected { get; private set; }
         internal HashSet<string> StatusesRendered { get; } = [];
@@ -377,7 +374,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         internal void Enqueue(Action action) => actions.Enqueue(action);
         internal void OpenDownloadPage()
         {
-            if (recovery is null || recovering) return;
+            if (state.SuppressDownloadRecovery || recovery is null || recovering) return;
             recovering = true;
             _ = OpenAsync();
             async Task OpenAsync()
@@ -405,7 +402,7 @@ internal sealed class NativeManualUpdateFeedback(UpdateCompanionConfiguration pr
         {
             if (!firstFrameAcknowledged && frames > 0) { firstFrameAcknowledged = true; rendered(); }
             while (actions.TryDequeue(out var action)) action();
-            if (frames > 0 && state.Status == "error" && recovery is { Page: not null, Attempted: false }) OpenDownloadPage();
+            if (frames > 0 && state.Status == "error" && !state.SuppressDownloadRecovery && recovery is { Page: not null, Attempted: false }) OpenDownloadPage();
             scene.Animate(time.TotalGameTime.TotalSeconds, state.Status == "checking");
             manager.Tick(time);
             if (choice == "close" && !Injected && !recovering && (state.Status is "current" or "error" or "update-staged") && statusFrames > 30 && (capture is null || captured))

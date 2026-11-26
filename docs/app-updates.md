@@ -72,7 +72,7 @@ active in-memory account, then pass that snapshot to `StartAfterExit` or
 with both credentials empty to explicitly clear an old login. A stale queued
 snapshot cannot replace a newer account snapshot. The running owner accepts
 replacements through an authenticated same-user local pipe with exact process
-identity and replay checks; an obsolete authentication prompt is cancelled.
+identity and replay checks.
 
 The optional `sessionCookie` argument accepts a complete Cookie header value.
 Credentials are set only on the child process's `HEIROWUPDATER_TOKEN` or
@@ -81,12 +81,10 @@ arguments, profiles, global environment variables or desktop preferences.
 Profiles name the corresponding environment variables and exact credential
 origin. The transport sends credentials only to that origin.
 
-For profiles with an `authApplication` registered by SocketJack, an expired
-session (HTTP 401) during a manual check or approved installation offers a
-native **Sign in** action and browser approval. The companion obtains a fresh
-PKCE-bound session in memory and retries the request. Unattended checks record
-sign-in requirements and errors in their local status without opening a
-dialog. HTTP 403 remains an access or entitlement error.
+If a protected request returns HTTP 401, the companion can retry with a newer
+session supplied by the application. If none is available, manual checks direct
+the user back to the application and unattended checks record their status
+without opening a dialog. HTTP 403 remains an access or entitlement error.
 
 Plugins pass their known installation root through `appRoot`. The exact supplied
 host PID and creation time remain bound, and the updater also waits for all

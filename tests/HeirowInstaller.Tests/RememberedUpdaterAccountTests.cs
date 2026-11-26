@@ -13,7 +13,6 @@ internal sealed partial class AcceptanceSuite
         var area = Area("remembered-updater-sharing");
         var clock = new UpdaterAccountClock(DateTimeOffset.UtcNow);
         const string approved = "fixture-remembered-updater-account";
-        var applications = new List<string>();
         var requests = new List<string?>();
         LoopbackServer? publisher = null;
         await using (publisher = new LoopbackServer((NetworkRequest request) =>
@@ -29,30 +28,26 @@ internal sealed partial class AcceptanceSuite
             var store = new RememberedPublisherAccount(origin, Path.Combine(area, "account"), clock, allowLoopback: true);
             var targets = new[] { RememberedTarget("test.remembered-one", publisher.Origin + "one/feed.json", publisher.Origin),
                 RememberedTarget("test.remembered-two", publisher.Origin + "two/feed.json", publisher.Origin) };
-            async Task<PublisherSession> Approve(Uri requestedOrigin, string application, CancellationToken cancellation)
-            {
-                Equal(origin, requestedOrigin); applications.Add(application);
-                await Task.Delay(50, cancellation);
-                return UpdaterAccountSession(approved, clock.GetUtcNow().AddDays(30));
-            }
-            using (var sessions = await TargetUpdateSessions.CreateAsync(targets, new(), true, true, new InlineProgress(_ => { }),
-                rememberedAccount: store, rememberedOrigin: origin, authenticate: Approve))
+            using (var missing = await TargetUpdateSessions.CreateAsync(targets, new(), true, rememberedAccount: store, rememberedOrigin: origin))
+                await Throws<HttpRequestException>(() => missing[targets[0]].RunAsync(client => client.CheckAsync(targets[0])));
+            using (var saved = UpdaterAccountSession(approved, clock.GetUtcNow().AddDays(30))) await store.RememberAsync(saved);
+
+            using (var sessions = await TargetUpdateSessions.CreateAsync(targets, new(), true, rememberedAccount: store, rememberedOrigin: origin))
             using (var updater = new SocketJackUpdater(allowLoopback: true))
             {
                 var results = await updater.CheckTargetsAsync(targets,
                     (target, token) => sessions[target].RunAsync(client => client.CheckAsync(target, token), token), null, default);
                 True(results.All(result => result.Error is null));
-                Equal(1, applications.Count); Equal("heirowinstaller", applications.Single());
             }
             DateTimeOffset expiry;
             using (var cached = await store.RestoreAsync()) { True(cached is not null); expiry = cached!.ExpiresUtc; }
             var revision = await store.GetRevisionAsync();
             clock.Now = clock.Now.AddDays(10);
             var freshStore = new RememberedPublisherAccount(origin, Path.Combine(area, "account"), clock, allowLoopback: true);
-            using (var background = await TargetUpdateSessions.CreateAsync(targets, new(), true, false, new InlineProgress(_ => { }),
-                rememberedAccount: freshStore, rememberedOrigin: origin, authenticate: Approve))
+            using (var background = await TargetUpdateSessions.CreateAsync(targets, new(), true,
+                rememberedAccount: freshStore, rememberedOrigin: origin))
                 foreach (var target in targets) True(!(await background[target].RunAsync(client => client.CheckAsync(target))).Available);
-            Equal(1, applications.Count); Equal(revision, await freshStore.GetRevisionAsync());
+            Equal(revision, await freshStore.GetRevisionAsync());
             using (var cached = await freshStore.RestoreAsync()) Equal(expiry, cached!.ExpiresUtc);
             True(requests.Count(value => value == "Bearer " + approved) >= 4);
 
@@ -62,10 +57,18 @@ internal sealed partial class AcceptanceSuite
             {
                 Environment.SetEnvironmentVariable(variable, "fixture-explicit-account");
                 using var explicitSession = await TargetUpdateSessions.CreateAsync([targets[0]],
-                    new() { CredentialOrigin = publisher.Origin, TokenEnvironmentVariable = variable }, true, false, new InlineProgress(_ => { }),
-                    rememberedAccount: store, rememberedOrigin: origin, authenticate: Approve);
+                    new() { CredentialOrigin = publisher.Origin, TokenEnvironmentVariable = variable }, true,
+                    rememberedAccount: store, rememberedOrigin: origin);
                 await explicitSession[targets[0]].RunAsync(client => client.CheckAsync(targets[0]));
-                Equal("Bearer fixture-explicit-account", requests.Last()); Equal(1, applications.Count);
+                Equal("Bearer fixture-explicit-account", requests.Last());
+
+                Environment.SetEnvironmentVariable(variable, "fixture-expired-app-session");
+                using var rejectedSession = await TargetUpdateSessions.CreateAsync([targets[0]],
+                    new() { CredentialOrigin = publisher.Origin, TokenEnvironmentVariable = variable }, true,
+                    rememberedAccount: store, rememberedOrigin: origin);
+                await Throws<HttpRequestException>(() => rejectedSession[targets[0]].RunAsync(client => client.CheckAsync(targets[0])));
+                Equal("Bearer fixture-expired-app-session", requests.Last());
+                Equal(revision, await store.GetRevisionAsync());
             }
             finally { Environment.SetEnvironmentVariable(variable, previous); }
 
@@ -78,19 +81,19 @@ internal sealed partial class AcceptanceSuite
             }))
             {
                 var foreignTarget = RememberedTarget("test.remembered-foreign", foreign.Origin + "feed.json", foreign.Origin);
-                using var foreignSession = await TargetUpdateSessions.CreateAsync([foreignTarget], new(), true, false, new InlineProgress(_ => { }),
-                    rememberedAccount: store, rememberedOrigin: origin, authenticate: Approve);
+                using var foreignSession = await TargetUpdateSessions.CreateAsync([foreignTarget], new(), true,
+                    rememberedAccount: store, rememberedOrigin: origin);
                 await foreignSession[foreignTarget].RunAsync(client => client.CheckAsync(foreignTarget));
-                True(!foreignCredentials); Equal(1, applications.Count);
+                True(!foreignCredentials);
                 foreignTarget.CredentialOrigin = publisher.Origin;
-                using var foreignFeed = await TargetUpdateSessions.CreateAsync([foreignTarget], new(), true, false, new InlineProgress(_ => { }),
-                    rememberedAccount: store, rememberedOrigin: origin, authenticate: Approve);
+                using var foreignFeed = await TargetUpdateSessions.CreateAsync([foreignTarget], new(), true,
+                    rememberedAccount: store, rememberedOrigin: origin);
                 await foreignFeed[foreignTarget].RunAsync(client => client.CheckAsync(foreignTarget));
-                True(!foreignCredentials); Equal(1, applications.Count);
+                True(!foreignCredentials);
             }
             var unsigned = RememberedTarget(targets[0].ProductId, targets[0].FeedUrl, null);
-            using (var unsignedSession = await TargetUpdateSessions.CreateAsync([unsigned], new(), true, false, new InlineProgress(_ => { }),
-                rememberedAccount: store, rememberedOrigin: origin, authenticate: Approve))
+            using (var unsignedSession = await TargetUpdateSessions.CreateAsync([unsigned], new(), true,
+                rememberedAccount: store, rememberedOrigin: origin))
                 await Throws<HttpRequestException>(() => unsignedSession[unsigned].RunAsync(client => client.CheckAsync(unsigned)));
             True(requests.Last() is null); Equal(revision, await store.GetRevisionAsync());
         }
@@ -112,37 +115,32 @@ internal sealed partial class AcceptanceSuite
             async Task Remember(string token)
             { using var session = UpdaterAccountSession(token, clock.Now.AddDays(30)); await store.RememberAsync(session); }
             await Remember("fixture-rejected-updater-account");
-            using (var oldRequest = await TargetUpdateSessions.CreateAsync([target], new(), true, false, new InlineProgress(_ => { }),
+            using (var oldRequest = await TargetUpdateSessions.CreateAsync([target], new(), true,
                 rememberedAccount: store, rememberedOrigin: origin))
             {
                 await Remember(expected);
-                await Throws<HttpRequestException>(() => oldRequest[target].RunAsync(client => client.CheckAsync(target)));
+                True(!(await oldRequest[target].RunAsync(client => client.CheckAsync(target))).Available);
             }
             using (var cached = await store.RestoreAsync()) Equal(expected, cached!.AccessToken);
             await Remember("fixture-rejected-updater-account");
-            using (var rejected = await TargetUpdateSessions.CreateAsync([target], new(), true, false, new InlineProgress(_ => { }),
+            using (var rejected = await TargetUpdateSessions.CreateAsync([target], new(), true,
                 rememberedAccount: store, rememberedOrigin: origin))
                 await Throws<HttpRequestException>(() => rejected[target].RunAsync(client => client.CheckAsync(target)));
             using (var cached = await store.RestoreAsync()) True(cached is null);
 
-            var approvals = 0;
-            using (var signingOut = await TargetUpdateSessions.CreateAsync([target], new(), true, true, new InlineProgress(_ => { }),
-                rememberedAccount: store, rememberedOrigin: origin, authenticate: async (_, application, _) =>
-                {
-                    approvals++; Equal("heirowinstaller", application); await store.SignOutAsync();
-                    return UpdaterAccountSession("fixture-obsolete-approval", clock.Now.AddDays(30));
-                }))
+            await Remember("fixture-rejected-updater-account");
+            using (var signingOut = await TargetUpdateSessions.CreateAsync([target], new(), true, rememberedAccount: store, rememberedOrigin: origin))
+            {
+                await store.SignOutAsync();
                 await Throws<HttpRequestException>(() => signingOut[target].RunAsync(client => client.CheckAsync(target)));
+            }
             using (var cached = await store.RestoreAsync()) True(cached is null);
-            Equal(1, approvals);
-            using (var newerLogin = await TargetUpdateSessions.CreateAsync([target], new(), true, true, new InlineProgress(_ => { }),
-                rememberedAccount: store, rememberedOrigin: origin, authenticate: async (_, _, _) =>
-                {
-                    approvals++; await Remember(expected);
-                    return UpdaterAccountSession("fixture-obsolete-approval", clock.Now.AddDays(30));
-                }))
+
+            using (var newerLogin = await TargetUpdateSessions.CreateAsync([target], new(), true, rememberedAccount: store, rememberedOrigin: origin))
+            {
+                await Remember(expected);
                 True(!(await newerLogin[target].RunAsync(client => client.CheckAsync(target))).Available);
-            Equal(2, approvals);
+            }
             using (var cached = await store.RestoreAsync()) Equal(expected, cached!.AccessToken);
         }
     }

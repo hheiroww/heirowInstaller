@@ -55,9 +55,11 @@ internal sealed class BootstrapEngine
         if (value.HostArguments.Count > 128 || value.HostArguments.Any(argument => argument.Length > 4096 || argument.Contains('\0'))) throw new InvalidDataException("Invalid installer arguments.");
         if (value.ApplicationPackage is { } app)
         {
-            if (value.HostKind != "installer" || value.OfflineOnly) throw new InvalidDataException("Only an online setup launcher may download an application package.");
+            if (value.HostKind != "installer" || value.OfflineOnly) throw new InvalidDataException("Only a setup launcher can bind an application package.");
             ValidateDownload(app);
         }
+        if (value.OfflineApplicationBundle && (value.ApplicationPackage is null || value.ApplicationFileUpdate is not null))
+            throw new InvalidDataException("An offline setup must bind its full application package.");
         if (value.ApplicationFileUpdate is { } files)
         {
             if (value.ApplicationPackage is null)
@@ -91,9 +93,16 @@ internal sealed class BootstrapEngine
     internal string PackageRoot(string sharedRoot, BootstrapPackage package) => UnderRoot(sharedRoot,
         $"packages/{descriptor.PublisherKeySha256.ToLowerInvariant()[..16]}/{package.Sha256.ToLowerInvariant()}");
 
-    internal async Task<ProcessStartInfo> PrepareAsync(string sharedRoot, string stagingRoot, CancellationToken token, string? applicationDirectory = null, bool allowProvision = true)
+    internal async Task<ProcessStartInfo> PrepareAsync(string sharedRoot, string stagingRoot, CancellationToken token, string? applicationDirectory = null, bool allowProvision = true, string? installerLauncherPath = null)
     {
         NoLinks(sharedRoot); NoLinks(stagingRoot);
+        var localSetup = await VerifyLocalSetupAsync(installerLauncherPath, token);
+        var localBootstrap = localSetup is null ? null : UnderRoot(Path.GetDirectoryName(localSetup)!, "bootstrap");
+        if (localBootstrap is not null)
+        {
+            NoLinks(localBootstrap);
+            if (!Path.Exists(localBootstrap)) localBootstrap = null;
+        }
         allowProvision = allowProvision && descriptor.HostKind == "installer" && !descriptor.OfflineOnly;
         if (allowProvision) Directory.CreateDirectory(stagingRoot);
         progress.Report(new("Checking shared files", "Checking the required shared versions."));
@@ -122,7 +131,7 @@ internal sealed class BootstrapEngine
                 await VerifyPackageAsync(Path.Combine(root, "package.hinst"), Path.Combine(root, "files"), package,
                     extract: false, token, verifyContents: false);
             else if (!current)
-                await PreparePackageAsync(package, root, stagingRoot, allowProvision, token);
+                await PreparePackageAsync(package, root, stagingRoot, allowProvision, token, localBootstrap);
             roots.Add(package.Id, Path.Combine(root, "files"));
         }
         if (OperatingSystem.IsWindows() && revision is not null && !current && BootstrapMachineStore.CanWriteRevision())
@@ -130,7 +139,7 @@ internal sealed class BootstrapEngine
                 path => BootstrapMachineStore.ValidateRevisionReceipt(sharedRoot, path),
                 path => ValidateProtectedPackage(sharedRoot, path), token);
         string? application = null;
-        if (descriptor.ApplicationPackage is { } payload && !descriptor.ApplicationPackageRequiresAuthentication && descriptor.ApplicationFileUpdate is null)
+        if (localSetup is null && descriptor.ApplicationPackage is { } payload && !descriptor.ApplicationPackageRequiresAuthentication && descriptor.ApplicationFileUpdate is null)
         {
             application = Path.Combine(stagingRoot, "application.hinst");
             await DownloadAsync(payload, application, token);
@@ -157,10 +166,16 @@ internal sealed class BootstrapEngine
             }
         }
         else start.FileName = host;
-        foreach (var argument in descriptor.HostArguments) start.ArgumentList.Add(argument);
+        foreach (var argument in descriptor.HostArguments)
+            if (localSetup is null || argument != "--website-file-selection") start.ArgumentList.Add(argument);
         if (descriptor.ApplicationPackage is { } app)
         {
-            if (application is not null) start.ArgumentList.Add(application);
+            if (localSetup is not null)
+            {
+                start.ArgumentList.Add("--website-local-package");
+                start.ArgumentList.Add(localSetup);
+            }
+            else if (application is not null) start.ArgumentList.Add(application);
             else
             {
                 start.ArgumentList.Add("--remote-package"); start.ArgumentList.Add(app.Url);
@@ -178,6 +193,19 @@ internal sealed class BootstrapEngine
         return start;
     }
 
+    private async Task<string?> VerifyLocalSetupAsync(string? launcherPath, CancellationToken token)
+    {
+        if (!descriptor.OfflineApplicationBundle) return null;
+        var package = descriptor.ApplicationPackage!;
+        if (launcherPath is null) throw new InvalidDataException("The offline setup launcher path is missing.");
+        var path = UnderRoot(Path.GetDirectoryName(Path.GetFullPath(launcherPath))!, WebBootstrapBindings.LocalApplicationPackagePath);
+
+        progress.Report(new("Checking application files", "Verifying the signed setup archive."));
+        if (!await FileMatchesAsync(path, package.Size, package.Sha256, token))
+            throw new CryptographicException("The bundled application files are missing or changed. Extract the complete setup archive again.");
+        return path;
+    }
+
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private static void ValidateProtectedPackage(string root, string path)
     {
@@ -185,7 +213,8 @@ internal sealed class BootstrapEngine
         BootstrapMachineStore.ValidateTree(path, requireProtectedDacl: false);
     }
 
-    private async Task PreparePackageAsync(BootstrapPackage package, string root, string stagingRoot, bool allowProvision, CancellationToken token)
+    private async Task PreparePackageAsync(BootstrapPackage package, string root, string stagingRoot, bool allowProvision, CancellationToken token,
+        string? localBootstrap)
     {
         progress.Report(new("Checking shared files", package.Id));
         var archivePath = Path.Combine(root, "package.hinst");
@@ -214,7 +243,8 @@ internal sealed class BootstrapEngine
             var work = UnderRoot(stagingRoot, package.Id.ToLowerInvariant());
             Directory.CreateDirectory(work);
             var download = Path.Combine(work, "package.hinst");
-            await DownloadAsync(package, download, token);
+            if (localBootstrap is null) await DownloadAsync(package, download, token);
+            else await CopyLocalBootstrapAsync(package, localBootstrap, download, token);
             var files = Path.Combine(work, "files");
             await VerifyPackageAsync(download, files, package, extract: true, token);
             // Publish verified files under the per-package lease. Active versions are never overwritten.
@@ -222,6 +252,21 @@ internal sealed class BootstrapEngine
             File.Move(download, archivePath);
         }
         if (!File.Exists(complete)) await File.WriteAllTextAsync(complete, "{\"formatVersion\":1}", token);
+    }
+
+    private static async Task CopyLocalBootstrapAsync(BootstrapPackage package, string localRoot, string destination, CancellationToken token)
+    {
+        var path = UnderRoot(localRoot, package.Sha256.ToLowerInvariant() + ".hinst");
+        NoLinks(path);
+        if (!File.Exists(path)) throw new InvalidDataException("A bundled setup runtime is missing. Extract the complete setup archive again.");
+        await using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            if (input.Length != package.Size) throw new InvalidDataException("A bundled setup runtime has the wrong size.");
+            await using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, FileOptions.Asynchronous);
+            await input.CopyToAsync(output, token);
+        }
+        if (!await FileMatchesAsync(destination, package.Size, package.Sha256, token))
+            throw new CryptographicException("A bundled setup runtime does not match the signed digest.");
     }
 
     // Scope selects a cache location. Only a matching administrator-owned revision
@@ -386,9 +431,9 @@ internal sealed class BootstrapEngine
     internal static async Task<bool> FileMatchesAsync(string path, long length, string hash, CancellationToken token)
     {
         NoLinks(path);
-        if (!File.Exists(path) || new FileInfo(path).Length != length) return false;
+        if (!File.Exists(path)) return false;
         await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return Convert.ToHexString(await SHA256.HashDataAsync(input, token)).Equals(hash, StringComparison.OrdinalIgnoreCase);
+        return input.Length == length && Convert.ToHexString(await SHA256.HashDataAsync(input, token)).Equals(hash, StringComparison.OrdinalIgnoreCase);
     }
     internal static async Task<FileStream> AcquirePackageAsync(string path, CancellationToken token)
     {

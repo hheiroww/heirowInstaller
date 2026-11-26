@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Text.Json;
 using HeirowInstaller.Core;
 using HeirowUpdater.SocketJack;
@@ -32,9 +33,9 @@ internal static class NativeUpdatePrompt
     }
 
     internal static async Task<ApplicationUpdateChoice> ShowAsync(ApplicationUpdatePrompt context, string? acceptanceChoice, string? capturePath,
-        string? reportPath, CancellationToken cancellationToken, string configurationPath, bool authentication = false, bool failure = false)
+        string? reportPath, CancellationToken cancellationToken, string configurationPath, bool failure = false, bool suppressDownloadRecovery = false)
         => (await ShowInChildAsync(new() { Context = context, AcceptanceChoice = acceptanceChoice, CapturePath = capturePath, ReportPath = reportPath,
-            ConfigurationPath = Path.GetFullPath(configurationPath), Authentication = authentication, Failure = failure }, cancellationToken)).Choice;
+            ConfigurationPath = Path.GetFullPath(configurationPath), Failure = failure, SuppressDownloadRecovery = suppressDownloadRecovery }, cancellationToken)).Choice;
 
     internal static async Task<RunningApplicationsChoice> ShowRunningApplicationsAsync(RunningApplicationsRequest request,
         UpdateCompanionConfiguration profile, string? configurationPath, CancellationToken token)
@@ -123,7 +124,7 @@ internal static class NativeUpdatePrompt
         if (request.Context.Application.ProductId != configuration.ProductId || !request.Context.Application.InstallDirectory.Equals(configuration.InstallDirectory, StringComparison.OrdinalIgnoreCase) ||
             !(PackageSafety.HashEquals(request.Context.Application.PublisherKeySha256, configuration.PublisherKeySha256) ||
                 request.Context.Application.PublisherKeySha256.Length == 0 && configuration.PublisherKeySha256.Length == 0)) throw new InvalidDataException("Native prompt application identity mismatch.");
-        if (args.Get("config") is null && (request.RunningApplications is null || request.Authentication || request.Failure))
+        if (args.Get("config") is null && (request.RunningApplications is null || request.Failure))
             throw new InvalidDataException("Maintenance requests can only display the installed application's close-apps prompt.");
         if (!configuration.Isolated && (request.AcceptanceChoice is not null || request.CapturePath is not null || request.ReportPath is not null))
             throw new InvalidDataException("Automated native prompt controls require an isolated installation.");
@@ -140,13 +141,13 @@ internal static class NativeUpdatePrompt
             result = new() { RunningChoice = await RunRunningApplicationsInProcessAsync(running with { ProductName = configuration.Name },
                 request.AcceptanceChoice, request.CapturePath, request.ReportPath, promptCancellation.Token) };
         }
-        else result = new() { Choice = await RunInProcessAsync(context, request.AcceptanceChoice, request.CapturePath, request.ReportPath, promptCancellation.Token, request.Authentication, request.Failure) };
+        else result = new() { Choice = await RunInProcessAsync(context, request.AcceptanceChoice, request.CapturePath, request.ReportPath, promptCancellation.Token, request.Failure, request.SuppressDownloadRecovery) };
         await UpdaterSchedule.WriteJsonAsync(requestPath + ".result.json", result, CancellationToken.None);
         return 0;
     }
 
     private static Task<ApplicationUpdateChoice> RunInProcessAsync(ApplicationUpdatePrompt context, string? acceptanceChoice, string? capturePath,
-        string? reportPath, CancellationToken cancellationToken, bool authentication, bool failure)
+        string? reportPath, CancellationToken cancellationToken, bool failure, bool suppressDownloadRecovery)
     {
         if (acceptanceChoice is not null && acceptanceChoice is not ("postpone" or "update")) throw new ArgumentException("Prompt acceptance choice must be postpone or update.");
         var completion = new TaskCompletionSource<ApplicationUpdateChoice>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -155,7 +156,7 @@ internal static class NativeUpdatePrompt
             try
             {
                 DesktopPlatform.Initialize();
-                using var game = new PromptGame(context, acceptanceChoice, capturePath, authentication, failure);
+                using var game = new PromptGame(context, acceptanceChoice, capturePath, failure, suppressDownloadRecovery);
                 using var registration = cancellationToken.Register(() => game.Enqueue(game.Exit));
                 game.Run();
                 if (reportPath is not null)
@@ -224,8 +225,8 @@ internal static class NativeUpdatePrompt
         public string? AcceptanceChoice { get; set; }
         public string? CapturePath { get; set; }
         public string? ReportPath { get; set; }
-        public bool Authentication { get; set; }
         public bool Failure { get; set; }
+        public bool SuppressDownloadRecovery { get; set; }
         public string? CancelEvent { get; set; }
     }
     private static string PromptCancellationEvent(string requestPath) => @"Local\heirowUpdater.prompt.cancel." +
@@ -237,23 +238,19 @@ internal static class NativeUpdatePrompt
         public ApplicationUpdateChoice Choice { get; set; } = ApplicationUpdateChoice.Postpone;
         public RunningApplicationsChoice? RunningChoice { get; set; }
     }
-    internal static async Task<bool> SignInAsync(HeirowInstaller.Core.UpdateCompanionConfiguration profile, string configurationPath, CancellationToken token)
+    internal static string? SessionFailureMessage(HttpStatusCode? status) => status switch
     {
-        var context = new ApplicationUpdatePrompt(profile, new() { CurrentVersion = profile.CurrentVersion, Feed = new() { Version = profile.CurrentVersion,
-            ReleaseNotes = OperatingSystem.IsWindows() && ApplicationCommands.UsesInstallerAccount(profile)
-                ? "Approve sign-in in your browser. heirowInstaller and heirowUpdater will share the sign-in saved for your Windows user."
-                : "Approve sign-in in your browser to access this application's updates. Your session stays in memory; no account credentials are saved in the app's update profile." } }, true);
-        return await ShowAsync(context, null, null, null, token, configurationPath, authentication: true) == ApplicationUpdateChoice.UpdateNow;
-    }
+        HttpStatusCode.Unauthorized => "Open the application and check for updates again after your SocketJack session has been restored.",
+        HttpStatusCode.Forbidden => "Your SocketJack account does not currently have access to this application's updates.",
+        _ => null
+    };
+
     internal static Task<ApplicationUpdateChoice> ShowFailureAsync(HeirowInstaller.Core.UpdateCompanionConfiguration profile, string configurationPath, Exception error, CancellationToken token)
     {
-        var message = error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Forbidden }
-            ? "Your SocketJack account does not currently have access to this application's updates. Check the publisher's access requirements, then try again from the app."
-            : error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized }
-                ? "SocketJack could not authorize this update request. Sign in from the app and check for updates again."
-                : "The automatic update could not finish. Use the SocketJack download page to install the latest version.";
+        var sessionMessage = SessionFailureMessage((error as HttpRequestException)?.StatusCode);
+        var message = sessionMessage ?? "The automatic update could not finish. Use the SocketJack download page to install the latest version.";
         var context = new ApplicationUpdatePrompt(profile, new() { CurrentVersion = profile.CurrentVersion, Feed = new() { Version = profile.CurrentVersion, ReleaseNotes = message } }, true);
-        return ShowAsync(context, null, null, null, token, configurationPath, failure: true);
+        return ShowAsync(context, null, null, null, token, configurationPath, failure: true, suppressDownloadRecovery: sessionMessage is not null);
     }
 
     private sealed class PromptGame : Game
@@ -262,7 +259,7 @@ internal static class NativeUpdatePrompt
         private readonly ConcurrentQueue<Action> actions = new();
         private readonly ApplicationUpdatePrompt context;
         private readonly string? acceptanceChoice, capturePath;
-        private readonly bool authentication, failure;
+        private readonly bool failure;
         private readonly NativeDownloadRecovery? recovery;
         private bool recovering;
         private SceneManager manager = null!;
@@ -279,11 +276,11 @@ internal static class NativeUpdatePrompt
             (recovery?.Page is null ? "" : "\n" + (recovery.Notice.Length == 0
                 ? "Opening this app's SocketJack download page…" : recovery.Notice) + "\n" + recovery.Page.AbsoluteUri);
 
-        internal PromptGame(ApplicationUpdatePrompt context, string? acceptanceChoice, string? capturePath, bool authentication, bool failure)
+        internal PromptGame(ApplicationUpdatePrompt context, string? acceptanceChoice, string? capturePath, bool failure, bool suppressDownloadRecovery)
         {
             this.context = context; this.acceptanceChoice = acceptanceChoice; this.capturePath = capturePath;
-            this.authentication = authentication; this.failure = failure;
-            recovery = failure ? new NativeDownloadRecovery(context.Application) : null;
+            this.failure = failure;
+            recovery = failure && !suppressDownloadRecovery ? new NativeDownloadRecovery(context.Application) : null;
             Window.Title = context.Application.Name + " update | heirowUpdater";
             Window.AllowUserResizing = false; IsMouseVisible = true; IsFixedTimeStep = true; TargetElapsedTime = TimeSpan.FromSeconds(1d / 60);
             InactiveSleepTime = TimeSpan.FromMilliseconds(40); Content.RootDirectory = "Content";
@@ -310,7 +307,7 @@ internal static class NativeUpdatePrompt
             Services.AddService(typeof(SpriteBatch), batch); Services.AddService(typeof(GraphicsDevice), GraphicsDevice); Services.AddService(typeof(ContentContainer), resources);
             var quality = GraphicsQuality.ForDevice(GraphicsDevice); quality.AntiAliasingSamples = 16; quality.Filtering = TextureFiltering.Anisotropic16x; quality.PpiPerfectText = true;
             manager = new SceneManager(this, 60) { MinimumViewportSize = new Point(780, 510) };
-            scene = new PromptScene(manager, this, context, authentication, failure); manager.AddScene("update", scene); manager.ActiveScene = scene;
+            scene = new PromptScene(manager, this, context, failure); manager.AddScene("update", scene); manager.ActiveScene = scene;
         }
         protected override void Update(GameTime time)
         {
@@ -350,7 +347,7 @@ internal static class NativeUpdatePrompt
         internal Button Button(string key) => buttons[key];
         private readonly Textbox notes;
         internal void UpdateMessage(string message) => notes.Text = message;
-        internal PromptScene(SceneManager manager, PromptGame game, ApplicationUpdatePrompt context, bool authentication, bool failure) : base(manager)
+        internal PromptScene(SceneManager manager, PromptGame game, ApplicationUpdatePrompt context, bool failure) : base(manager)
         {
             BackgroundColor = Background; EnableDesignTimeControls = false; isCursorVisible = false;
             root = new RectangleElement(this) { Position = Vector2.Zero, Size = new(780, 510), BackgroundColor = Background, Padding = new Thickness(0) }; AddElement(root);
@@ -359,17 +356,17 @@ internal static class NativeUpdatePrompt
             Label("heirowUpdater", 85, 27, 400, 27, 14, TextColor, true);
             Label("SOCKETJACK  ·  APPLICATION UPDATES", 86, 57, 590, 20, 8, Muted, true);
             Box(28, 91, 724, 1, Border);
-            Label(failure ? "Updates need your attention." : authentication ? "Sign in to get updates." : "A new release is ready.", 30, 112, 710, 43, 25, TextColor, true);
+            Label(failure ? "Updates need your attention." : "A new release is ready.", 30, 112, 710, 43, 25, TextColor, true);
             Label(context.Application.Name, 32, 166, 710, 34, 17, Lime, true);
-            Label(failure ? "Your installed application is unchanged." : authentication ? "Your SocketJack session needs approval." : context.Application.CurrentVersion + "   →   " + context.Update.Feed.Version, 33, 207, 710, 27, 11, Muted);
+            Label(failure ? "Your installed application is unchanged." : context.Application.CurrentVersion + "   →   " + context.Update.Feed.Version, 33, 207, 710, 27, 11, Muted);
             Box(30, 252, 720, 121, Surface);
             notes = Add(new Textbox(this) { Position = new(45, 268), Size = new(690, 89), Font = Font(10.5f), ForegroundColor = TextColor,
                 BackgroundColor = Surface, BorderThickness = 0, IsReadOnly = true, TextPadding = Vector2.Zero, AcceptsReturn = true, WrapText = true,
                 Text = game.Message, Padding = new Thickness(0) });
-            Label(failure ? "You can check again from the app when you are ready." : authentication ? "Publisher access rules still apply after sign-in." : context.ApplicationRunning ? "If apps are open, you can close them or cancel before installation." : "The app is closed. Your download is verified before installation.", 32, 387, 710, 26, 9.5f, Muted);
-            if (!failure) Action("postpone", authentication ? "Later" : "Postpone 24 hours", 31, 435, 218, Muted, false, () => game.Choose(ApplicationUpdateChoice.Postpone));
+            Label(failure ? "You can check again from the app when you are ready." : context.ApplicationRunning ? "If apps are open, you can close them or cancel before installation." : "The app is closed. Your download is verified before installation.", 32, 387, 710, 26, 9.5f, Muted);
+            if (!failure) Action("postpone", "Postpone 24 hours", 31, 435, 218, Muted, false, () => game.Choose(ApplicationUpdateChoice.Postpone));
             else if (game.DownloadPage is not null) Action("postpone", "Open download page  ↗", 31, 435, 270, Muted, false, game.OpenDownloadPage);
-            Action("update", failure ? "Close" : authentication ? "Sign in  ↗" : "Update now  →", 514, 435, 235, failure ? Orange : Lime, true, () => game.Choose(ApplicationUpdateChoice.UpdateNow));
+            Action("update", failure ? "Close" : "Update now  →", 514, 435, 235, failure ? Orange : Lime, true, () => game.Choose(ApplicationUpdateChoice.UpdateNow));
         }
         private static string Font(float points, bool bold = false) => ContentContainer.SystemFontName("Segoe UI", bold ? 600 : 400, points);
         private T Add<T>(T element) where T : SceneElement { element.Margin = new Thickness((int)element.Position.X, (int)element.Position.Y, 0, 0); root.Children.Add(element); return element; }

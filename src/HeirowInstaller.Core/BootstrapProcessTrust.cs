@@ -19,6 +19,15 @@ public static class BootstrapProcessTrust
     /// <summary>Verifies the native parent and returns only assertions from its signed descriptor.</summary>
     public static BoundSetup? ReadBoundSetup(string productId, string version, string packageSha256, string publisherPin,
         string? remoteUrl, long remoteSize, int? primaryDesktopPid = null)
+        => ReadBoundSetupCore(productId, version, packageSha256, publisherPin, remoteUrl, remoteSize, primaryDesktopPid, localPackage: null);
+
+    /// <summary>Also binds a locally delivered package to its signed native launcher.</summary>
+    public static BoundSetup? ReadBoundLocalSetup(string productId, string version, string packageSha256, string publisherPin,
+        string localPackage, int? primaryDesktopPid = null)
+        => ReadBoundSetupCore(productId, version, packageSha256, publisherPin, remoteUrl: null, remoteSize: 0, primaryDesktopPid, localPackage);
+
+    private static BoundSetup? ReadBoundSetupCore(string productId, string version, string packageSha256, string publisherPin,
+        string? remoteUrl, long remoteSize, int? primaryDesktopPid, string? localPackage)
     {
         if (!OperatingSystem.IsWindows() ||
             !PackageSafety.HashPattern().IsMatch(publisherPin ?? "") || !PackageSafety.HashPattern().IsMatch(packageSha256 ?? "") ||
@@ -49,6 +58,17 @@ public static class BootstrapProcessTrust
                 package.GetProperty("sha256").GetString() is not { } digest || !PackageSafety.HashEquals(digest, packageSha256!) ||
                 remoteUrl is not null && (package.GetProperty("url").GetString() != remoteUrl || package.GetProperty("size").GetInt64() != remoteSize))
                 return null;
+            if (localPackage is not null)
+            {
+                if (!descriptor.TryGetProperty("offlineApplicationBundle", out var offline) || offline.ValueKind != JsonValueKind.True)
+                    return null;
+                var adjacentPackage = PackageSafety.UnderRoot(Path.GetDirectoryName(coordinator.Image)!, WebBootstrapBindings.LocalApplicationPackagePath);
+                if (!Path.GetFullPath(localPackage).Equals(adjacentPackage, InstallerPlatform.PathComparison))
+                    return null;
+                PackageSafety.EnsureNoReparsePoints(adjacentPackage);
+                if (new FileInfo(adjacentPackage).Length != package.GetProperty("size").GetInt64())
+                    return null;
+            }
             var name = descriptor.GetProperty("name").GetString();
             var scope = descriptor.TryGetProperty("scope", out var authoredScope) ? authoredScope.GetString() : "user";
             if (string.IsNullOrWhiteSpace(name) || name.Length > 160 || name.Any(char.IsControl) || scope is not ("user" or "machine"))

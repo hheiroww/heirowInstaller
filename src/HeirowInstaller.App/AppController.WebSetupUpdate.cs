@@ -37,7 +37,6 @@ internal sealed partial class AppController
             StatusDetail = $"Checking the files you already have for {product.Name} {product.Version}.";
             Notify();
         });
-        await RestoreAccountAsync(renew: false, token);
         var offer = new UpdateFeed
         {
             ProductId = product.Id,

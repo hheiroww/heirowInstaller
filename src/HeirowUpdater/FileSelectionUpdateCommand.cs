@@ -50,8 +50,7 @@ internal static partial class UpdaterProgram
             (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, configuration, profilePath, cancellation);
         var target = UpdaterTarget.FromInstalled(installed, configuration.StateRoot);
         await using var progress = new IncrementalProgress(statusPath);
-        using var sessions = await TargetUpdateSessions.CreateAsync([target], new ScheduleConfiguration(), configuration.Isolated,
-            interactive: !args.Has("no-prompt") && !InstallerEngine.IsElevated, progress, token);
+        using var sessions = await TargetUpdateSessions.CreateAsync([target], new ScheduleConfiguration(), configuration.Isolated, token);
         var result = await owner.ApplyUserAsync(options,
             () => sessions[target].RunAsync(client => client.ApplyPreparedFilesAsync(target, root, options, progress, token, runningTarget), token),
             async () =>

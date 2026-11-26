@@ -121,6 +121,16 @@ internal sealed partial class AcceptanceSuite
         True(!failureStatus.Contains("fixture response details", StringComparison.Ordinal));
         Equal(0, browserCalls);
         Volatile.Write(ref rejectedStatus, 401);
+        options.AuthenticateAsync = null;
+        HttpStatusCode? manualFailure = null;
+        options.ManualStatusChangedAsync = (status, _) =>
+        {
+            if (status.Status == "error") manualFailure = status.FailureHttpStatus;
+            return Task.CompletedTask;
+        };
+        await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, null, null, true, options, UnexpectedUpdate));
+        Equal<HttpStatusCode?>(HttpStatusCode.Unauthorized, manualFailure);
+        options.ManualStatusChangedAsync = null;
         options.AuthenticateAsync = (_, _) => { browserCalls++; return Task.FromResult<string?>("fixture-browser-after-consent"); };
         await Throws<HttpRequestException>(() => ApplicationUpdater.RunAsync(profile, null, null, true, options, UnexpectedUpdate));
         Equal(1, browserCalls);

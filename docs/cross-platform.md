@@ -116,8 +116,9 @@ Running native application images must exit before maintenance; portable prompts
 require manual closure. Windows Restart Manager plugin/resource discovery,
 automatic close/force-close controls, live credential relay to an already running
 observer, and Task Scheduler remain Windows integrations. Close the existing
-portable updater before changing its application login. Browser approval works
-for the current session; 30-day DPAPI remembered accounts remain Windows-only.
+portable updater before changing its application login. The portable companion
+uses the session supplied by the application. DPAPI remembered publisher accounts
+are available on Windows.
 
 MSI, imported EXE backends, registry/environment/service modules, prerequisites,
 native Windows migration, component installation roots, and affected plugin

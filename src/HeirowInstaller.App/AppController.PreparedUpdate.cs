@@ -41,7 +41,7 @@ internal sealed partial class AppController
             var path = PackageSafety.UnderRoot(directory, "dependencies/" + dependency.Sha256.ToLowerInvariant() + ".hinst");
             PackageSafety.EnsureNoReparsePoints(path);
             if (!File.Exists(path))
-                throw new InvalidDataException("A prepared dependency is missing. Download the update again from the application.");
+                throw new InvalidDataException("A bundled dependency is missing. Download and extract the complete setup or prepare the update again from the application.");
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StreamContent(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,

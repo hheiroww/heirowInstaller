@@ -2,6 +2,8 @@
 
 A bundled setup executable, or a desktop invocation bound to a package, opens a wizard for that application. The verified manifest supplies its name, version, publisher, description and optional payload artwork. It contains welcome, feature selection, destination, review, installation progress and completion steps. Other installed apps, build/publish tools, publisher sign-in and global update controls are not part of this flow.
 
+For protected website downloads, `scripts/Build-OfflineWebSetup.ps1` can bundle the signed setup, application archive and application dependencies into a ZIP. The website authorizes the download. Extract the complete ZIP and open `Setup.exe` to install from the verified application files beside it. Supply all signed bootstrap archives with `-BootstrapPackagePaths` to provision the installer runtime offline on a clean machine.
+
 Launching heirowInstaller without a package retains the authoring workspace. Opening a package from that workspace retains its existing navigation.
 
 The destination step offers only scopes supported by the selected package components.

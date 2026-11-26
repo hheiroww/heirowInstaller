@@ -10,6 +10,7 @@ public sealed record WebBootstrapBinding(byte[] DescriptorBytes, string Publishe
 /// <summary>A fixed native launcher followed by an RSA-signed product descriptor. Final Windows signing remains separate.</summary>
 public static class WebBootstrapBindings
 {
+    internal const string LocalApplicationPackagePath = "offline/application.hinst";
     public const int MaximumDescriptorBytes = 1024 * 1024;
     public const int MaximumEnvelopeBytes = 2 * 1024 * 1024;
     private static readonly byte[] Marker = Encoding.ASCII.GetBytes("HINSTBOOTSTRAP01");

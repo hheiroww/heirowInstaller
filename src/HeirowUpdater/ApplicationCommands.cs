@@ -75,25 +75,8 @@ internal static class ApplicationCommands
                 using var remembered = await account.RestoreAsync(cancellationToken: cancellation);
                 return remembered is null ? null : new ApplicationSessionSnapshot(bearerToken: remembered.AccessToken);
             },
-            RunningApplicationsPrompt = (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, configuration, configurationPath, cancellation),
-            AuthenticateAsync = async (profile, cancellation) =>
-            {
-                await manualFeedback.SuspendAsync();
-                if (!await NativeUpdatePrompt.SignInAsync(profile, configurationPath, cancellation)) return null;
-                var rememberedAccount = UsesInstallerAccount(profile) ? account : null;
-                var revision = rememberedAccount is null ? null : await rememberedAccount.GetRevisionAsync(cancellation);
-                using var approval = await PublisherSignInClient.BeginAsync(new Uri(profile.CredentialOrigin), cancellation, profile.Isolated, profile.AuthApplication!);
-                Process.Start(new ProcessStartInfo(approval.BrowserUrl.AbsoluteUri) { UseShellExecute = true });
-                using var session = await approval.CompleteAsync(cancellation);
-                if (rememberedAccount is not null && !await rememberedAccount.RememberAsync(session, revision, cancellation))
-                {
-                    using var latest = await rememberedAccount.RestoreAsync(cancellationToken: cancellation);
-                    await manualFeedback.ResumeCheckingAsync(cancellation);
-                    return latest?.AccessToken;
-                }
-                await manualFeedback.ResumeCheckingAsync(cancellation);
-                return session.AccessToken;
-            } };
+            RunningApplicationsPrompt = (request, cancellation) => NativeUpdatePrompt.ShowRunningApplicationsAsync(request, configuration, configurationPath, cancellation)
+        };
         try
         {
             using var result = await ApplicationUpdater.RunAsync(configurationPath, pid, ticks, manual, options,
@@ -143,7 +126,7 @@ internal static class ApplicationCommands
         }
     }
 
-    internal static bool UsesInstallerAccount(UpdateCompanionConfiguration configuration) =>
+    private static bool UsesInstallerAccount(UpdateCompanionConfiguration configuration) =>
         !configuration.Isolated && configuration.ProductId.Equals("heirowinstaller", StringComparison.OrdinalIgnoreCase) &&
         configuration.AuthApplication == "heirowinstaller" && new Uri(configuration.CredentialOrigin) == AccountOrigin &&
         new Uri(configuration.FeedUrl).GetLeftPart(UriPartial.Authority) == AccountOrigin.GetLeftPart(UriPartial.Authority);
@@ -170,8 +153,7 @@ internal static class ApplicationCommands
         {
             var target = UpdaterTarget.FromInstalled(product, args.Get("state-root"));
             var progress = new MaintenanceProgress();
-            using var sessions = await TargetUpdateSessions.CreateAsync([target], new ScheduleConfiguration(), product.Isolated,
-                interactive: !args.Has("silent") && !args.Has("no-prompt"), progress, token);
+            using var sessions = await TargetUpdateSessions.CreateAsync([target], new ScheduleConfiguration(), product.Isolated, token);
             result = await sessions[target].RunAsync(client => client.RepairAsync(target, options, progress, token), token);
         }
         else result = command == "repair" ? await new InstallerEngine().RepairAsync(id, options, cancellationToken: token) : await new InstallerEngine().UninstallAsync(id, options, cancellationToken: token);

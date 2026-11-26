@@ -21,7 +21,7 @@ internal sealed partial class AppController : IDisposable
     private PackageReader? verifiedPlanningPackage;
     internal bool SigningIn { get; private set; }
     internal bool PublisherSignedIn => publisherSession is { } session && session.ExpiresUtc > DateTimeOffset.UtcNow;
-    internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username}" : "Sign in once to publish and check protected updates.";
+    internal string PublisherAccount => PublisherSignedIn ? $"Signed in as {publisherSession!.Username}" : "Sign in to publish releases to SocketJack.";
     internal DesktopSettings Settings { get; private set; } = new();
     internal DesktopPage Page { get; set; } = DesktopPage.Install;
     internal SetupStage Stage { get; set; }
@@ -307,7 +307,7 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = arguments.RequireSignature,
         LegacyArguments = arguments.LegacyArguments,
         LogPath = arguments.LogPath,
-        SharedPackageTransport = IsPreparedUpdate ? null : CreateAuthenticatedDownloadTransport(),
+        SharedPackageTransport = IsPreparedUpdate || arguments.WebsiteLocalPackage ? null : CreateDownloadTransport(),
         RunningApplicationsPrompt = PromptRunningApplicationsAsync
     };
 
@@ -339,13 +339,11 @@ internal sealed partial class AppController : IDisposable
             {
                 using var reader = PackageReader.Open(packagePath);
                 arguments.ValidatePackageIdentity(reader);
-                if (IsPreparedUpdate)
-                {
-                    BindPreparedUpdate(reader, options);
+                if (IsPreparedUpdate) BindPreparedUpdate(reader, options);
+                if (IsPreparedUpdate || arguments.WebsiteLocalPackage)
                     options.SharedPackageTransport = new PreparedDependencyTransport(reader.Manifest, packagePath);
-                }
                 var plan = engine.Plan(reader, options);
-                if (IsWizard && !IsPreparedUpdate && reader.Manifest.SharedPackages is { Count: > 0 })
+                if (IsWizard && !IsPreparedUpdate && !arguments.WebsiteLocalPackage && reader.Manifest.SharedPackages is { Count: > 0 })
                     await RestoreAccountAsync(renew: false, Cancellation!.Token);
                 await WaitForRequestedProcessAsync(RunningApplicationTarget.FromPlan(plan, IsPreparedUpdate ? "update" : "install", options.Isolated), Cancellation!.Token);
                 if (useWorker)
@@ -405,7 +403,8 @@ internal sealed partial class AppController : IDisposable
             var result = await Task.Run(async () =>
             {
                 await WaitForProductDependencyAsync(product, "repair", Cancellation!.Token);
-                return await WithDownloadAccountAsync(() => engine.RepairAsync(product.Id, OptionsFor(product, "repair"), Reporter(), Cancellation.Token), Cancellation.Token, autoApprove: false);
+                await RestoreAccountAsync(renew: false, Cancellation.Token);
+                return await engine.RepairAsync(product.Id, OptionsFor(product, "repair"), Reporter(), Cancellation.Token);
             });
             await RefreshInstalledAsync();
             await game.OnUiAsync(() => { LastReceiptPath = result.ReceiptPath; if (IsMaintenanceWizard) { LastInstallation = result; Stage = SetupStage.Complete; Progress = 1; } End("Repair complete", $"Verified and restored {name}."); CloseCompletedChild(result.RebootRequired); });
@@ -453,7 +452,7 @@ internal sealed partial class AppController : IDisposable
         RequireSignature = product.PublisherKeySha256 is not null,
         LogPath = arguments.LogPath,
         LegacyArguments = arguments.LegacyArguments,
-        SharedPackageTransport = CreateAuthenticatedDownloadTransport(),
+        SharedPackageTransport = CreateDownloadTransport(),
         RunningApplicationsPrompt = (request, token) => PromptRunningApplicationsAsync(operation is null ? request : request with { Operation = operation }, token)
     };
 
@@ -474,6 +473,7 @@ internal sealed partial class AppController : IDisposable
             var result = await Task.Run(async () =>
             {
                 await WaitForProductDependencyAsync(product, operation, Cancellation!.Token);
+                if (operation == "repair") await RestoreAccountAsync(renew: false, Cancellation.Token);
                 using var package = PackageReader.Open(product.PackagePath);
                 package.VerifySignature(product.PublisherKeySha256, product.PublisherKeySha256 is not null);
                 var options = OptionsFor(product);
@@ -483,7 +483,7 @@ internal sealed partial class AppController : IDisposable
                     options.AllowDowngrade = true;
                     var source = FileUpdateSource.Read(product.PackagePath, product.PublisherKeySha256!);
                     using var files = new FileUpdateClient(allowLoopback: product.Isolated, transport: options.SharedPackageTransport);
-                    using var prepared = await WithDownloadAccountAsync(() => files.PrepareAsync(source.ToFeed(), product, FileUpdateStagingRoot(), options, Reporter(), Cancellation.Token), Cancellation.Token, autoApprove: false);
+                    using var prepared = await files.PrepareAsync(source.ToFeed(), product, FileUpdateStagingRoot(), options, Reporter(), Cancellation.Token);
                     using var metadata = PackageReader.OpenMetadata(prepared.MetadataPath);
                     return await ElevatedInstallWorker.InstallAsync(prepared.MetadataPath, engine.Plan(metadata, options), options,
                         PromptRunningApplicationsAsync, Reporter(), arguments.WizardSmokeDirectory, Cancellation.Token, "apply-files", prepared.Root);
@@ -509,13 +509,14 @@ internal sealed partial class AppController : IDisposable
         {
             var token = Cancellation!.Token;
             var reporter = Reporter();
-            var result = await Task.Run(() => WithDownloadAccountAsync(async () =>
+            await RestoreAccountAsync(renew: false, token);
+            var result = await Task.Run(async () =>
             {
                 using var client = CreateUpdateClient();
                 var target = UpdaterTarget.FromInstalled(product, arguments.StateRoot);
                 return target.UpdateProtocol == "hfiles1" ? await client.CheckFileSelectionAsync(product.UpdateUrl, product.Version, product.Id, token, reporter)
                     : await client.CheckAsync(product.UpdateUrl, product.Version, product.Id, token, reporter);
-            }, token), token);
+            }, token);
             await game.OnUiAsync(() => { Update = result; End(result.Available ? $"Update available · {result.Feed.Version}" : "You're up to date", result.Available ? result.Feed.ReleaseNotes : $"{product.Name} {product.Version} is the latest published version."); });
         }
         catch (Exception error) { await ErrorAsync("Update check failed", error); }
@@ -535,6 +536,7 @@ internal sealed partial class AppController : IDisposable
                 await game.OnUiAsync(() => { Update = null; End(selectedResult.RebootRequired ? "Update installed · restart required" : "Update installed", $"{product.Name} {update.Feed.Version} is ready."); CloseCompletedChild(selectedResult.RebootRequired); });
                 return;
             }
+            await RestoreAccountAsync(renew: false, Cancellation!.Token);
             using var client = CreateUpdateClient();
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "heirowInstaller", "Downloads");
             var download = await client.DownloadAsync(update.Feed, directory, Reporter(), Cancellation!.Token);
@@ -657,7 +659,6 @@ internal sealed partial class AppController : IDisposable
             var start = new ProcessStartInfo(updater) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(updater)! };
             foreach (var item in command) start.ArgumentList.Add(item);
             start.ArgumentList.Add("--progress-json");
-            if (command.FirstOrDefault() is "check" or "update") start.ArgumentList.Add("--interactive");
             if (command.FirstOrDefault() == "update")
             {
                 start.ArgumentList.Add("--application-pid"); start.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -673,7 +674,6 @@ internal sealed partial class AppController : IDisposable
             var output = await standardOutput;
             var error = await standardError;
             token.ThrowIfCancellationRequested();
-            if (command.FirstOrDefault() is "check" or "update") await RestoreAccountAsync(renew: false, token);
             await RefreshInstalledAsync();
             await game.OnUiAsync(() =>
             {
@@ -715,11 +715,11 @@ internal sealed partial class AppController : IDisposable
         ? (null, publisherSession!.AccessToken)
         : (Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_COOKIE"), Environment.GetEnvironmentVariable("SOCKETJACK_DOWNLOAD_TOKEN"));
 
-    private SocketJackUpdateTransport CreateDownloadTransport()
+    private SocketJackUpdateTransport CreateDownloadTransport() => new(AccountOrigin, () =>
     {
         var (cookie, bearer) = DownloadCredentials();
-        return new(AccountOrigin, cookie, bearer);
-    }
+        return new ApplicationSessionSnapshot(sessionCookie: cookie, bearerToken: bearer);
+    });
 
     private UpdateClient CreateUpdateClient() => new(allowLoopback: arguments.SelfUpdateSmokeFeed is not null, transport: CreateDownloadTransport());
 

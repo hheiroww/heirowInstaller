@@ -41,6 +41,7 @@ public sealed class ApplicationLifecycleResult : IDisposable
     public bool ManualCheck { get; set; }
     public string? ManualRequestId { get; set; }
     public string? Message { get; set; }
+    internal HttpStatusCode? FailureHttpStatus { get; set; }
     public DateTimeOffset? PostponeUntil { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public ProcessStartInfo? Handoff { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public string? LifecycleStatePath { get; set; }
@@ -219,9 +220,11 @@ public static class ApplicationUpdater
             ManualCheck = manual, ManualRequestId = manual ? manualRequestId : null,
             Message = status == "error" ? "The update could not finish." : null
         };
-        async Task<ApplicationLifecycleResult> Status(string status, UpdateCheckResult? update = null, bool showManualFeedback = true)
+        async Task<ApplicationLifecycleResult> Status(string status, UpdateCheckResult? update = null, bool showManualFeedback = true, HttpStatusCode? failureHttpStatus = null)
         {
-            var result = Result(status, update); options.StatusChanged?.Invoke(result);
+            var result = Result(status, update);
+            result.FailureHttpStatus = failureHttpStatus;
+            options.StatusChanged?.Invoke(result);
             await WriteJsonAsync(options.StatusPath ?? Path.Combine(directory, "status.json"), result, cancellationToken);
             if (showManualFeedback && manual && !options.NoPrompt && options.ManualStatusChangedAsync is { } feedback)
                 await feedback(result, cancellationToken);
@@ -417,7 +420,7 @@ public static class ApplicationUpdater
                 }
                 catch (Exception error) when (error is not OperationCanceledException && manual)
                 {
-                    try { await Status("error"); manualErrorReported = true; } catch { } // Feedback failure must not replace the original check error.
+                    try { await Status("error", failureHttpStatus: (error as HttpRequestException)?.StatusCode); manualErrorReported = true; } catch { } // Feedback failure must not replace the original check error.
                     if (manualErrorReported && AppRunning()) { EndManualFeedback(); continue; }
                     throw;
                 }
@@ -483,7 +486,7 @@ public static class ApplicationUpdater
         }
         catch (Exception error) when (error is not OperationCanceledException && !manualErrorReported)
         {
-            try { await Status("error"); } catch { } // Preserve the underlying failure if the feedback host also fails.
+            try { await Status("error", failureHttpStatus: (error as HttpRequestException)?.StatusCode); } catch { } // Preserve the underlying failure if the feedback host also fails.
             throw;
         }
         finally
