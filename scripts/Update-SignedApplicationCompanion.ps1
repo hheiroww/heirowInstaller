@@ -77,18 +77,28 @@ try {
             $oldUpdater[0].sha256 -ieq $UpdaterSha256) { throw 'The baseline does not pin one different updater payload.' }
         $payload = Join-Path $output 'payload'
         $null = New-Item -ItemType Directory -Path $payload
+        $updaterSource = if ($oldUpdater[0]['source']) { $oldUpdater[0].source } else { $oldUpdater[0].path }
+        $updaterTarget = [IO.Path]::GetFullPath((Join-Path $payload $updaterSource))
         foreach ($file in $manifest.payload) {
-            if ($file.source -cne $file.path) { throw 'The baseline includes a payload source alias.' }
-            $target = [IO.Path]::GetFullPath((Join-Path $payload $file.path))
+            $sourcePath = if ($file['source']) { $file.source } else { $file.path }
+            $target = [IO.Path]::GetFullPath((Join-Path $payload $sourcePath))
             if (-not $target.StartsWith($payload + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'A baseline payload path escapes its staging directory.'
+                throw 'A baseline payload source escapes its staging directory.'
             }
             $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force
             if ($file.path -ceq 'heirowUpdater.exe') {
-                Copy-Item -LiteralPath $updaterFile.FullName -Destination $target
+                if (Test-Path -LiteralPath $target) { throw 'The updater source must belong to the updater alone.' }
+                [IO.File]::Copy($updaterFile.FullName, $target)
                 if ((Get-FileHash -LiteralPath $target).Hash -ine $UpdaterSha256) { throw 'The replacement updater digest differs from its reviewed pin.' }
                 $file.sha256 = $UpdaterSha256.ToLowerInvariant()
                 $file.size = (Get-Item -LiteralPath $target).Length
+                continue
+            }
+            if ($target -ieq $updaterTarget) { throw 'The updater source must belong to the updater alone.' }
+            if (Test-Path -LiteralPath $target) {
+                if ((Get-Item -LiteralPath $target).Length -ne $file.size -or (Get-FileHash -LiteralPath $target).Hash -ine $file.sha256) {
+                    throw 'Different payloads share the same package source path.'
+                }
                 continue
             }
             $entry = $archive.GetEntry('payload/' + $file.path)
