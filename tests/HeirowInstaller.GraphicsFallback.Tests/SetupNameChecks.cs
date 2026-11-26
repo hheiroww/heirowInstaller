@@ -74,13 +74,16 @@ internal static partial class Program
 
         var ownImage = Environment.ProcessPath ?? throw new InvalidOperationException("The fixture apphost is unavailable.");
         var carrier = Path.Combine(Path.GetDirectoryName(ownImage)!, "setup-name-fixture-" + Guid.NewGuid().ToString("N") + ".exe");
+        var offlinePackage = Path.Combine(Path.GetDirectoryName(carrier)!, "offline", "application.hinst");
+        Directory.CreateDirectory(Path.GetDirectoryName(offlinePackage)!);
+        using (var localPackage = new FileStream(offlinePackage, FileMode.CreateNew)) localPackage.SetLength(RemoteSize);
         using var signer = RSA.Create();
         signer.ImportFromPem(File.ReadAllText(signingKey));
         var descriptor = new { formatVersion = 1, hostKind = "installer", productId = fixture.Id, name = DescriptorName, version = "1.0.0", publisherKeySha256 = signingPin,
-            applicationPackage = new { sha256 = DescriptorHash, url = RemoteUrl, size = RemoteSize } };
+            offlineApplicationBundle = true, applicationPackage = new { sha256 = DescriptorHash, url = RemoteUrl, size = RemoteSize } };
         WebBootstrapBindings.WriteAsync(ownImage, JsonSerializer.SerializeToUtf8Bytes(descriptor), carrier, signer).GetAwaiter().GetResult();
         RunNameChild(carrier, ["--setup-name-carrier", ownImage, fixture.Id, signingPin], start => { });
-        Check(true, "a live signed setup can brand both direct desktop and graphics-child handoffs; altered identities are rejected");
+        Check(true, "a live signed setup binds its exact local package in direct and graphics-child handoffs and rejects altered identities");
     }
 
     static int RunSetupNameProcess(string[] args)
@@ -116,8 +119,14 @@ internal static partial class Program
                     Read(pin: new string('a', 64)) is not null || Read(hash: new string('a', 64)) is not null ||
                     Read(url: "https://other.example.invalid/app.hinst") is not null || Read(size: RemoteSize + 1) is not null)
                     throw new InvalidOperationException("The live signed descriptor was not bound to the exact setup arguments.");
+                var coordinator = Environment.GetEnvironmentVariable(BootstrapWorkerPromotion.LauncherVariable)!;
+                var local = Path.Combine(Path.GetDirectoryName(coordinator)!, "offline", "application.hinst");
+                string? ReadOffline(string path) => BootstrapProcessTrust.ReadBoundLocalSetup(args[1], "1.0.0", DescriptorHash, args[2], path, primary)?.Name;
+                if (ReadOffline(local) != DescriptorName || ReadOffline(local + ".other") is not null)
+                    throw new InvalidOperationException("The live signed descriptor was not bound to the exact adjacent offline package.");
                 Environment.SetEnvironmentVariable(BootstrapProcessTrust.ParentStartVariable, "1");
-                if (Read() is not null) throw new InvalidOperationException("A mismatched coordinator start time supplied a product name.");
+                if (Read() is not null || ReadOffline(local) is not null)
+                    throw new InvalidOperationException("A mismatched coordinator start time supplied a product name.");
             }
             return 0;
         }
